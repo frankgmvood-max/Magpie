@@ -14,9 +14,18 @@ static bool ShouldLogPresentationDiagnostic(uint32_t count) noexcept {
 }
 
 bool AdaptivePresenter::_Initialize(HWND hwndAttach) noexcept {
+	const bool vrrRequested = ScalingWindow::Get().Options().isVRREnabled;
+	const bool tearingSupported = _deviceResources->IsTearingSupported();
+	const bool directFlipDisabled = ScalingWindow::Get().Options().IsDirectFlipDisabled();
 	Logger::Get().Info(fmt::format("VRR request: enabled={} tearingSupported={} path={}",
-		ScalingWindow::Get().Options().isVRREnabled, _deviceResources->IsTearingSupported(),
-		ScalingWindow::Get().Options().IsDirectFlipDisabled() ? "DirectComposition (VRR unavailable)" : "DXGI"));
+		vrrRequested, tearingSupported,
+		directFlipDisabled ? "DirectComposition (VRR unavailable)" : "DXGI"));
+	if (vrrRequested && !tearingSupported) {
+		Logger::Get().Warn("VRR requested but DXGI tearing support is unavailable; presenting without ALLOW_TEARING");
+	}
+	if (vrrRequested && directFlipDisabled) {
+		Logger::Get().Warn("VRR requested but DirectFlip is disabled; DirectComposition path cannot use this VRR experiment");
+	}
 	if (ScalingWindow::Get().Options().IsDirectFlipDisabled()) {
 		// 禁用 DirectFlip 时始终使用 DirectComposition 呈现
 		if (!_ResizeDCompVisual(hwndAttach)) {
@@ -75,6 +84,16 @@ bool AdaptivePresenter::_Initialize(HWND hwndAttach) noexcept {
 	if (!_dxgiSwapChain) {
 		Logger::Get().Error("获取 IDXGISwapChain2 失败");
 		return false;
+	}
+	DXGI_SWAP_CHAIN_DESC1 actualDesc{};
+	if (SUCCEEDED(_dxgiSwapChain->GetDesc1(&actualDesc))) {
+		Logger::Get().Info(fmt::format(
+			"VRR swap chain: {}x{} buffers={} swapEffect={} flags=0x{:x} allowTearing={}",
+			actualDesc.Width, actualDesc.Height, actualDesc.BufferCount,
+			static_cast<uint32_t>(actualDesc.SwapEffect), actualDesc.Flags,
+			(actualDesc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0));
+	} else {
+		Logger::Get().Warn("VRR diagnostics: IDXGISwapChain::GetDesc1 failed");
 	}
 	if (ScalingWindow::Get().Options().IsHdrCompatibilityEnabled()) {
 		hr = _dxgiSwapChain->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709);
@@ -249,8 +268,16 @@ bool AdaptivePresenter::EndFrame(bool waitForGpu) noexcept {
 	} else {
 		// 两个垂直同步之间允许渲染数帧，SyncInterval = 0 只呈现最新的一帧，旧帧被丢弃
 		const auto tracePresent = FrameTrace::Tick();
-		const UINT flags = ScalingWindow::Get().Options().isVRREnabled &&
-			_deviceResources->IsTearingSupported() ? DXGI_PRESENT_ALLOW_TEARING : 0;
+		const bool presentVrrRequested = ScalingWindow::Get().Options().isVRREnabled;
+		const bool presentTearingSupported = _deviceResources->IsTearingSupported();
+		const UINT flags = presentVrrRequested && presentTearingSupported ? DXGI_PRESENT_ALLOW_TEARING : 0;
+		++_presentAttemptCount;
+		if (ShouldLogPresentationDiagnostic(_presentAttemptCount)) {
+			Logger::Get().Info(fmt::format(
+				"VRR Present: count={} syncInterval=0 flags=0x{:x} allowTearing={} requested={} tearingSupported={} dcomp={}",
+				_presentAttemptCount, flags, (flags & DXGI_PRESENT_ALLOW_TEARING) != 0,
+				presentVrrRequested, presentTearingSupported, _isDCompPresenting));
+		}
 		_lastSubmissionTime = std::chrono::steady_clock::now();
 		if (_reflexRendering) {
 			_reflex->FrontendRender(_reflexFrameId, _reflexPresentId, false);
@@ -380,6 +407,13 @@ bool AdaptivePresenter::_ResizeSwapChain() noexcept {
 	if (FAILED(hr)) {
 		Logger::Get().ComError("ResizeBuffers 失败", hr);
 		return false;
+	}
+	DXGI_SWAP_CHAIN_DESC1 resizedDesc{};
+	if (SUCCEEDED(_dxgiSwapChain->GetDesc1(&resizedDesc))) {
+		Logger::Get().Info(fmt::format(
+			"VRR ResizeBuffers: {}x{} flags=0x{:x} allowTearing={}",
+			resizedDesc.Width, resizedDesc.Height, resizedDesc.Flags,
+			(resizedDesc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0));
 	}
 
 	hr = _dxgiSwapChain->GetBuffer(0, IID_PPV_ARGS(_backBuffer.put()));

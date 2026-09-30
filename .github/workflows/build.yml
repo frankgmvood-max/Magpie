@@ -1,6 +1,7 @@
 name: build
 
 on:
+  workflow_dispatch:
   push:
     paths: [ '.github/workflows/build.yml', 'Magpie.slnx', '*.props', 'scripts/publish.py', 'src/**' ]
   pull_request:
@@ -11,8 +12,10 @@ jobs:
     runs-on: windows-2025-vs2026
     strategy:
       matrix:
-        compiler: ["MSVC", "ClangCL"]
-        platform: ["x64", "ARM64"]
+        # VRR debug build: keep CI focused on the Windows x64 binary we will test.
+        # Current upstream ClangCL fails on an unrelated -Wunused-function warning.
+        compiler: ["MSVC"]
+        platform: ["x64"]
 
     steps:
     - uses: actions/checkout@v7
@@ -29,6 +32,23 @@ jobs:
       with:
         path: ~/.conan2/p
         key: Conan-${{ hashFiles('src/**/conanfile.txt') }}-${{ matrix.compiler }}-${{ matrix.platform }}
+
+    - name: Fetch NVIDIA DLSS headers
+      if: matrix.platform == 'x64'
+      shell: pwsh
+      run: |
+        git clone --depth 1 https://github.com/NVIDIA/DLSS.git dependencies/DLSS-main
+        ./scripts/Fetch-NvapiHeaders.ps1 -OutputDirectory dependencies/nvapi-sdk
+        @"
+        <?xml version="1.0" encoding="utf-8"?>
+        <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+          <PropertyGroup>
+            <EnableDLSSFrameGeneration>true</EnableDLSSFrameGeneration>
+            <DLSSSdkDir>$([System.IO.Path]::GetFullPath('dependencies/DLSS-main'))</DLSSSdkDir>
+            <NvapiSdkDir>$([System.IO.Path]::GetFullPath('dependencies/nvapi-sdk'))</NvapiSdkDir>
+          </PropertyGroup>
+        </Project>
+        "@ | Set-Content -Path src/BuildOptions.props.user -Encoding utf8
 
     - name: Build
       if: github.ref != 'refs/heads/dev' && github.ref != 'refs/heads/main'
