@@ -522,7 +522,7 @@ ScalingError ScalingService::_StartScaleImpl(HWND hWnd, const Profile& profile, 
 	options.IsInlineParams(settings.IsInlineParams());
 	options.IsFP16Disabled(settings.IsFP16Disabled());
 	options.isFrontEdgeSyncEnabled = settings.IsFrontEdgeSyncEnabled();
-	// Experimental VRR path: pass the user's saved preference through to
+	// Experimental VRR path (vrr-debug build): pass the user's saved preference through to
 	// the presenter instead of forcing it off. The presenter still checks
 	// DXGI tearing support and falls back safely when it is unavailable.
 	options.isVRREnabled = settings.IsVRREnabled();
