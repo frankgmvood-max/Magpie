@@ -64,6 +64,7 @@ private:
 	bool _isSwitchingToSwapChain = false;
 	// 当前未被任何代码读取（等待超时计数未接线）；ClangCL -Werror、-Wunused-private-field 会报错
 	[[maybe_unused]] uint32_t _frameLatencyWaitTimeoutCount = 0;
+	uint32_t _presentAttemptCount = 0;
 	uint32_t _presentOccludedCount = 0;
 	uint32_t _presentFailureCount = 0;
 };
