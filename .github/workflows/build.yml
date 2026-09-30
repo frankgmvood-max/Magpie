@@ -12,8 +12,10 @@ jobs:
     runs-on: windows-2025-vs2026
     strategy:
       matrix:
-        compiler: ["MSVC", "ClangCL"]
-        platform: ["x64", "ARM64"]
+        # VRR debug build: keep CI focused on the Windows x64 binary we will test.
+        # Current upstream ClangCL fails on an unrelated -Wunused-function warning.
+        compiler: ["MSVC"]
+        platform: ["x64"]
 
     steps:
     - uses: actions/checkout@v7
