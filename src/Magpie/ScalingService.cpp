@@ -522,9 +522,10 @@ ScalingError ScalingService::_StartScaleImpl(HWND hWnd, const Profile& profile, 
 	options.IsInlineParams(settings.IsInlineParams());
 	options.IsFP16Disabled(settings.IsFP16Disabled());
 	options.isFrontEdgeSyncEnabled = settings.IsFrontEdgeSyncEnabled();
-	// VRR is deferred while its settings card is hidden. Ignore an older
-	// saved true value so no session silently enables tearing.
-	options.isVRREnabled = false;
+	// Experimental VRR path: pass the user's saved preference through to
+	// the presenter instead of forcing it off. The presenter still checks
+	// DXGI tearing support and falls back safely when it is unavailable.
+	options.isVRREnabled = settings.IsVRREnabled();
 	options.frontEdgeSyncFrameRate = settings.FrontEdgeSyncFrameRate();
 	options.frameSyncMode = settings.GetFrameSyncMode();
 
