@@ -166,12 +166,10 @@
 						</local:SettingsCard>
 					</local:SettingsExpander.Items>
 				</local:SettingsExpander>
-				<!-- VRR is deferred. ScalingService also ignores the saved VRR preference.
 				<local:SettingsCard x:Uid="Home_FrameSync_VRR" IsWrapEnabled="True">
 					<local:SettingsCard.HeaderIcon><FontIcon Glyph="&#xE7F4;" /></local:SettingsCard.HeaderIcon>
 					<ToggleSwitch x:Uid="ToggleSwitch" IsOn="{x:Bind ViewModel.IsVRREnabled, Mode=TwoWay}" />
 				</local:SettingsCard>
-				-->
 			</local:SettingsGroup>
 			<local:SettingsGroup x:Uid="Home_Toolbar">
 				<local:SettingsExpander x:Uid="Home_Toolbar_Shortcuts"
