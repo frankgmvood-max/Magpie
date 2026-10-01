@@ -15,6 +15,36 @@ static bool ShouldLogPresentationDiagnostic(uint32_t count) noexcept {
 
 bool AdaptivePresenter::_Initialize(HWND hwndAttach) noexcept {
 	const bool vrrRequested = ScalingWindow::Get().Options().isVRREnabled;
+	if (vrrRequested) {
+		RECT client{};
+		RECT monitor{};
+		bool clientMapped = GetClientRect(hwndAttach, &client) != FALSE;
+		if (clientMapped) {
+			POINT points[2]{ { client.left, client.top }, { client.right, client.bottom } };
+			if (MapWindowPoints(hwndAttach, nullptr, points, 2)) {
+				client = { points[0].x, points[0].y, points[1].x, points[1].y };
+			} else {
+				clientMapped = false;
+			}
+		}
+		MONITORINFO mi{ .cbSize = sizeof(mi) };
+		const HMONITOR hmon = MonitorFromWindow(hwndAttach, MONITOR_DEFAULTTONEAREST);
+		const bool monitorKnown = hmon && GetMonitorInfo(hmon, &mi) != FALSE;
+		if (monitorKnown) monitor = mi.rcMonitor;
+		const auto exStyle = static_cast<uint64_t>(GetWindowLongPtr(hwndAttach, GWL_EXSTYLE));
+		const auto style = static_cast<uint64_t>(GetWindowLongPtr(hwndAttach, GWL_STYLE));
+		const bool coversMonitor = clientMapped && monitorKnown &&
+			client.left == monitor.left && client.top == monitor.top &&
+			client.right == monitor.right && client.bottom == monitor.bottom;
+		Logger::Get().Info(fmt::format(
+			"VRR HWND diagnostics: style=0x{:x} exStyle=0x{:x} layered={} noActivate={} noRedirection={} "
+			"client=[{},{},{},{}] monitor=[{},{},{},{}] coversMonitor={}",
+			style, exStyle, (exStyle & WS_EX_LAYERED) != 0,
+			(exStyle & WS_EX_NOACTIVATE) != 0,
+			(exStyle & WS_EX_NOREDIRECTIONBITMAP) != 0,
+			client.left, client.top, client.right, client.bottom,
+			monitor.left, monitor.top, monitor.right, monitor.bottom, coversMonitor));
+	}
 	const bool tearingSupported = _deviceResources->IsTearingSupported();
 	const bool directFlipDisabled = ScalingWindow::Get().Options().IsDirectFlipDisabled();
 	Logger::Get().Info(fmt::format("VRR request: enabled={} tearingSupported={} path={}",
@@ -55,8 +85,10 @@ bool AdaptivePresenter::_Initialize(HWND hwndAttach) noexcept {
 		// 我们应确保两种渲染方式可以无缝切换，DXGI_SCALING_NONE 使错误更容易观察到
 		.Scaling = DXGI_SCALING_NONE,
 #else
-		// 如果两种渲染方式无法无缝切换，DXGI_SCALING_STRETCH 使视觉变化尽可能小
-		.Scaling = DXGI_SCALING_STRETCH,
+		// Strict VRR experiment: exact fullscreen buffers should not need stretch
+		// scaling, which also gives Windows the cleanest DirectFlip candidate.
+		.Scaling = ScalingWindow::Get().Options().isVRREnabled
+			? DXGI_SCALING_NONE : DXGI_SCALING_STRETCH,
 #endif
 		// 渲染每帧之前都会清空后缓冲区，因此无需 DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL
 		.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD,
@@ -88,9 +120,10 @@ bool AdaptivePresenter::_Initialize(HWND hwndAttach) noexcept {
 	DXGI_SWAP_CHAIN_DESC1 actualDesc{};
 	if (SUCCEEDED(_dxgiSwapChain->GetDesc1(&actualDesc))) {
 		Logger::Get().Info(fmt::format(
-			"VRR swap chain: {}x{} buffers={} swapEffect={} flags=0x{:x} allowTearing={}",
+			"VRR swap chain: {}x{} buffers={} swapEffect={} scaling={} flags=0x{:x} allowTearing={}",
 			actualDesc.Width, actualDesc.Height, actualDesc.BufferCount,
-			static_cast<uint32_t>(actualDesc.SwapEffect), actualDesc.Flags,
+			static_cast<uint32_t>(actualDesc.SwapEffect),
+			static_cast<uint32_t>(actualDesc.Scaling), actualDesc.Flags,
 			(actualDesc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0));
 	} else {
 		Logger::Get().Warn("VRR diagnostics: IDXGISwapChain::GetDesc1 failed");
