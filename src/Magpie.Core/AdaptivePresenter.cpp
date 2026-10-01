@@ -324,13 +324,21 @@ bool AdaptivePresenter::EndFrame(bool waitForGpu) noexcept {
 			_reflexRendering = false;
 		}
 		if (SUCCEEDED(presentResult) && _reflex &&
-			(_presentAttemptCount == 1 || _presentAttemptCount == 60 || _presentAttemptCount == 240)) {
+			(_presentAttemptCount == 1 || _presentAttemptCount == 2 ||
+			 _presentAttemptCount == 3 || _presentAttemptCount == 10 ||
+			 _presentAttemptCount == 60 || _presentAttemptCount == 240)) {
 			const GSyncQueryResult gsync = _reflex->QueryGSync(_backBuffer.get());
+			const HWND scaling = ScalingWindow::Get().Handle();
+			const HWND source = ScalingWindow::Get().SrcTracker().Handle();
+			const HWND foreground = GetForegroundWindow();
 			Logger::Get().Info(fmt::format(
 				"NVIDIA G-SYNC diagnostic: present={} queried={} handleStatus={} capableStatus={} "
-				"activeStatus={} capable={} active={}",
+				"activeStatus={} capable={} active={} visible={} foregroundScaling={} "
+				"foregroundSource={} exStyle=0x{:x}",
 				_presentAttemptCount, gsync.queried, gsync.handleStatus, gsync.capableStatus,
-				gsync.activeStatus, gsync.capable, gsync.active));
+				gsync.activeStatus, gsync.capable, gsync.active,
+				IsWindowVisible(scaling) != FALSE, foreground == scaling, foreground == source,
+				static_cast<uint64_t>(GetWindowLongPtr(scaling, GWL_EXSTYLE))));
 		}
 		FrameTrace::Presentation(tracePresent, FrameTrace::Tick(), presentResult,
 			reinterpret_cast<uintptr_t>(_dxgiSwapChain.get()));
