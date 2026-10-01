@@ -352,10 +352,9 @@ ScalingError ScalingWindow::_StartImpl(HWND hwndSrc) noexcept {
 		}
 
 		const DWORD fullscreenExStyle =
-			WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP |
-			(_options.isVRREnabled ? 0 : WS_EX_LAYERED);
+			WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP;
 		Logger::Get().Info(fmt::format(
-			"VRR fullscreen HWND style: vrr={} exStyle=0x{:x} layered={}",
+			"VRR fullscreen HWND style: vrr={} exStyle=0x{:x} layered={} (safe input path)",
 			_options.isVRREnabled, fullscreenExStyle,
 			(fullscreenExStyle & WS_EX_LAYERED) != 0));
 
@@ -1657,6 +1656,16 @@ void ScalingWindow::_Show() noexcept {
 		0, 0, 0, 0,
 		SWP_SHOWWINDOW | SWP_NO_ACTIVATE_MOVE_SIZE
 	);
+	if (_options.isVRREnabled) {
+		Logger::Get().Info(fmt::format(
+			"VRR show state: visible={} foregroundScaling={} foregroundSource={} "
+			"scalingExStyle=0x{:x} source={:#x} scaling={:#x}",
+			IsWindowVisible(Handle()) != FALSE,
+			GetForegroundWindow() == Handle(),
+			GetForegroundWindow() == _srcTracker.Handle(),
+			static_cast<uint64_t>(GetWindowLongPtr(Handle(), GWL_EXSTYLE)),
+			uintptr_t(_srcTracker.Handle()), uintptr_t(Handle())));
+	}
 
 	// 广播开始缩放
 	PostMessage(HWND_BROADCAST, WM_MAGPIE_SCALINGCHANGED, 1, (LPARAM)Handle());
