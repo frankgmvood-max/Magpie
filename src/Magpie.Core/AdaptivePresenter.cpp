@@ -323,6 +323,15 @@ bool AdaptivePresenter::EndFrame(bool waitForGpu) noexcept {
 			_reflex->Present(_reflexFrameId, _reflexPresentId, _reflexGenerated, false);
 			_reflexRendering = false;
 		}
+		if (SUCCEEDED(presentResult) && _reflex &&
+			(_presentAttemptCount == 1 || _presentAttemptCount == 60 || _presentAttemptCount == 240)) {
+			const GSyncQueryResult gsync = _reflex->QueryGSync(_backBuffer.get());
+			Logger::Get().Info(fmt::format(
+				"NVIDIA G-SYNC diagnostic: present={} queried={} handleStatus={} capableStatus={} "
+				"activeStatus={} capable={} active={}",
+				_presentAttemptCount, gsync.queried, gsync.handleStatus, gsync.capableStatus,
+				gsync.activeStatus, gsync.capable, gsync.active));
+		}
 		FrameTrace::Presentation(tracePresent, FrameTrace::Tick(), presentResult,
 			reinterpret_cast<uintptr_t>(_dxgiSwapChain.get()));
 		_lastPresentedFrameCount = presentResult == S_OK ? 1u : 0u;
