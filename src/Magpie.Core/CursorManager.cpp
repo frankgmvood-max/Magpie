@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "VrrExperiment.h"
 #include "FrameTrace.h"
 #include "CursorManager.h"
 #include "Logger.h"
@@ -117,6 +118,12 @@ CursorManager::~CursorManager() noexcept {
 }
 
 void CursorManager::Update() noexcept {
+	if (!ScalingWindow::Get().Options().IsWindowedMode() && VrrExperimentSpectator()) {
+		_RestoreClipCursor();
+		_ShowSystemCursor(true);
+		_shouldDrawCursor = false;
+		return;
+	}
 	FrameTrace::Scope traceCursor(FrameTrace::Event::CursorUpdate);
 	_UpdateCursorState();
 	_UpdateCursorPos();

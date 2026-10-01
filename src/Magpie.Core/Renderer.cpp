@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "VrrExperiment.h"
 #include "DlssnrAutoHdr.h"
 #include "DLSSNRParameters.h"
 #include "RTXVideoParameters.h"
@@ -462,9 +463,10 @@ ScalingError Renderer::Initialize(HWND hwndAttach, OverlayOptions& overlayOption
 	const bool ordinaryReflex = !frameGeneration.HasFrameGeneration() &&
 		pacingOptions.isFrontEdgeSyncEnabled && pacingOptions.frameSyncMode == FrameSyncMode::Reflex &&
 		!pacingOptions.IsBenchmarkMode();
-	if ((frameGeneration.first == FrameGenerationEffectKind::DLSS || ordinaryReflex) &&
+	if ((frameGeneration.first == FrameGenerationEffectKind::DLSS || ordinaryReflex || VrrExperimentMode()) &&
 		_presenter->UsesFrameLatencyWaitableObject()) {
-		_reflex.Initialize(CreateNvReflexDriver(_frontendResources.GetD3DDevice()));
+		_reflex.Initialize(CreateNvReflexDriver(_frontendResources.GetD3DDevice()),
+			ReflexSettings{ .lowLatency = VrrExperimentMode() == 0 });
 		_presenter->SetReflexController(&_reflex);
 	} else if (frameGeneration.first == FrameGenerationEffectKind::DLSS) {
 		Logger::Get().Info("DLSSFG Reflex: DXGI presentation required; enable DirectFlip to use Reflex");

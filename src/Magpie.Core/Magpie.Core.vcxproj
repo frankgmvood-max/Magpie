@@ -77,6 +77,7 @@
     <ClInclude Include="ExclModeHelper.h" />
     <ClInclude Include="FrameSourceBase.h" />
     <ClInclude Include="FrameTrace.h" />
+    <ClInclude Include="VrrExperiment.h" />
     <ClInclude Include="GDIFrameSource.h" />
     <ClInclude Include="GraphicsCaptureFrameSource.h" />
     <ClInclude Include="ImGuiBackend.h" />

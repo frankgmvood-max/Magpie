@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "../Magpie.Core/VrrExperiment.h"
 #include "App.h"
 #include "AppSettings.h"
 #include "CommonSharedConstants.h"
@@ -528,6 +529,17 @@ ScalingError ScalingService::_StartScaleImpl(HWND hWnd, const Profile& profile, 
 	options.isVRREnabled = settings.IsVRREnabled();
 	options.frontEdgeSyncFrameRate = settings.FrontEdgeSyncFrameRate();
 	options.frameSyncMode = settings.GetFrameSyncMode();
+	if (VrrExperimentMode()) {
+		options.IsWindowedMode(false);
+		options.isVRREnabled = true;
+		options.IsDirectFlipDisabled(false);
+		options.isFrontEdgeSyncEnabled = false;
+		options.IsSimulateExclusiveFullscreen(false);
+		options.IsTouchSupportEnabled(false);
+		if (VrrExperimentSpectator()) options.Is3DGameMode(false);
+		Logger::Get().Info(fmt::format("VRR complete experiment: mode={} spectator={}",
+			VrrExperimentMode(), VrrExperimentSpectator()));
+	}
 
 	if (options.maxFrameRate) {
 		// 最小帧数不能大于最大帧数
