@@ -351,8 +351,16 @@ ScalingError ScalingWindow::_StartImpl(HWND hwndSrc) noexcept {
 			return ScalingError::SourceWindowUnresponsive;
 		}
 
+		const DWORD fullscreenExStyle =
+			WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP |
+			(_options.isVRREnabled ? 0 : WS_EX_LAYERED);
+		Logger::Get().Info(fmt::format(
+			"VRR fullscreen HWND style: vrr={} exStyle=0x{:x} layered={}",
+			_options.isVRREnabled, fullscreenExStyle,
+			(fullscreenExStyle & WS_EX_LAYERED) != 0));
+
 		CreateWindowEx(
-			WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP,
+			fullscreenExStyle,
 			CommonSharedConstants::SCALING_WINDOW_CLASS_NAME,
 			nullptr,
 			WS_POPUP | (monitorCount == 1 ? WS_MAXIMIZE : 0),
