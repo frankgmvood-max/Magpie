@@ -44,7 +44,10 @@ public:
 			!_Resolve(_marker, "NvAPI_D3D_SetLatencyMarker") ||
 			!_Resolve(_async11, "NvAPI_D3D11_SetAsyncFrameMarker") ||
 			!_Resolve(_async12, "NvAPI_D3D12_SetAsyncFrameMarker") ||
-			!_Resolve(_outOfBand, "NvAPI_D3D12_NotifyOutOfBandCommandQueue")) {
+			!_Resolve(_outOfBand, "NvAPI_D3D12_NotifyOutOfBandCommandQueue") ||
+			!_Resolve(_getObjectHandle, "NvAPI_D3D_GetObjectHandleForResource") ||
+			!_Resolve(_isGsyncCapable, "NvAPI_D3D_IsGSyncCapable") ||
+			!_Resolve(_isGsyncActive, "NvAPI_D3D_IsGSyncActive")) {
 			ReportFailure("resolve native Reflex interfaces (D3D11 async markers require R565+)", NVAPI_NO_IMPLEMENTATION);
 			return false;
 		}
@@ -115,6 +118,22 @@ public:
 			: (start ? PRESENT_START : PRESENT_END));
 		return _async11(_device.get(), &params);
 	}
+	GSyncQueryResult QueryGSync(ID3D11Resource* primarySurface) noexcept override {
+		GSyncQueryResult result;
+		if (!_initialized || !_device || !primarySurface ||
+			!_getObjectHandle || !_isGsyncCapable || !_isGsyncActive) return result;
+		NVDX_ObjectHandle handle = NVDX_OBJECT_NONE;
+		result.handleStatus = _getObjectHandle(_device.get(), primarySurface, &handle);
+		if (result.handleStatus != NVAPI_OK || handle == NVDX_OBJECT_NONE) return result;
+		BOOL capable = FALSE;
+		BOOL active = FALSE;
+		result.capableStatus = _isGsyncCapable(_device.get(), handle, &capable);
+		result.activeStatus = _isGsyncActive(_device.get(), handle, &active);
+		result.queried = result.capableStatus == NVAPI_OK || result.activeStatus == NVAPI_OK;
+		result.capable = result.capableStatus == NVAPI_OK && capable != FALSE;
+		result.active = result.activeStatus == NVAPI_OK && active != FALSE;
+		return result;
+	}
 	void ReportFailure(const char* operation, int status) noexcept override {
 		Logger::Get().Warn(fmt::format("Reflex call failed: operation={} status={}", operation, status));
 	}
@@ -153,6 +172,9 @@ private:
 	decltype(&NvAPI_D3D11_SetAsyncFrameMarker) _async11 = nullptr;
 	decltype(&NvAPI_D3D12_SetAsyncFrameMarker) _async12 = nullptr;
 	decltype(&NvAPI_D3D12_NotifyOutOfBandCommandQueue) _outOfBand = nullptr;
+	decltype(&NvAPI_D3D_GetObjectHandleForResource) _getObjectHandle = nullptr;
+	decltype(&NvAPI_D3D_IsGSyncCapable) _isGsyncCapable = nullptr;
+	decltype(&NvAPI_D3D_IsGSyncActive) _isGsyncActive = nullptr;
 	bool _initialized = false;
 };
 
