@@ -20,9 +20,11 @@ bool AdaptivePresenter::_Initialize(HWND hwndAttach) noexcept {
 		RECT monitor{};
 		bool clientMapped = GetClientRect(hwndAttach, &client) != FALSE;
 		if (clientMapped) {
-			POINT points[2]{ { client.left, client.top }, { client.right, client.bottom } };
-			if (MapWindowPoints(hwndAttach, nullptr, points, 2)) {
-				client = { points[0].x, points[0].y, points[1].x, points[1].y };
+			POINT topLeft{ client.left, client.top };
+			POINT bottomRight{ client.right, client.bottom };
+			if (ClientToScreen(hwndAttach, &topLeft) &&
+				ClientToScreen(hwndAttach, &bottomRight)) {
+				client = { topLeft.x, topLeft.y, bottomRight.x, bottomRight.y };
 			} else {
 				clientMapped = false;
 			}
