@@ -467,6 +467,7 @@ ScalingError Renderer::Initialize(HWND hwndAttach, OverlayOptions& overlayOption
 		_presenter->UsesFrameLatencyWaitableObject()) {
 		_reflex.Initialize(CreateNvReflexDriver(_frontendResources.GetD3DDevice()),
 			ReflexSettings{ .lowLatency = VrrExperimentMode() == 0 });
+		if (VrrExperimentMode()) _reflex.Stop(); // Keep only QueryGSync; no Sleep or async markers.
 		_presenter->SetReflexController(&_reflex);
 	} else if (frameGeneration.first == FrameGenerationEffectKind::DLSS) {
 		Logger::Get().Info("DLSSFG Reflex: DXGI presentation required; enable DirectFlip to use Reflex");

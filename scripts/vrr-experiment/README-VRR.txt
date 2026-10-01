@@ -6,7 +6,7 @@ Use FULLSCREEN scaling, not windowed scaling. Select your usual FG profile.
 For a clean test use a moving video / benchmark that keeps running unfocused.
 
 1-Safe-VRR.cmd: normal input, forced DXGI VRR path, two buffers, latency one,
-Reflex sleep disabled for this experiment.
+Reflex Sleep and async markers disabled for this experiment.
 3-Maximum-opaque-foreground.cmd: strongest ordinary HWND candidate; opaque
 fullscreen with focus belonging to Magpie. VIEW-ONLY: game input is not routed.
 2-Opaque-source-focus.cmd: same opaque output while source retains focus;
@@ -15,6 +15,8 @@ VIEW-ONLY: opaque HWND cannot provide layered mouse pass-through.
 5-Driver-vsync-probe.cmd: normal input, Present(1,0), checks driver selection
 with vsync presentation. This is a comparison, not proof of VRR.
 0-Restore-normal.cmd: original user settings and input policy.
+The launchers write vrr-experiment-mode.txt beside Magpie.exe so automatic
+restarts retain the selected mode; launcher 0 or deleting this file resets it.
 
 Start and stop with the usual global Scale shortcut. Alt-Tab remains available.
 Run each mode for 20 seconds with moving content. Check monitor refresh OSD.
