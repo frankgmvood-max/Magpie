@@ -47,6 +47,43 @@ bool AdaptivePresenter::_Initialize(HWND hwndAttach) noexcept {
 			client.left, client.top, client.right, client.bottom,
 			monitor.left, monitor.top, monitor.right, monitor.bottom, coversMonitor));
 	}
+	if (vrrRequested) {
+		// Match the monitor to the adapter that owns its output. Adapter names
+		// and PCI device IDs cannot distinguish two identical graphics cards.
+		const auto dxgiDevice = _deviceResources->GetD3DDevice();
+		winrt::com_ptr<IDXGIDevice> device;
+		winrt::com_ptr<IDXGIAdapter> presentAdapter;
+		DXGI_ADAPTER_DESC presentDesc{};
+		const bool presentKnown = SUCCEEDED(dxgiDevice->QueryInterface(IID_PPV_ARGS(device.put()))) &&
+			SUCCEEDED(device->GetAdapter(presentAdapter.put())) &&
+			SUCCEEDED(presentAdapter->GetDesc(&presentDesc));
+		const HMONITOR target = MonitorFromWindow(hwndAttach, MONITOR_DEFAULTTONEAREST);
+		bool outputFound = false;
+		for (UINT i = 0; ; ++i) {
+			winrt::com_ptr<IDXGIAdapter1> adapter;
+			if (FAILED(_deviceResources->GetDXGIFactory()->EnumAdapters1(i, adapter.put()))) break;
+			DXGI_ADAPTER_DESC1 adapterDesc{};
+			if (FAILED(adapter->GetDesc1(&adapterDesc))) continue;
+			for (UINT j = 0; ; ++j) {
+				winrt::com_ptr<IDXGIOutput> output;
+				if (FAILED(adapter->EnumOutputs(j, output.put()))) break;
+				DXGI_OUTPUT_DESC outputDesc{};
+				if (FAILED(output->GetDesc(&outputDesc)) || outputDesc.Monitor != target) continue;
+				outputFound = true;
+				const bool sameAdapter = presentKnown &&
+					presentDesc.AdapterLuid.HighPart == adapterDesc.AdapterLuid.HighPart &&
+					presentDesc.AdapterLuid.LowPart == adapterDesc.AdapterLuid.LowPart;
+				Logger::Get().Info(fmt::format(
+					"VRR adapter mapping: presentKnown={} presentLuid={:08x}:{:08x} "
+					"outputAdapterIndex={} outputLuid={:08x}:{:08x} sameAdapter={}",
+					presentKnown, static_cast<uint32_t>(presentDesc.AdapterLuid.HighPart),
+					presentDesc.AdapterLuid.LowPart, i,
+					static_cast<uint32_t>(adapterDesc.AdapterLuid.HighPart),
+					adapterDesc.AdapterLuid.LowPart, sameAdapter));
+			}
+		}
+		if (!outputFound) Logger::Get().Warn("VRR adapter mapping: target monitor output not found");
+	}
 	const bool tearingSupported = _deviceResources->IsTearingSupported();
 	const bool directFlipDisabled = ScalingWindow::Get().Options().IsDirectFlipDisabled();
 	Logger::Get().Info(fmt::format("VRR request: enabled={} tearingSupported={} path={}",
@@ -323,10 +360,10 @@ bool AdaptivePresenter::EndFrame(bool waitForGpu) noexcept {
 			_reflex->Present(_reflexFrameId, _reflexPresentId, _reflexGenerated, false);
 			_reflexRendering = false;
 		}
-		if (SUCCEEDED(presentResult) && _reflex &&
-			(_presentAttemptCount == 1 || _presentAttemptCount == 2 ||
-			 _presentAttemptCount == 3 || _presentAttemptCount == 10 ||
-			 _presentAttemptCount == 60 || _presentAttemptCount == 240)) {
+		const auto diagnosticNow = std::chrono::steady_clock::now();
+		if (presentVrrRequested && presentResult == S_OK && _reflex &&
+			diagnosticNow >= _nextGSyncDiagnostic) {
+			_nextGSyncDiagnostic = diagnosticNow + std::chrono::seconds(2);
 			const GSyncQueryResult gsync = _reflex->QueryGSync(_backBuffer.get());
 			const HWND scaling = ScalingWindow::Get().Handle();
 			const HWND source = ScalingWindow::Get().SrcTracker().Handle();
