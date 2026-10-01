@@ -125,8 +125,46 @@ void CursorManager::Update() noexcept {
 		return;
 	}
 	FrameTrace::Scope traceCursor(FrameTrace::Event::CursorUpdate);
+	_UpdateNativeMouseRegion();
 	_UpdateCursorState();
 	_UpdateCursorPos();
+	// Capture may have mapped the physical pointer back into source coordinates.
+	_UpdateNativeMouseRegion();
+}
+
+// A window region is used instead of layered alpha or synthetic mouse messages.
+// The small aperture follows the physical (source-space) pointer, so Windows
+// can deliver native input to the source process, including its child windows.
+// This is an explicit experiment: a non-rectangular HWND may lose DirectFlip.
+void CursorManager::_UpdateNativeMouseRegion() noexcept {
+	if (!VrrExperimentNativeMouse() || _lifetime->IsStopping() || _nativeMouseRegionFailed) return;
+	const auto& scaling = ScalingWindow::Get();
+	if (scaling.Options().IsWindowedMode()) return;
+	POINT pointer{};
+	RECT window{};
+	if (!GetCursorPos(&pointer) || !GetWindowRect(scaling.Handle(), &window)) return;
+	constexpr LONG radius = 32;
+	RECT aperture{ pointer.x - window.left - radius, pointer.y - window.top - radius,
+		pointer.x - window.left + radius + 1, pointer.y - window.top + radius + 1 };
+	// The region includes the dimensions so it is rebuilt after a monitor resize.
+	RECT key{ aperture.left, aperture.top, window.right - window.left, window.bottom - window.top };
+	if (_nativeMouseRegionSet && EqualRect(&key, &_nativeMouseRegion)) return;
+	HRGN full = CreateRectRgn(0, 0, key.right, key.bottom);
+	HRGN hole = CreateRectRgn(aperture.left, aperture.top, aperture.right, aperture.bottom);
+	const bool combined = full && hole && CombineRgn(full, full, hole, RGN_DIFF) != ERROR;
+	if (hole) DeleteObject(hole);
+	if (!combined || !SetWindowRgn(scaling.Handle(), full, TRUE)) {
+		if (full) DeleteObject(full);
+		_nativeMouseRegionFailed = true;
+		Logger::Get().Error("VRR native mouse aperture failed; stop scaling and use mode 1");
+		return;
+	}
+	// SetWindowRgn transfers ownership of full to Windows.
+	if (!_nativeMouseRegionSet) {
+		Logger::Get().Info("VRR native mouse aperture enabled: 65x65 physical pixels; source focus retained");
+	}
+	_nativeMouseRegionSet = true;
+	_nativeMouseRegion = key;
 }
 
 void CursorManager::OnScalingPosChanged() noexcept {

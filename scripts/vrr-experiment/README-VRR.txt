@@ -25,3 +25,10 @@ G-SYNC is sampled every two seconds, with the selected mode and adapter LUIDs.
 No registry/driver profile changes, game injection, or NoFocusLoss hooks occur.
 A failure of these modes does NOT establish that VRR is impossible: driver
 settings, scanout mode, and OS composition still require hardware verification.
+
+Mode 6 (6-Opaque-native-input.cmd): opaque NOACTIVATE output with the usual
+cursor mapping and 3D clipping retained. A 65x65 physical-pixel window-region
+aperture lets Windows deliver native mouse input to the source. No game hooks
+or synthetic messages. The aperture exposes a small patch of the source;
+non-rectangular output may disable DirectFlip/G-SYNC. Fast clicks may outrun
+frame-based aperture updates. This is experimental, not a VRR guarantee.
