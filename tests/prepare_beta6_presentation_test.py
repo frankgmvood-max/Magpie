@@ -38,6 +38,7 @@ struct TestClock {
 struct Event { int signals=0; Event* get() { return this; } explicit operator bool() const { return true; } };
 static void SetEvent(Event* event) { ++event->signals; }
 namespace Magpie {
+inline double VrrExperimentFixedRate() { return 0.0; }
 namespace FrameTrace {
 enum class Event { FgDequeued };
 inline constexpr bool Enabled() { return false; }
@@ -62,6 +63,7 @@ struct Renderer {
     Event _frameSyncConsumedEvent;
     std::optional<std::chrono::steady_clock::time_point> _frontendPacingDeadline;
     FramePresentationClock _presentationClock;
+    std::optional<std::chrono::steady_clock::time_point> _dlssFixedPresentDeadline;
     Presenter presenter; Presenter* _presenter=&presenter;
     PresentationJobTiming recorded;
     int records=0;

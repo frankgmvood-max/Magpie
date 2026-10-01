@@ -32,3 +32,9 @@ aperture lets Windows deliver native mouse input to the source. No game hooks
 or synthetic messages. The aperture exposes a small patch of the source;
 non-rectangular output may disable DirectFlip/G-SYNC. Fast clicks may outrun
 frame-based aperture updates. This is experimental, not a VRR guarantee.
+
+Mode 7: 7-Opaque-136FPS.cmd retains mode-6 input. DLSSFG uses a fixed
+136 FPS deadline, prepares frames ahead of submission, bounds catch-up to
+5% of one period and reanchors after stalls. A 200us precision wait tail
+returns on messages/events. FG x2 needs a sustainable 68 FPS source.
+The known aperture/cursor artifact is unchanged; compare against mode 6.

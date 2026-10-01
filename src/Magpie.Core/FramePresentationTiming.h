@@ -142,6 +142,14 @@ public:
 		_last = interval.count() > 0 && now <= due + interval ? due : now;
 		_started = true;
 	}
+	// Keep an absolute phase while limiting catch-up to 5% of a period.
+	// A long stall reanchors; it must never trigger several back-to-back flips.
+	void PresentedUniform(Clock::time_point now, Clock::time_point due,
+		std::chrono::nanoseconds interval) noexcept {
+		_last = interval.count() > 0 && now <= due + interval
+			? std::max(due, now - interval / 20) : now;
+		_started = true;
+	}
 	void Reset() noexcept { *this = {}; }
 private:
 	Clock::time_point _last{};

@@ -431,6 +431,7 @@ private:
 	std::chrono::nanoseconds _synchronousPresentInterval{};
 	std::array<std::atomic<int64_t>, MAX_SHARED_TEXTURE_SLOTS> _sharedPresentIntervalNs{};
 	FramePresentationClock _presentationClock;
+	std::optional<std::chrono::steady_clock::time_point> _dlssFixedPresentDeadline;
 	FrameGuidanceFrameId _frontendCaptureFrameId = 0;
 	FrameGuidanceFrameId _lastCountedRealFrameId = 0;
 	uint32_t _dlssFgFrontendTimingFrames = 0;
