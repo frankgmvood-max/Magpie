@@ -1,7 +1,7 @@
 VRR complete experiment - test suite
 
 Close Magpie fully before switching launchers. Do not copy an older EXE or
-Magpie.Core.dll over this build. Keep your existing compatible FG runtime DLLs.
+runtime DLL over this build. Keep your existing compatible FG runtime DLLs.
 Use FULLSCREEN scaling, not windowed scaling. Select your usual FG profile.
 For a clean test use a moving video / benchmark that keeps running unfocused.
 

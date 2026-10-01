@@ -1,6 +1,6 @@
 @echo off
 cd /d "%~dp0"
-echo 1>"%~dp0vrr-experiment-mode.txt"
+>"%~dp0vrr-experiment-mode.txt" echo 1
 set "MAGPIE_VRR_EXPERIMENT=1"
 echo Close every running Magpie instance before using this launcher.
 echo Mode 1: Safe-VRR. Use your usual Scale shortcut to start and stop.
