@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "VrrExperiment.h"
 #include "FrameTrace.h"
 #include "AdaptivePresenter.h"
 #include "DeviceResources.h"
@@ -106,7 +107,7 @@ bool AdaptivePresenter::_Initialize(HWND hwndAttach) noexcept {
 		return true;
 	}
 
-	const uint32_t bufferCount = _CalcBufferCount();
+	const uint32_t bufferCount = VrrExperimentMode() ? 2u : _CalcBufferCount();
 
 	const SIZE rendererSize = Win32Helper::GetSizeOfRect(ScalingWindow::Get().RendererRect());
 	DXGI_SWAP_CHAIN_DESC1 sd{
@@ -178,6 +179,7 @@ bool AdaptivePresenter::_Initialize(HWND hwndAttach) noexcept {
 	const auto& options = ScalingWindow::Get().Options();
 	uint32_t maximumFrameLatency = options.isFrontEdgeSyncEnabled && !options.IsBenchmarkMode()
 		? 1u : bufferCount - 1;
+	if (VrrExperimentMode()) maximumFrameLatency = 1;
 	for (const EffectOption& effect : ScalingWindow::Get().Options().effects) {
 		if (effect.name == "DLSSFG\\DLSS_FrameGeneration") {
 			maximumFrameLatency = 1;
@@ -342,12 +344,14 @@ bool AdaptivePresenter::EndFrame(bool waitForGpu) noexcept {
 		const auto tracePresent = FrameTrace::Tick();
 		const bool presentVrrRequested = ScalingWindow::Get().Options().isVRREnabled;
 		const bool presentTearingSupported = _deviceResources->IsTearingSupported();
-		const UINT flags = presentVrrRequested && presentTearingSupported ? DXGI_PRESENT_ALLOW_TEARING : 0;
+		const UINT syncInterval = VrrExperimentMode() == 5 ? 1u : 0u;
+		const UINT flags = !syncInterval && presentVrrRequested && presentTearingSupported
+			? DXGI_PRESENT_ALLOW_TEARING : 0;
 		++_presentAttemptCount;
 		if (ShouldLogPresentationDiagnostic(_presentAttemptCount)) {
 			Logger::Get().Info(fmt::format(
-				"VRR Present: count={} syncInterval=0 flags=0x{:x} allowTearing={} requested={} tearingSupported={} dcomp={}",
-				_presentAttemptCount, flags, (flags & DXGI_PRESENT_ALLOW_TEARING) != 0,
+				"VRR Present: count={} syncInterval={} flags=0x{:x} allowTearing={} requested={} tearingSupported={} dcomp={}",
+				_presentAttemptCount, syncInterval, flags, (flags & DXGI_PRESENT_ALLOW_TEARING) != 0,
 				presentVrrRequested, presentTearingSupported, _isDCompPresenting));
 		}
 		_lastSubmissionTime = std::chrono::steady_clock::now();
@@ -355,7 +359,7 @@ bool AdaptivePresenter::EndFrame(bool waitForGpu) noexcept {
 			_reflex->FrontendRender(_reflexFrameId, _reflexPresentId, false);
 			_reflex->Present(_reflexFrameId, _reflexPresentId, _reflexGenerated, true);
 		}
-		const HRESULT presentResult = _dxgiSwapChain->Present(0, flags);
+		const HRESULT presentResult = _dxgiSwapChain->Present(syncInterval, flags);
 		if (_reflexRendering) {
 			_reflex->Present(_reflexFrameId, _reflexPresentId, _reflexGenerated, false);
 			_reflexRendering = false;

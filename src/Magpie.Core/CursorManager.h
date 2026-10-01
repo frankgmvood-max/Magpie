@@ -73,6 +73,11 @@ private:
 
 	void _ClearHitTestResult() noexcept;
 
+	void _UpdateNativeMouseRegion() noexcept;
+	RECT _nativeMouseRegion{};
+	bool _nativeMouseRegionSet = false;
+	bool _nativeMouseRegionFailed = false;
+
 	void _UpdateCursorState() noexcept;
 	bool _UpdateParameterCursor() noexcept;
 

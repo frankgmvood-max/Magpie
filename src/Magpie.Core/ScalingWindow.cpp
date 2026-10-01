@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "VrrExperiment.h"
 #include "FrameTrace.h"
 #include "ScalingWindow.h"
 #include "CommonSharedConstants.h"
@@ -351,12 +352,13 @@ ScalingError ScalingWindow::_StartImpl(HWND hwndSrc) noexcept {
 			return ScalingError::SourceWindowUnresponsive;
 		}
 
-		const DWORD fullscreenExStyle =
-			WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP;
+		const DWORD fullscreenExStyle = WS_EX_NOREDIRECTIONBITMAP |
+			(VrrExperimentOpaque() ? 0u : WS_EX_LAYERED) |
+			(VrrExperimentForeground() ? 0u : WS_EX_NOACTIVATE);
 		Logger::Get().Info(fmt::format(
-			"VRR fullscreen HWND style: vrr={} exStyle=0x{:x} layered={} (safe input path)",
+			"VRR fullscreen HWND style: vrr={} exStyle=0x{:x} layered={} experimentMode={}",
 			_options.isVRREnabled, fullscreenExStyle,
-			(fullscreenExStyle & WS_EX_LAYERED) != 0));
+			(fullscreenExStyle & WS_EX_LAYERED) != 0, VrrExperimentMode()));
 
 		CreateWindowEx(
 			fullscreenExStyle,
@@ -812,7 +814,8 @@ LRESULT ScalingWindow::_MessageHandler(UINT msg, WPARAM wParam, LPARAM lParam) n
 		_currentDpi = GetDpiForWindow(Handle());
 
 		// 设置窗口不透明。不完全透明时可关闭 DirectFlip
-		if (!SetLayeredWindowAttributes(Handle(), 0, 255, LWA_ALPHA)) {
+		if ((GetWindowLongPtr(Handle(), GWL_EXSTYLE) & WS_EX_LAYERED) &&
+			!SetLayeredWindowAttributes(Handle(), 0, 255, LWA_ALPHA)) {
 			Logger::Get().Win32Error("SetLayeredWindowAttributes 失败");
 		}
 
@@ -978,6 +981,7 @@ LRESULT ScalingWindow::_MessageHandler(UINT msg, WPARAM wParam, LPARAM lParam) n
 		// 1、未捕获光标且缩放后的位置未被遮挡而缩放前的位置被遮挡
 		// 2、光标位于叠加层或黑边上
 		// 这时鼠标点击将激活源窗口
+		if (!_options.IsWindowedMode() && VrrExperimentSpectator()) return 0;
 		const HWND hwndForground = GetForegroundWindow();
 		if (_renderer && _renderer->IsEditingParameters()) return 0;
 		if (hwndForground != _srcTracker.Handle()) {
@@ -1040,7 +1044,7 @@ LRESULT ScalingWindow::_MessageHandler(UINT msg, WPARAM wParam, LPARAM lParam) n
 	case WM_MOUSEACTIVATE:
 	{
 		// 使得点击缩放窗口后关闭开始菜单能激活源窗口
-		return MA_NOACTIVATE;
+		return !_options.IsWindowedMode() && VrrExperimentForeground() ? MA_ACTIVATE : MA_NOACTIVATE;
 	}
 	// 调整大小时消息的顺序以及我们的处理如下:
 	//
@@ -1656,6 +1660,11 @@ void ScalingWindow::_Show() noexcept {
 		0, 0, 0, 0,
 		SWP_SHOWWINDOW | SWP_NO_ACTIVATE_MOVE_SIZE
 	);
+	if (!_options.IsWindowedMode() && VrrExperimentForeground()) {
+		const BOOL activated = SetForegroundWindow(Handle());
+		Logger::Get().Info(fmt::format("VRR foreground request: accepted={} actual={}",
+			activated != FALSE, GetForegroundWindow() == Handle()));
+	}
 	if (_options.isVRREnabled) {
 		Logger::Get().Info(fmt::format(
 			"VRR show state: visible={} foregroundScaling={} foregroundSource={} "
@@ -1742,7 +1751,8 @@ bool ScalingWindow::_UpdateSrcState(
 	if (_renderer) _renderer->UpdateParameterInputHost();
 	hwndFore = GetForegroundWindow();
 
-	if (hwndFore == Handle() && (!_renderer || _renderer->AllowAutomaticSourceFocus())) {
+	if (hwndFore == Handle() && !VrrExperimentForeground() &&
+		(!_renderer || _renderer->AllowAutomaticSourceFocus())) {
 		// 缩放窗口不应该得到焦点，我们通过 WS_EX_NOACTIVATE 样式和处理 WM_MOUSEACTIVATE
 		// 等消息来做到这一点。但如果由于某种我们尚未了解的机制这些手段都失败了，这里
 		// 进行纠正。
@@ -1836,6 +1846,7 @@ bool ScalingWindow::_UpdateSrcState(
 // 返回真表示应继续缩放
 bool ScalingWindow::_CheckForegroundFor3DGameMode(HWND hwndFore) const noexcept {
 	if (!hwndFore || hwndFore == _srcTracker.Handle() || IsParameterInputWindow(hwndFore) ||
+		(hwndFore == Handle() && VrrExperimentForeground()) ||
 		(hwndFore == Handle() && _renderer && _renderer->IsParameterFocusSettling())) {
 		return true;
 	}
@@ -2474,6 +2485,8 @@ winrt::fire_and_forget ScalingWindow::_UpdateFocusStateAsync() const noexcept {
 }
 
 bool ScalingWindow::_CalcTopmostState() const noexcept {
+	if (!_options.IsWindowedMode() && VrrExperimentForeground() &&
+		GetForegroundWindow() == Handle()) return true;
 	// 源窗口置顶时缩放窗口必须置顶
 	if (IsTopmostWindow(_srcTracker.Handle())) {
 		return true;

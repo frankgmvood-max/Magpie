@@ -44,13 +44,13 @@ public:
 			!_Resolve(_marker, "NvAPI_D3D_SetLatencyMarker") ||
 			!_Resolve(_async11, "NvAPI_D3D11_SetAsyncFrameMarker") ||
 			!_Resolve(_async12, "NvAPI_D3D12_SetAsyncFrameMarker") ||
-			!_Resolve(_outOfBand, "NvAPI_D3D12_NotifyOutOfBandCommandQueue") ||
-			!_Resolve(_getObjectHandle, "NvAPI_D3D_GetObjectHandleForResource") ||
-			!_Resolve(_isGsyncCapable, "NvAPI_D3D_IsGSyncCapable") ||
-			!_Resolve(_isGsyncActive, "NvAPI_D3D_IsGSyncActive")) {
+			!_Resolve(_outOfBand, "NvAPI_D3D12_NotifyOutOfBandCommandQueue")) {
 			ReportFailure("resolve native Reflex interfaces (D3D11 async markers require R565+)", NVAPI_NO_IMPLEMENTATION);
 			return false;
 		}
+		_Resolve(_getObjectHandle, "NvAPI_D3D_GetObjectHandleForResource");
+		_Resolve(_isGsyncCapable, "NvAPI_D3D_IsGSyncCapable");
+		_Resolve(_isGsyncActive, "NvAPI_D3D_IsGSyncActive");
 		const NvAPI_Status status = _initialize();
 		_initialized = status == NVAPI_OK;
 		if (!_initialized) ReportFailure("NvAPI_Initialize", status);

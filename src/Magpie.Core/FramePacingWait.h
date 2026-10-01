@@ -7,7 +7,7 @@ namespace Magpie {
 // Return to the caller on messages; do not dispatch them inside a render
 // operation or keep a shared-resource mutex locked across this wait.
 inline void WaitForFramePacing(std::chrono::nanoseconds remaining,
-	wil::unique_handle& timer, HANDLE event = nullptr) noexcept {
+	wil::unique_handle& timer, HANDLE event = nullptr, bool precise = false) noexcept {
 	if (remaining.count() <= 0) return;
 	if (!timer) {
 		timer.reset(CreateWaitableTimerExW(nullptr, nullptr,
@@ -15,7 +15,21 @@ inline void WaitForFramePacing(std::chrono::nanoseconds remaining,
 		if (!timer) timer.reset(CreateWaitableTimerExW(nullptr, nullptr, 0,
 			TIMER_MODIFY_STATE | SYNCHRONIZE));
 	}
-	LARGE_INTEGER due{ .QuadPart = -std::max<int64_t>(1, (remaining.count() + 99) / 100) };
+	// Only the fixed-rate frontend uses a short precision tail. Keep message and
+	// cancellation processing outside rendering and shared-resource transactions.
+	const auto deadline = std::chrono::steady_clock::now() + remaining;
+	const auto tail = precise ? std::chrono::nanoseconds(std::chrono::microseconds(200)) : std::chrono::nanoseconds::zero();
+	const auto coarse = std::max(remaining - tail, std::chrono::nanoseconds::zero());
+	if (coarse.count() == 0) {
+		while (std::chrono::steady_clock::now() < deadline) {
+			MSG message{};
+			if (PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE) ||
+				(event && WaitForSingleObject(event, 0) == WAIT_OBJECT_0)) return;
+			YieldProcessor();
+		}
+		return;
+	}
+	LARGE_INTEGER due{ .QuadPart = -std::max<int64_t>(1, (coarse.count() + 99) / 100) };
 	if (timer && SetWaitableTimerEx(timer.get(), &due, 0, nullptr, nullptr, nullptr, 0)) {
 		HANDLE handles[]{timer.get(), event};
 		MsgWaitForMultipleObjectsEx(event ? 2 : 1, handles, INFINITE,

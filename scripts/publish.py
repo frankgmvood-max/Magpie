@@ -3,6 +3,7 @@ import os
 import subprocess
 import glob
 import argparse
+import shutil
 
 try:
     # https://docs.github.com/en/actions/learn-github-actions/variables
@@ -79,6 +80,8 @@ if p.returncode != 0:
 #####################################################################
 
 os.chdir("publish\\" + args.platform)
+for experiment_file in glob.glob(os.path.join("..", "..", "scripts", "vrr-experiment", "*")):
+    shutil.copy2(experiment_file, ".")
 
 
 # 删除文件，忽略错误

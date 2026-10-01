@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "VrrExperiment.h"
 #include "DlssnrAutoHdr.h"
 #include "DLSSNRParameters.h"
 #include "RTXVideoParameters.h"
@@ -462,9 +463,11 @@ ScalingError Renderer::Initialize(HWND hwndAttach, OverlayOptions& overlayOption
 	const bool ordinaryReflex = !frameGeneration.HasFrameGeneration() &&
 		pacingOptions.isFrontEdgeSyncEnabled && pacingOptions.frameSyncMode == FrameSyncMode::Reflex &&
 		!pacingOptions.IsBenchmarkMode();
-	if ((frameGeneration.first == FrameGenerationEffectKind::DLSS || ordinaryReflex) &&
+	if ((frameGeneration.first == FrameGenerationEffectKind::DLSS || ordinaryReflex || VrrExperimentMode()) &&
 		_presenter->UsesFrameLatencyWaitableObject()) {
-		_reflex.Initialize(CreateNvReflexDriver(_frontendResources.GetD3DDevice()));
+		_reflex.Initialize(CreateNvReflexDriver(_frontendResources.GetD3DDevice()),
+			ReflexSettings{ .lowLatency = VrrExperimentMode() == 0 });
+		if (VrrExperimentMode()) _reflex.Stop(); // Keep only QueryGSync; no Sleep or async markers.
 		_presenter->SetReflexController(&_reflex);
 	} else if (frameGeneration.first == FrameGenerationEffectKind::DLSS) {
 		Logger::Get().Info("DLSSFG Reflex: DXGI presentation required; enable DirectFlip to use Reflex");
@@ -1048,7 +1051,8 @@ bool Renderer::_FrontendRender(
 		.overlayRevision = overlayActionRevision,
 		.contentKey = _lastAccessMutexKeys[sharedTextureSlot]
 	};
-	if (paced) _frontendResources.GetD3DDC()->Flush();
+	if (paced || (VrrExperimentFixedRate() > 0 && contentFrame))
+		_frontendResources.GetD3DDC()->Flush();
 	const bool submitted = _SubmitFrontendFrame();
 	if (timings) timings->endFrame = std::chrono::steady_clock::now() - endFrameStart;
 	return submitted;
@@ -1058,6 +1062,11 @@ bool Renderer::_SubmitFrontendFrame() noexcept {
 	assert(_pendingFrontendFrame);
 	const auto frame = *_pendingFrontendFrame;
 	const auto submitStart = std::chrono::steady_clock::now();
+	if (VrrExperimentFixedRate() > 0 && frame.contentFrame && _dlssFixedPresentDeadline &&
+		submitStart < *_dlssFixedPresentDeadline) {
+		_frontendPacingDeadline = *_dlssFixedPresentDeadline;
+		return false;
+	}
 	if (frame.paced && _presenter->SupportsDeferredPresent() &&
 		!ScalingWindow::Get().IsResizingOrMoving()) {
 		const auto due = _frontEdgeClock.Due(submitStart);
@@ -1299,7 +1308,8 @@ void Renderer::WaitForFrontendWork(std::chrono::nanoseconds maximumWait) noexcep
 		const auto remaining = *_frontendPacingDeadline - std::chrono::steady_clock::now();
 		if (remaining <= std::chrono::nanoseconds::zero()) return;
 		WaitForFramePacing(std::min(remaining, std::max(maximumWait,
-			std::chrono::nanoseconds(std::chrono::milliseconds(8)))), _frontendPacingTimer);
+			std::chrono::nanoseconds(std::chrono::milliseconds(8)))), _frontendPacingTimer, nullptr,
+			VrrExperimentFixedRate() > 0);
 	} else {
 		const DWORD ms = static_cast<DWORD>(std::max<int64_t>(0,
 			(maximumWait.count() + 999'999) / 1'000'000));
@@ -1435,10 +1445,12 @@ DLSSFGFrameRenderResult Renderer::RenderDLSSFGFrame(
 	}
 
 	const auto pacingStart = std::chrono::steady_clock::now();
-	const std::chrono::nanoseconds presentInterval(
-		_sharedPresentIntervalNs[sharedTextureSlot].load(std::memory_order_acquire));
+	const double fixedRate = VrrExperimentFixedRate();
+	const std::chrono::nanoseconds presentInterval = fixedRate > 0 ?
+		std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(1.0 / fixedRate)) :
+		std::chrono::nanoseconds(_sharedPresentIntervalNs[sharedTextureSlot].load(std::memory_order_acquire));
 	const auto targetTime = _presentationClock.Due(pacingStart, presentInterval);
-	if (presentInterval.count() > 0 && pacingStart < targetTime) {
+	if (fixedRate <= 0 && presentInterval.count() > 0 && pacingStart < targetTime) {
 		// The scheduler will wake on either input or the next short deadline. Do
 		// not sleep in a FIFO job and make already queued input wait behind it.
 		retry = true;
@@ -1447,6 +1459,7 @@ DLSSFGFrameRenderResult Renderer::RenderDLSSFGFrame(
 		return DLSSFGFrameRenderResult::Retry;
 	}
 
+	_dlssFixedPresentDeadline = fixedRate > 0 ? std::optional(targetTime) : std::nullopt;
 	FrontendRenderTimings timings;
 	bool droppedFrame = false;
 	const bool presented = _FrontendRender(
@@ -1463,11 +1476,14 @@ DLSSFGFrameRenderResult Renderer::RenderDLSSFGFrame(
 	}
 	if (!presented) {
 		retry = true;
-		waitReason = timings.capacityBusy ? PresentationJobTiming::Wait::Capacity : PresentationJobTiming::Wait::Resource;
+		waitReason = _frontendPacingDeadline ? PresentationJobTiming::Wait::Deadline :
+			(timings.capacityBusy ? PresentationJobTiming::Wait::Capacity : PresentationJobTiming::Wait::Resource);
 		return DLSSFGFrameRenderResult::Retry;
 	}
 	const auto presentEnd = std::chrono::steady_clock::now();
-	_presentationClock.Presented(presentEnd, targetTime, presentInterval);
+	if (fixedRate > 0) _presentationClock.PresentedUniform(presentEnd, targetTime, presentInterval);
+	else _presentationClock.Presented(presentEnd, targetTime, presentInterval);
+	_dlssFixedPresentDeadline.reset();
 	consumePendingFrame();
 	if (_sharedTextureAvailableEvents[sharedTextureSlot]) {
 		SetEvent(_sharedTextureAvailableEvents[sharedTextureSlot].get());
@@ -1487,6 +1503,8 @@ bool Renderer::OnResize() noexcept {
 	_pendingFrontendFrame.reset();
 	_frontendPacingDeadline.reset();
 	_frontEdgeClock.Reset();
+	_dlssFixedPresentDeadline.reset();
+	_presentationClock.Reset();
 	_UpdateOverlayRefreshRate();
 	_synchronousFramePresentationEnabled.store(false, std::memory_order_release);
 
@@ -3060,6 +3078,12 @@ void Renderer::_UpdateFrameRateLimits() noexcept {
 	const bool useFrameGeneration = std::ranges::any_of(
 		_runtimeEffectOptions,
 		[](const EffectOption& effect) { return IsFrameGenerationEffect(effect.name); });
+	if (useFrameGeneration && VrrExperimentFixedRate() > 0) {
+		const float fixedBase = float(VrrExperimentFixedRate() / std::max(_configuredFrameGenerationMultiplier, 1u));
+		if (!maxFrameRate || fixedBase < *maxFrameRate) maxFrameRate = fixedBase;
+		Logger::Get().Info(fmt::format("VRR fixed presentation: outputTarget={:.3f} FPS baseLimit={:.3f} FPS",
+			VrrExperimentFixedRate(), maxFrameRate.value_or(fixedBase)));
+	}
 	_existingBaseFrameRateLimit.store(maxFrameRate.value_or(0.0f), std::memory_order_release);
 	const float minFrameRate = useFrameGeneration ? 0.0f :
 		(options.IsBenchmarkMode() ? std::numeric_limits<float>::max() :
