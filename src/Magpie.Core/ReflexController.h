@@ -6,6 +6,7 @@
 #include <mutex>
 
 struct ID3D11Device;
+struct ID3D11Resource;
 struct ID3D12CommandQueue;
 
 namespace Magpie {
@@ -23,6 +24,15 @@ struct ReflexConfigurationResult {
 	int queryStatus = 0;
 	bool queried = false;
 	bool lowLatency = false;
+};
+
+struct GSyncQueryResult {
+	int handleStatus = -1;
+	int capableStatus = -1;
+	int activeStatus = -1;
+	bool queried = false;
+	bool capable = false;
+	bool active = false;
 };
 
 struct ReflexSettings {
@@ -45,6 +55,7 @@ public:
 		uint64_t presentId, bool start) noexcept = 0;
 	virtual int FrontendRender(uint64_t frameId, uint64_t presentId, bool start) noexcept = 0;
 	virtual int Present(uint64_t frameId, uint64_t presentId, bool generated, bool start) noexcept = 0;
+	virtual GSyncQueryResult QueryGSync(ID3D11Resource*) noexcept { return {}; }
 	virtual void ReportFailure(const char* operation, int status) noexcept = 0;
 };
 
@@ -142,6 +153,9 @@ public:
 	void Present(uint64_t frameId, uint64_t presentId, bool generated, bool start) noexcept {
 		if (frameId && presentId && _Usable())
 			_Check("D3D11 async present marker", _driver->Present(frameId, presentId, generated, start));
+	}
+	GSyncQueryResult QueryGSync(ID3D11Resource* primarySurface) noexcept {
+		return _driver && primarySurface ? _driver->QueryGSync(primarySurface) : GSyncQueryResult{};
 	}
 
 private:
