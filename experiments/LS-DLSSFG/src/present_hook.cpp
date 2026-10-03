@@ -28,7 +28,7 @@ std::atomic<unsigned> g_hits{ 0 };
 thread_local int t_nesting = 0;
 
 // Only the outermost present on a thread runs the callback, so a present made inside it (or by a hook we call on to) does not run it again.
-HRESULT Before(IDXGISwapChain* sc, UINT sync, UINT flags, bool& handled) {
+HRESULT Before(IDXGISwapChain* sc, UINT& sync, UINT& flags, bool& handled) {
     g_hits.fetch_add(1, std::memory_order_relaxed);
     if (t_nesting == 1 && !(flags & DXGI_PRESENT_TEST))
         if (const PresentHook::Callback cb = g_callback.load(std::memory_order_acquire)) return cb(sc, sync, flags, handled);

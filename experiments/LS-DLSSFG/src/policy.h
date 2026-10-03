@@ -41,4 +41,16 @@ inline bool SafePresent(unsigned sync, unsigned flags) {
     constexpr unsigned allowed = 0x200; // DXGI_PRESENT_ALLOW_TEARING
     return sync <= 1 && (flags & ~allowed) == 0;
 }
+struct PresentMode {
+    unsigned sync, flags;
+    bool vrrRequested;
+};
+inline PresentMode ChoosePresent(unsigned sync, unsigned flags, bool preferVRR,
+                                 bool tearingChain, bool windowed) {
+    // ALLOW_TEARING is legal only on a chain created with that flag, with
+    // sync=0 and outside fullscreen exclusive. It cannot be added by resizing.
+    if (preferVRR && tearingChain && windowed && SafePresent(sync, flags))
+        return {0, flags | 0x200, true};
+    return {sync, flags, false};
+}
 }

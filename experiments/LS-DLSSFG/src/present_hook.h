@@ -8,7 +8,8 @@ namespace PresentHook {
     using LogFn = std::function<void(const char*)>;
     // Called before the original Present, on the presenting thread, with that present's sync interval and flags. Not called for a
     // DXGI_PRESENT_TEST present.
-    using Callback = HRESULT (*)(IDXGISwapChain* sc, UINT sync, UINT flags, bool& handled);
+    // Reference arguments also update the outer real-frame Present/Present1.
+    using Callback = HRESULT (*)(IDXGISwapChain* sc, UINT& sync, UINT& flags, bool& handled);
     bool Install(IDXGISwapChain* chain, Callback cb, LogFn log);
     void Uninstall();
     bool Installed();

@@ -29,5 +29,17 @@ int main() {
     Check(!fg::SafePresent(0, 1), "test present rejected");
     Check(!fg::SafePresent(0, 8), "nonblocking present rejected");
     Check(!fg::SafePresent(2, 0), "multi-vblank rejected");
+    auto mode=fg::ChoosePresent(1,0,true,true,true);
+    Check(mode.vrrRequested && mode.sync==0 && mode.flags==0x200,"VRR replaces vblank sync on eligible output");
+    mode=fg::ChoosePresent(0,0x200,true,true,true);
+    Check(mode.sync==0 && mode.flags==0x200,"existing tearing remains legal");
+    for(const auto& m:{fg::ChoosePresent(1,0,true,false,true),
+                       fg::ChoosePresent(1,0,true,true,false),
+                       fg::ChoosePresent(1,0,false,true,true)})
+        Check(!m.vrrRequested && m.sync==1 && m.flags==0,"ineligible or disabled VRR preserves LS");
+    mode=fg::ChoosePresent(0,1,true,true,true);
+    Check(!mode.vrrRequested && mode.flags==1,"TEST never converted to a displaying present");
+    mode=fg::ChoosePresent(0,8,true,true,true);
+    Check(!mode.vrrRequested && mode.flags==8,"DO_NOT_WAIT contract preserved");
     std::puts("presentation policy passed");
 }
