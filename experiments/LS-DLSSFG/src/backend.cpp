@@ -50,7 +50,7 @@ struct Backend::State {
     ComPtr<ID3D12GraphicsCommandList> cmd;
     ComPtr<ID3D11Texture2D> input11, output11;
     ComPtr<ID3D12Resource> input12, output12, motion, depth, disable, readback;
-    ComPtr<ID3D12DescriptorHeap> heap;
+    ComPtr<ID3D12DescriptorHeap> heap, cpuHeap;
     ComPtr<ID3D11Fence> in11, out11;
     ComPtr<ID3D12Fence> in12, out12;
     HANDLE event = nullptr;
@@ -99,12 +99,15 @@ struct Backend::State {
         D3D12_HEAP_PROPERTIES h{}; h.Type=D3D12_HEAP_TYPE_DEFAULT;
         if (FAILED(d12->CreateCommittedResource(&h, D3D12_HEAP_FLAG_NONE, &r,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&dst)))) return false;
-        auto cpu=heap->GetCPUDescriptorHandleForHeapStart();
+        auto cpu=cpuHeap->GetCPUDescriptorHandleForHeapStart();
+        auto visibleCpu=heap->GetCPUDescriptorHandleForHeapStart();
         auto gpu=heap->GetGPUDescriptorHandleForHeapStart();
         const unsigned stride=d12->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        cpu.ptr+=index*stride; gpu.ptr+=index*stride;
+        cpu.ptr+=index*stride; visibleCpu.ptr+=index*stride; gpu.ptr+=index*stride;
         D3D12_UNORDERED_ACCESS_VIEW_DESC u{}; u.Format=format; u.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D;
         d12->CreateUnorderedAccessView(dst.Get(), nullptr, &u, cpu);
+        // ClearUAV requires its CPU descriptor in a NON shader-visible heap.
+        d12->CopyDescriptorsSimple(1,visibleCpu,cpu,D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         const float zeros[4]{}; cmd->ClearUnorderedAccessViewFloat(gpu,cpu,dst.Get(),zeros,0,nullptr);
         auto barrier=Transition(dst.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         cmd->ResourceBarrier(1,&barrier); return true;
@@ -147,6 +150,8 @@ bool Backend::Init(ID3D11Device* dev, const D3D11_TEXTURE2D_DESC& desc,
     D3D12_DESCRIPTOR_HEAP_DESC hd{}; hd.Type=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     hd.NumDescriptors=2; hd.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(s.d12->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&s.heap)))) return s.Error("descriptor heap");
+    hd.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    if (FAILED(s.d12->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&s.cpuHeap)))) return s.Error("CPU descriptor heap");
     ID3D12DescriptorHeap* heaps[]={s.heap.Get()}; s.cmd->SetDescriptorHeaps(1,heaps);
     if (!s.ZeroTexture(DXGI_FORMAT_R16G16_FLOAT,0,s.motion) || !s.ZeroTexture(DXGI_FORMAT_R32_FLOAT,1,s.depth)) return s.Error("virtual guidance");
     D3D12_RESOURCE_DESC br{}; br.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;

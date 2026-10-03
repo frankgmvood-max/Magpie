@@ -3,11 +3,20 @@
 #include <cstdio>
 #include <vector>
 #include <cstdlib>
+#include <d3d11.h>
+#include <dxgi1_2.h>
+#include <wrl/client.h>
+#include <filesystem>
+#include <fstream>
+#include <string>
+using Microsoft::WRL::ComPtr;
 struct Host final : IHost {
     struct Subscription {uint32_t event;EamEventCallback cb;void* data;};
     std::vector<Subscription> subscriptions;
     EamPostDispatchCallback post=nullptr;void* postData=nullptr;int statuses=0,logs=0;
-    void Log(EamLogLevel,const char*) override {++logs;}
+    ID3D11Device* device=nullptr;ID3D11DeviceContext* context=nullptr;
+    bool rejectedSoftware=false;
+    void Log(EamLogLevel,const char* text) override {++logs;if(std::string(text).find("LS output adapter is not NVIDIA")!=std::string::npos)rejectedSoftware=true;}
     const char* GetConfig(const char*,const char*,const char* d) override {return d;}
     void SetConfig(const char*,const char*,const char*) override {}
     void SaveConfig() override {}
@@ -21,22 +30,27 @@ struct Host final : IHost {
     void PublishEvent(uint32_t e,const void* d,uint32_t size) override {
         const auto copy=subscriptions;for(const auto& x:copy) if(x.event==e) x.cb(e,d,size,x.data);
     }
-    void* GetD3D11Device() override {return nullptr;}
-    void* GetD3D11DeviceContext() override {return nullptr;}
+    void* GetD3D11Device() override {return device;}
+    void* GetD3D11DeviceContext() override {return context;}
     void SetPreDispatchCallback(EamPreDispatchCallback,void*) override {}
     void SetPostDispatchCallback(EamPostDispatchCallback cb,void* d) override {post=cb;postData=d;}
     void* GetCurrentComputeShader() override {return nullptr;}
     uint32_t GetDispatchCount() override {return 0;}
     void SetStatus(const char*,const char*,int) override {++statuses;}
     void PublishMetric(const char*,const char*,double,const char*) override {}
-    void* GetDispatchingContext() override {return nullptr;}
+    void* GetDispatchingContext() override {return context;}
     void* CreateImage(const void*,uint32_t,uint32_t,uint32_t) override {return nullptr;}
     void ReleaseImage(void*) override {}
 };
 void Check(bool ok,const char* message) {if(!ok){std::fprintf(stderr,"%s\n",message);std::exit(1);}}
 int main(int argc,char** argv) {
     Check(argc==2,"supply addon DLL path");
-    HMODULE dll=LoadLibraryA(argv[1]);Check(dll!=nullptr,"DLL cannot load / missing dependency");
+    wchar_t temp[MAX_PATH]{}, file[MAX_PATH]{};
+    Check(GetTempPathW(MAX_PATH,temp)!=0 && GetTempFileNameW(temp,L"lfg",0,file)!=0,"temporary test path");
+    DeleteFileW(file);Check(CreateDirectoryW(file,nullptr)!=FALSE,"temporary test folder");
+    const std::filesystem::path folder(file),dllPath=folder/L"LS_DLSSFG.dll";
+    std::filesystem::copy_file(argv[1],dllPath);
+    HMODULE dll=LoadLibraryW(dllPath.c_str());Check(dll!=nullptr,"DLL cannot load / missing dependency");
     auto init=reinterpret_cast<AddonInit_t>(GetProcAddress(dll,"AddonInitialize"));
     auto stop=reinterpret_cast<AddonShutdown_t>(GetProcAddress(dll,"AddonShutdown"));
     auto caps=reinterpret_cast<GetAddonCaps_t>(GetProcAddress(dll,"GetAddonCapabilities"));
@@ -55,5 +69,43 @@ int main(int argc,char** argv) {
         Check(host.subscriptions.empty() && host.post==nullptr,"callbacks remained after shutdown");
     }
     Check(host.logs>=3,"host log not used");
-    FreeLibrary(dll);std::puts("addon ABI/lifecycle passed");
+    // Exercise the actual DXGI hook and output selection on the software GPU.
+    // A valid tagged output must fail NGX eligibility without breaking Present.
+    std::ofstream(folder/L"LS_DLSSFG.ini")<<"[FrameGeneration]\nNativeLSFGDisabled=1\nTargetFPS=136\n";
+    std::filesystem::create_directory(folder/L"runtime");
+    std::ofstream(folder/L"runtime"/L"nvngx_dlssg.dll"); // never loaded on WARP
+    ComPtr<ID3D11Device> device;ComPtr<ID3D11DeviceContext> context;
+    Check(SUCCEEDED(D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_WARP,nullptr,0,nullptr,0,D3D11_SDK_VERSION,&device,nullptr,&context)),"create software device");
+    WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"LSFGSmoke";
+    RegisterClassW(&wc);
+    HWND window=CreateWindowW(wc.lpszClassName,L"LS test",WS_POPUP,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);
+    Check(window!=nullptr,"create test window");
+    ComPtr<IDXGIDevice> dx;ComPtr<IDXGIAdapter> adapter;ComPtr<IDXGIFactory2> factory;
+    Check(SUCCEEDED(device.As(&dx)) && SUCCEEDED(dx->GetAdapter(&adapter)) && SUCCEEDED(adapter->GetParent(IID_PPV_ARGS(&factory))),"software DXGI factory");
+    DXGI_SWAP_CHAIN_DESC1 desc{};desc.Width=64;desc.Height=64;desc.Format=DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count=1;desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT|DXGI_USAGE_UNORDERED_ACCESS;
+    desc.BufferCount=2;desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    ComPtr<IDXGISwapChain1> chain;
+    Check(SUCCEEDED(factory->CreateSwapChainForHwnd(device.Get(),window,&desc,nullptr,nullptr,&chain)),"create flip swapchain");
+    host.device=device.Get();host.context=context.Get();init(&host,nullptr,nullptr,nullptr,nullptr);
+    Check(SUCCEEDED(chain->Present(0,0)),"untagged/UI present pass-through");
+    Check(!host.rejectedSoftware,"untagged swapchain was processed");
+    ComPtr<ID3D11Texture2D> back;ComPtr<ID3D11UnorderedAccessView> uav;
+    Check(SUCCEEDED(chain->GetBuffer(0,IID_PPV_ARGS(&back))) && SUCCEEDED(device->CreateUnorderedAccessView(back.Get(),nullptr,&uav)),"output UAV");
+    ID3D11UnorderedAccessView* view=uav.Get();context->CSSetUnorderedAccessViews(0,1,&view,nullptr);
+    host.post(1,1,1,host.postData);
+    const GUID tagGuid={0x396afbe7,0xe6cf,0x4174,{0xa2,0x8b,0xb1,0x89,0xc9,0xdc,0xf8,0x40}};
+    uint64_t tag=0;UINT size=sizeof tag;
+    Check(SUCCEEDED(chain->GetPrivateData(tagGuid,&size,&tag)) && tag!=0,"compute output tagging failed");
+    Check(SUCCEEDED(chain->Present(0,DXGI_PRESENT_TEST)),"TEST present pass-through");
+    Check(!host.rejectedSoftware,"TEST present invoked FG");
+    Check(SUCCEEDED(chain->Present(0,0)),"FG failure broke original Present");
+    Check(host.rejectedSoftware,"tagged output did not reach adapter eligibility check");
+    Check(SUCCEEDED(chain->Present(0,0)),"disabled addon broke subsequent presents");
+    stop();Check(host.subscriptions.empty() && !host.post,"GPU callbacks remained after shutdown");
+    context->ClearState();context->Flush();back.Reset();uav.Reset();chain.Reset();DestroyWindow(window);
+    FreeLibrary(dll);
+    // Hook pins the DLL until exit. Other temporary files can be removed now.
+    std::filesystem::remove(folder/L"LS_DLSSFG.ini");std::filesystem::remove_all(folder/L"runtime");
+    std::puts("addon ABI, lifecycle, output selection and WARP failure fallback passed");
 }
