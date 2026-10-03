@@ -1,0 +1,49 @@
+name: LS DLSS FG addon
+on:
+  workflow_dispatch:
+  push:
+    paths: ['experiments/LS-DLSSFG/**', '.github/workflows/ls-dlssfg.yml']
+  pull_request:
+    paths: ['experiments/LS-DLSSFG/**', '.github/workflows/ls-dlssfg.yml']
+permissions:
+  contents: read
+jobs:
+  addon:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned manager SDK
+        uses: actions/checkout@v4
+        with:
+          repository: Echo-Storm/ls-addon-manager
+          ref: fbcc3c179e4052785c032d157d8eb785608eb28e
+          path: dependencies/eam
+          persist-credentials: false
+      - name: Fetch pinned NGX SDK
+        uses: actions/checkout@v4
+        with:
+          repository: NVIDIA/DLSS
+          ref: 374959484e79a640feaba44c93ac8cfb0a03f5b5
+          path: dependencies/dlss
+          persist-credentials: false
+      - name: Configure
+        run: cmake -S experiments/LS-DLSSFG -B out/ls-fg -A x64 -DEAM_ROOT="${{ github.workspace }}/dependencies/eam" -DNGX_ROOT="${{ github.workspace }}/dependencies/dlss"
+      - name: Build x64 DLL
+        run: cmake --build out/ls-fg --config Release --parallel
+      - name: Test ABI, lifecycle and presentation policy
+        run: ctest --test-dir out/ls-fg -C Release --output-on-failure
+      - name: Package
+        shell: pwsh
+        run: |
+          cmake --install out/ls-fg --config Release --prefix out/package
+          if ($LASTEXITCODE) { throw 'Package install failed' }
+          Copy-Item dependencies/dlss/LICENSE.txt out/package/addons/LS_DLSSFG/NVIDIA-LICENSE.txt
+          git rev-parse HEAD | Set-Content out/package/addons/LS_DLSSFG/build-commit.txt
+          Copy-Item experiments/LS-DLSSFG/package out/package/addons/LS_DLSSFG/source/package -Recurse
+          Copy-Item experiments/LS-DLSSFG/README-RU.md,experiments/LS-DLSSFG/NOTICE.md,experiments/LS-DLSSFG/LICENSE,experiments/LS-DLSSFG/LICENSE-EAM out/package/addons/LS_DLSSFG/source
+          Get-FileHash out/package/addons/LS_DLSSFG/LS_DLSSFG.dll -Algorithm SHA256 | Format-List | Out-File out/package/addons/LS_DLSSFG/SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LS-DLSSFG-x64-${{ github.sha }}
+          path: out/package
+          if-no-files-found: error
