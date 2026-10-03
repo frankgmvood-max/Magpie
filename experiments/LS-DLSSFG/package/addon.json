@@ -1,6 +1,6 @@
 {
   "name": "DLSS Frame Generation (experimental)",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "Magpie experiments",
   "description": "DLSS FG x2 on Lossless Scaling output. Native LSFG must be OFF. Keeps the LS window and input path.",
   "min_host_version": "1.1.0",

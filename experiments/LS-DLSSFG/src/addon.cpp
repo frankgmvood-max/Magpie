@@ -8,6 +8,8 @@
 #include <mutex>
 #include <atomic>
 #include <cstdio>
+#include <stdexcept>
+#include <shlwapi.h>
 
 using Microsoft::WRL::ComPtr;
 namespace {
@@ -25,8 +27,39 @@ uint64_t epoch=1, statusAt=0, generated=0, baseFrames=0;
 UINT width=0,height=0;
 DXGI_FORMAT format=DXGI_FORMAT_UNKNOWN;
 HANDLE timer=nullptr;
-bool armed=false, disabled=false, resetHistory=true;
+bool armed=false, disabled=false, resetHistory=true, callbacksReady=false;
 double targetFps=136;
+const char* volatile startupStage="not_started";
+
+// Win32-only breadcrumbs survive faults in the host ABI or C++ initialization.
+// They do not depend on IHost, the GPU, writable Steam folders, or C++ locks.
+void StartupTrace(const char* message) {
+    OutputDebugStringA(message); OutputDebugStringA("\n");
+    wchar_t base[MAX_PATH]{},folder[MAX_PATH]{},path[MAX_PATH]{};
+    const DWORD length=GetEnvironmentVariableW(L"LOCALAPPDATA",base,MAX_PATH);
+    if(!length || length>=MAX_PATH || !PathCombineW(folder,base,L"LS-DLSSFG")) return;
+    CreateDirectoryW(folder,nullptr);
+    if(!PathCombineW(path,folder,L"startup.log")) return;
+    HANDLE file=CreateFileW(path,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(file==INVALID_HANDLE_VALUE) return;
+    SYSTEMTIME now{};GetLocalTime(&now);
+    char line[768];const int n=std::snprintf(line,sizeof line,"%04u-%02u-%02u %02u:%02u:%02u pid=%lu v0.1.1 %s\r\n",
+        now.wYear,now.wMonth,now.wDay,now.wHour,now.wMinute,now.wSecond,GetCurrentProcessId(),message);
+    DWORD written=0;if(n>0 && n<int(sizeof line)) WriteFile(file,line,DWORD(n),&written,nullptr);
+    CloseHandle(file);
+}
+void StartupStep(const char* step) {startupStage=step;StartupTrace(step);}
+LONG StartupFault(EXCEPTION_POINTERS* fault) {
+    char message[512];
+    const auto* record=fault->ExceptionRecord;
+    std::snprintf(message,sizeof message,"fault stage=%s code=0x%08lx address=%p detail=%llu:%llu",
+        startupStage,record->ExceptionCode,record->ExceptionAddress,
+        record->NumberParameters>0?static_cast<unsigned long long>(record->ExceptionInformation[0]):0,
+        record->NumberParameters>1?static_cast<unsigned long long>(record->ExceptionInformation[1]):0);
+    StartupTrace(message);
+    // Preserve the manager's Faulted indication instead of hiding a failed init.
+    return EXCEPTION_CONTINUE_SEARCH;
+}
 
 double Now() { LARGE_INTEGER n{}, f{}; QueryPerformanceCounter(&n); QueryPerformanceFrequency(&f); return double(n.QuadPart)/f.QuadPart; }
 void Log(const char* text) { if(host) host->Log(EAM_LOG_INFO,text); }
@@ -45,7 +78,9 @@ void Settings() {
     targetFps=GetPrivateProfileIntW(L"FrameGeneration",L"TargetFPS",136,ini.c_str());
     if (targetFps!=0 && (targetFps<30 || targetFps>240)) targetFps=136;
     disabled=false; Reset(); ++epoch;
-    if(host) host->SetStatus(id,armed?"Ready; waiting for LS output compute pass":"Disable native LSFG, then run Activate-136FPS.cmd",armed?0:2);
+}
+void SettingsStatus(IHost* h) {
+    h->SetStatus(id,armed?"Ready; waiting for LS output compute pass":"Disable native LSFG, then run Activate-136FPS.cmd",armed?0:2);
 }
 void WaitUntil(double due) {
     double left=due-Now();
@@ -60,7 +95,7 @@ void WaitUntil(double due) {
 }
 HRESULT OnPresent(IDXGISwapChain* sc,UINT sync,UINT flags,bool& handled) {
     std::lock_guard<std::mutex> lock(mutex);
-    if(!host || !armed || disabled || !fg::SafePresent(sync,flags)) return S_OK;
+    if(!callbacksReady || !host || !armed || disabled || !fg::SafePresent(sync,flags)) return S_OK;
     uint64_t tag=0; UINT size=sizeof tag;
     // Only a swap chain actually written by an LS compute pass is eligible.
     // Manager/UI swap chains never acquire this tag, even when maximized.
@@ -141,7 +176,7 @@ void Install(ID3D11Device* d) {
 }
 void PostDispatch(uint32_t,uint32_t,uint32_t,void*) {
     std::lock_guard<std::mutex> lock(mutex);
-    if(!host || !armed || disabled) return;
+    if(!callbacksReady || !host || !armed || disabled) return;
     auto* ctx=static_cast<ID3D11DeviceContext*>(host->GetDispatchingContext());
     if(!ctx) return;
     // This pass writes a backbuffer through a UAV. Querying its surface parent
@@ -160,40 +195,65 @@ void PostDispatch(uint32_t,uint32_t,uint32_t,void*) {
 }
 void Event(uint32_t event,const void*,uint32_t,void*) {
     std::lock_guard<std::mutex> lock(mutex);
-    if(!host) return;
+    if(!callbacksReady || !host) return;
     if(event==EAM_EVENT_D3D11_DEVICE_CHANGED) {Reset();++epoch;disabled=false;}
-    if(event==EAM_EVENT_D3D11_DEVICE_READY && armed) Install(static_cast<ID3D11Device*>(host->GetD3D11Device()));
-    if(event==EAM_EVENT_SETTINGS_APPLIED) Settings();
+    // DEVICE_READY supplies no owned device. Hook only from a live compute pass.
+    if(event==EAM_EVENT_SETTINGS_APPLIED) {Settings();SettingsStatus(host);}
+}
+void Initialize(IHost* h) {
+    StartupStep("host_api");
+    if(!h || h->GetHostVersion()<0x010100) return;
+    StartupStep("local_state");
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if(host) return; // manager initialization must be idempotent
+        host=h;callbacksReady=false;
+        HMODULE self=nullptr;
+        if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(&Initialize),&self)) throw std::runtime_error("Cannot locate addon module");
+        wchar_t path[32768]{};
+        const DWORD length=GetModuleFileNameW(self,path,32768);
+        if(!length || length>=32768) throw std::runtime_error("Cannot locate addon directory");
+        directory=std::filesystem::path(path).parent_path().wstring();
+        timer=CreateWaitableTimerExW(nullptr,nullptr,CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,TIMER_ALL_ACCESS);
+        if(!timer) timer=CreateWaitableTimerW(nullptr,FALSE,nullptr);
+        Settings();
+    }
+    // Host callback registration takes its own locks. Never hold our mutex:
+    // a render callback can arrive concurrently and need that same mutex.
+    for(uint32_t e:{EAM_EVENT_D3D11_DEVICE_READY,EAM_EVENT_D3D11_DEVICE_CHANGED,EAM_EVENT_SETTINGS_APPLIED}) {
+        StartupStep("subscribe_event");h->SubscribeEvent(e,Event,nullptr);
+    }
+    StartupStep("register_dispatch");h->SetPostDispatchCallback(PostDispatch,nullptr);
+    StartupStep("initial_status");SettingsStatus(h);
+    StartupStep("initial_log");h->Log(EAM_LOG_INFO,"LS_DLSSFG 0.1.1 initialized without GPU access; waiting for a live LS output pass");
+    {
+        std::lock_guard<std::mutex> lock(mutex);callbacksReady=true;
+    }
+    StartupStep("initialization_complete");
 }
 }
 EAM_EXPORT void AddonInitialize(IHost* h,ImGuiContext*,void*,void*,void*) {
-    std::lock_guard<std::mutex> lock(mutex);
-    if(!h || h->GetHostVersion()<0x010100) return;
-    host=h;
-    HMODULE self=nullptr; GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-        reinterpret_cast<LPCWSTR>(&AddonInitialize),&self);
-    wchar_t path[32768]{}; GetModuleFileNameW(self,path,32768);
-    directory=std::filesystem::path(path).parent_path().wstring();
-    timer=CreateWaitableTimerExW(nullptr,nullptr,CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,TIMER_ALL_ACCESS);
-    if(!timer) timer=CreateWaitableTimerW(nullptr,FALSE,nullptr);
-    Settings();
-    for(uint32_t e:{EAM_EVENT_D3D11_DEVICE_READY,EAM_EVENT_D3D11_DEVICE_CHANGED,EAM_EVENT_SETTINGS_APPLIED}) host->SubscribeEvent(e,Event,nullptr);
-    host->SetPostDispatchCallback(PostDispatch,nullptr);
-    if(armed) Install(static_cast<ID3D11Device*>(host->GetD3D11Device()));
-    Log("LS_DLSSFG 0.1.0 loaded; native LSFG must be OFF; existing LS window/input retained");
+    // No C++ objects here: SEH reports a failure, then the manager handles it.
+    __try {Initialize(h);}
+    __except(StartupFault(GetExceptionInformation())) {}
 }
 EAM_EXPORT void AddonShutdown() {
-    std::lock_guard<std::mutex> lock(mutex);
-    PresentHook::Uninstall();
-    if(host) {
-        host->SetPostDispatchCallback(nullptr,nullptr);
-        for(uint32_t e:{EAM_EVENT_D3D11_DEVICE_READY,EAM_EVENT_D3D11_DEVICE_CHANGED,EAM_EVENT_SETTINGS_APPLIED}) host->UnsubscribeEvent(e,Event);
-        host->SetStatus(id,"",0);
+    IHost* h=nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mutex);callbacksReady=false;h=host;
     }
+    PresentHook::Uninstall();
+    if(h) {
+        h->SetPostDispatchCallback(nullptr,nullptr);
+        for(uint32_t e:{EAM_EVENT_D3D11_DEVICE_READY,EAM_EVENT_D3D11_DEVICE_CHANGED,EAM_EVENT_SETTINGS_APPLIED}) h->UnsubscribeEvent(e,Event);
+        h->SetStatus(id,"",0);
+    }
+    std::lock_guard<std::mutex> lock(mutex);
     Reset(); if(timer) {CloseHandle(timer);timer=nullptr;} host=nullptr;armed=false;
 }
 EAM_EXPORT uint32_t GetAddonCapabilities() {return EAM_CAP_REQUIRES_RESTART|EAM_CAP_D3D11_DEVICE_ACCESS|EAM_CAP_DISPATCH_HOOK;}
 EAM_EXPORT const char* GetAddonName() {return "DLSS Frame Generation (experimental)";}
-EAM_EXPORT const char* GetAddonVersion() {return "0.1.0";}
+EAM_EXPORT const char* GetAddonVersion() {return "0.1.1";}
 EAM_EXPORT const char* GetAddonAuthor() {return "Anton / Magpie experiments";}
 EAM_EXPORT const char* GetAddonDescription() {return "DLSS FG x2 on LS output, keeping LS input and window. Disable native LSFG first.";}

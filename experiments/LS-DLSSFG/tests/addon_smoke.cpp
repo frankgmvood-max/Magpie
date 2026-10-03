@@ -16,6 +16,8 @@ struct Host final : IHost {
     EamPostDispatchCallback post=nullptr;void* postData=nullptr;int statuses=0,logs=0;
     ID3D11Device* device=nullptr;ID3D11DeviceContext* context=nullptr;
     bool rejectedSoftware=false;
+    unsigned borrowedDeviceReads=0;
+    bool dispatchDuringRegistration=false;
     void Log(EamLogLevel,const char* text) override {++logs;if(std::string(text).find("LS output adapter is not NVIDIA")!=std::string::npos)rejectedSoftware=true;}
     const char* GetConfig(const char*,const char*,const char* d) override {return d;}
     void SetConfig(const char*,const char*,const char*) override {}
@@ -30,10 +32,16 @@ struct Host final : IHost {
     void PublishEvent(uint32_t e,const void* d,uint32_t size) override {
         const auto copy=subscriptions;for(const auto& x:copy) if(x.event==e) x.cb(e,d,size,x.data);
     }
-    void* GetD3D11Device() override {return device;}
+    void* GetD3D11Device() override {++borrowedDeviceReads;return device;}
     void* GetD3D11DeviceContext() override {return context;}
     void SetPreDispatchCallback(EamPreDispatchCallback,void*) override {}
-    void SetPostDispatchCallback(EamPostDispatchCallback cb,void* d) override {post=cb;postData=d;}
+    void SetPostDispatchCallback(EamPostDispatchCallback cb,void* d) override {
+        // Host registration/unregistration may overlap a render callback.
+        // Calling it synchronously exposes the addon's lock ordering directly.
+        if(dispatchDuringRegistration && !cb && post) post(1,1,1,postData);
+        post=cb;postData=d;
+        if(dispatchDuringRegistration && cb) cb(1,1,1,d);
+    }
     void* GetCurrentComputeShader() override {return nullptr;}
     uint32_t GetDispatchCount() override {return 0;}
     void SetStatus(const char*,const char*,int) override {++statuses;}
@@ -43,6 +51,10 @@ struct Host final : IHost {
     void ReleaseImage(void*) override {}
 };
 void Check(bool ok,const char* message) {if(!ok){std::fprintf(stderr,"%s\n",message);std::exit(1);}}
+DWORD InitializeGuarded(AddonInit_t init,IHost* host) {
+    __try {init(host,nullptr,nullptr,nullptr,nullptr);return 0;}
+    __except(EXCEPTION_EXECUTE_HANDLER) {return GetExceptionCode();}
+}
 int main(int argc,char** argv) {
     Check(argc==2,"supply addon DLL path");
     wchar_t temp[MAX_PATH]{}, file[MAX_PATH]{};
@@ -57,6 +69,8 @@ int main(int argc,char** argv) {
     auto version=reinterpret_cast<GetAddonVersion_t>(GetProcAddress(dll,"GetAddonVersion"));
     Check(init && stop && caps && version,"missing SDK export");
     Check((caps()&EAM_CAP_DISPATCH_HOOK)!=0 && (caps()&EAM_CAP_REQUIRES_RESTART)!=0,"missing capabilities");
+    Check(InitializeGuarded(init,reinterpret_cast<IHost*>(uintptr_t(1)))==EXCEPTION_ACCESS_VIOLATION,
+        "init fault must propagate to the manager after recording a breadcrumb");
     Host host;
     for(int i=0;i<3;++i) {
         init(&host,nullptr,nullptr,nullptr,nullptr);
@@ -72,6 +86,14 @@ int main(int argc,char** argv) {
     // Exercise the actual DXGI hook and output selection on the software GPU.
     // A valid tagged output must fail NGX eligibility without breaking Present.
     std::ofstream(folder/L"LS_DLSSFG.ini")<<"[FrameGeneration]\nNativeLSFGDisabled=1\nTargetFPS=136\n";
+    // A prior scaling device may already have died when the GUI starts addons.
+    // Neither startup nor DEVICE_READY may read/use that borrowed pointer.
+    host.device=reinterpret_cast<ID3D11Device*>(uintptr_t(1));
+    host.dispatchDuringRegistration=true;
+    Check(InitializeGuarded(init,&host)==0,"armed startup used an invalid old device");
+    host.PublishEvent(EAM_EVENT_D3D11_DEVICE_READY,nullptr,0);
+    Check(host.borrowedDeviceReads==0,"startup/device-ready consulted a borrowed device");
+    stop();host.device=nullptr;host.dispatchDuringRegistration=false;
     std::filesystem::create_directory(folder/L"runtime");
     std::ofstream(folder/L"runtime"/L"nvngx_dlssg.dll"); // never loaded on WARP
     ComPtr<ID3D11Device> device;ComPtr<ID3D11DeviceContext> context;
@@ -107,5 +129,5 @@ int main(int argc,char** argv) {
     FreeLibrary(dll);
     // Hook pins the DLL until exit. Other temporary files can be removed now.
     std::filesystem::remove(folder/L"LS_DLSSFG.ini");std::filesystem::remove_all(folder/L"runtime");
-    std::puts("addon ABI, lifecycle, output selection and WARP failure fallback passed");
+    std::puts("addon startup (including stale device), ABI, lifecycle, output selection and WARP fallback passed");
 }

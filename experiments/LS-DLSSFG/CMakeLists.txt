@@ -29,6 +29,7 @@ target_include_directories(addon_smoke PRIVATE "${EAM_ROOT}/manager/sdk/include"
 target_compile_definitions(addon_smoke PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(addon_smoke PRIVATE d3d11 dxgi user32)
 add_test(NAME addon_abi COMMAND addon_smoke "$<TARGET_FILE:LS_DLSSFG>")
+set_tests_properties(addon_abi PROPERTIES TIMEOUT 30)
 install(TARGETS LS_DLSSFG RUNTIME DESTINATION addons/LS_DLSSFG)
 install(DIRECTORY package/ DESTINATION addons/LS_DLSSFG)
 install(FILES README-RU.md NOTICE.md LICENSE LICENSE-EAM DESTINATION addons/LS_DLSSFG)
