@@ -171,8 +171,8 @@ HRESULT OnPresent(IDXGISwapChain* sc,UINT sync,UINT flags,bool& handled) {
         return S_OK;
     } catch(...) { Off("Addon exception; passing original LS frames through"); return S_OK; }
 }
-void Install(ID3D11Device* d) {
-    if(d && !PresentHook::Installed() && !PresentHook::Install(d,OnPresent,Log)) Off("Could not install LS Present hook");
+void Install(IDXGISwapChain* chain) {
+    if(chain && !PresentHook::Installed() && !PresentHook::Install(chain,OnPresent,Log)) Off("Could not install LS Present hook");
 }
 void PostDispatch(uint32_t,uint32_t,uint32_t,void*) {
     std::lock_guard<std::mutex> lock(mutex);
@@ -189,7 +189,7 @@ void PostDispatch(uint32_t,uint32_t,uint32_t,void*) {
         ComPtr<IDXGISurface> surface; ComPtr<IDXGISwapChain> chain;
         if(SUCCEEDED(resource.As(&surface)) && SUCCEEDED(surface->GetParent(IID_PPV_ARGS(&chain)))) {
             chain->SetPrivateData(outputTag,sizeof epoch,&epoch);
-            ComPtr<ID3D11Device> d;ctx->GetDevice(&d);Install(d.Get());
+            Install(chain.Get());
         }
     }
 }

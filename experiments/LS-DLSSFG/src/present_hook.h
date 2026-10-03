@@ -1,8 +1,6 @@
 // PresentHook: sees every frame Lossless Scaling presents (real and generated) just before it goes to the screen, by patching Present and
-// Present1 in the function table that every window swap chain of the DXGI runtime shares. The table is found through a short-lived swap chain of
-// our own on the same device.
+// Present1 in the function table that every window swap chain of the DXGI runtime shares. The table comes directly from LS's live output chain. No probe window or swap chain is created.
 #pragma once
-#include <d3d11.h>
 #include <dxgi1_2.h>
 #include <functional>
 
@@ -11,7 +9,7 @@ namespace PresentHook {
     // Called before the original Present, on the presenting thread, with that present's sync interval and flags. Not called for a
     // DXGI_PRESENT_TEST present.
     using Callback = HRESULT (*)(IDXGISwapChain* sc, UINT sync, UINT flags, bool& handled);
-    bool Install(ID3D11Device* dev, Callback cb, LogFn log);
+    bool Install(IDXGISwapChain* chain, Callback cb, LogFn log);
     void Uninstall();
     bool Installed();
     unsigned Hits();             // presents seen in the process, by anyone
