@@ -46,6 +46,10 @@ DXGI_FORMAT format=DXGI_FORMAT_UNKNOWN;
 HANDLE timer=nullptr;
 bool armed=false, disabled=false, resetHistory=true, callbacksReady=false;
 bool preferVRR=true, presentationReported=false;
+enum class PendingOutput {None,Duplicate,History,Generated};
+PendingOutput pendingOutput=PendingOutput::None;
+UINT pendingSync=0;
+bool pendingVRR=false;
 double targetFps=136;
 const char* volatile startupStage="not_started";
 
@@ -61,7 +65,7 @@ void StartupTrace(const char* message) {
     HANDLE file=CreateFileW(path,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(file==INVALID_HANDLE_VALUE) return;
     SYSTEMTIME now{};GetLocalTime(&now);
-    char line[768];const int n=std::snprintf(line,sizeof line,"%04u-%02u-%02u %02u:%02u:%02u pid=%lu v0.2.0 %s\r\n",
+    char line[768];const int n=std::snprintf(line,sizeof line,"%04u-%02u-%02u %02u:%02u:%02u pid=%lu v0.2.1 %s\r\n",
         now.wYear,now.wMonth,now.wDay,now.wHour,now.wMinute,now.wSecond,GetCurrentProcessId(),message);
     DWORD written=0;if(n>0 && n<int(sizeof line)) WriteFile(file,line,DWORD(n),&written,nullptr);
     CloseHandle(file);
@@ -83,7 +87,7 @@ double Now() { LARGE_INTEGER n{}, f{}; QueryPerformanceCounter(&n); QueryPerform
 void Log(const char* text) { if(host) host->Log(EAM_LOG_INFO,text); }
 void Status(const char* text,int level) { if(host && GetTickCount64()-statusAt>=500) {statusAt=GetTickCount64();host->SetStatus(id,text,level);} }
 void Off(const char* why) noexcept {
-    disabled=true; resetHistory=true;
+    disabled=true; resetHistory=true;pendingOutput=PendingOutput::None;
     outputQueue.Reset();
     try {Log(why);} catch(...) {StartupTrace(why);}
     try {if(host) host->SetStatus(id,why,3);} catch(...) {}
@@ -93,7 +97,7 @@ void Reset() {
     real.Reset(); device.Reset(); selected=0;
     if(latencyWait) {CloseHandle(latencyWait);latencyWait=nullptr;}
     effectiveMultiplier=runtimeMultiplier=2;actualFlowQuality=0;lastRealMotion=false;
-    width=height=0; format=DXGI_FORMAT_UNKNOWN; timeline.Reset(); resetHistory=true; presentationReported=false;
+    width=height=0; format=DXGI_FORMAT_UNKNOWN; timeline.Reset(); resetHistory=true; presentationReported=false;pendingOutput=PendingOutput::None;
 }
 void Settings() {
     const auto ini=(std::filesystem::path(directory)/L"LS_DLSSFG.ini").wstring();
@@ -102,6 +106,7 @@ void Settings() {
     configuration.multiplier=get(L"Multiplier",2);
     configuration.flow=static_cast<fg::FlowMethod>(get(L"OpticalFlowMethod",2));
     configuration.flowQuality=get(L"NvidiaOpticalFlowQuality",2);
+    configuration.flowScale=get(L"OpticalFlowScale",50);
     configuration.duplicateFiltering=get(L"DuplicateFrameFiltering",1)==1;
     configuration.preferVRR=get(L"PreferVRR",1)==1;
     configuration.maximumFrameLatency=get(L"MaximumFrameLatency",1);
@@ -134,6 +139,7 @@ HRESULT OnPresent(IDXGISwapChain* sc,UINT& sync,UINT& flags,bool& handled) {
     if(!callbacksReady || !host || !armed || disabled || !fg::SafePresent(sync,flags)) return S_OK;
     uint64_t tag=0;UINT size=sizeof tag;
     if(FAILED(sc->GetPrivateData(outputTag,&size,&tag)) || size!=sizeof tag || tag!=epoch) return S_OK;
+    pendingOutput=PendingOutput::None;
     const UINT originalSync=sync,originalFlags=flags;
     ComPtr<ID3D11DeviceContext> restoreContext;
     bool restoreNeeded=false;
@@ -156,8 +162,7 @@ HRESULT OnPresent(IDXGISwapChain* sc,UINT& sync,UINT& flags,bool& handled) {
             const auto runtime=(std::filesystem::path(directory)/L"runtime").wstring();
             if(!std::filesystem::exists(std::filesystem::path(runtime)/L"nvngx_dlssg.dll")) {Off("Put your compatible nvngx_dlssg.dll in addon runtime; restart LS");return S_OK;}
             gsyncProbe.Init(device.Get(),Log);
-            const auto before=gsyncProbe.Query(back.Get());
-            char baseline[180];std::snprintf(baseline,sizeof baseline,"Before addon GPU work: G-SYNC=%s capable=%d statuses=%d/%d/%d",before.Label(),int(before.capable),before.handleStatus,before.capableStatus,before.activeStatus);Log(baseline);
+            Log("G-SYNC telemetry runs after the outer LS Present; driver state is not a measurement of monitor refresh rate");
             backend=std::make_unique<fg::Backend>();
             if(!backend->Init(device.Get(),d,runtime,configuration,Log)) {Off("DLSS FG unavailable; see manager Logs. LS frames pass through");return S_OK;}
             effectiveMultiplier=backend->Multiplier();runtimeMultiplier=backend->MaxMultiplier();actualFlowQuality=backend->FlowQuality();
@@ -176,21 +181,18 @@ HRESULT OnPresent(IDXGISwapChain* sc,UINT& sync,UINT& flags,bool& handled) {
         context->CopyResource(real.Get(),back.Get());
         const double start=Now();const auto result=backend->Generate(back.Get(),resetHistory);const double generateMs=(Now()-start)*1000;
         if(result==fg::Result::Duplicate) {
-            ++duplicates;host->PublishMetric(id,"duplicates_total",double(duplicates),"frames");
-            Status("Duplicate LS frame: FG skipped; original LS output preserved",0);return S_OK;
+            ++duplicates;pendingOutput=PendingOutput::Duplicate;return S_OK;
         }
         const bool timingReady=timeline.Observe(arrived);++baseFrames;
         latestGenerationMs=generateMs;latestPreprocessMs=backend->PreprocessMilliseconds();actualFlowQuality=backend->FlowQuality();lastRealMotion=backend->RealMotion();
-        host->PublishMetric(id,"generation_ms",generateMs,"ms");host->PublishMetric(id,"preprocess_cpu_ms",latestPreprocessMs,"ms");
         if(result==fg::Result::Failed) {Off("DLSS FG failed; LS output preserved until settings reapply/restart");return S_OK;}
         resetHistory=false;
-        if(result==fg::Result::HistoryOnly || !timingReady) {Status("DLSS FG: priming history / interpolation disabled by runtime",2);return S_OK;}
+        if(result==fg::Result::HistoryOnly || !timingReady) {pendingOutput=PendingOutput::History;return S_OK;}
         BOOL fullscreen=TRUE;const bool windowed=SUCCEEDED(sc->GetFullscreenState(&fullscreen,nullptr)) && !fullscreen;
         const auto mode=fg::ChoosePresent(sync,flags,preferVRR,(sd.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING)!=0,windowed);
         if(!presentationReported) {
-            const auto baseline=gsyncProbe.Query(back.Get());char report[256];
+            char report[256];
             std::snprintf(report,sizeof report,"Output Present: LS sync=%u flags=0x%x; chain flags=0x%x; windowed=%d; FG sync=%u flags=0x%x; VRR request=%s; requestedAPI=%u",sync,flags,sd.Flags,int(windowed),mode.sync,mode.flags,mode.vrrRequested?"yes":"no",unsigned(configuration.presentApi));Log(report);
-            std::snprintf(report,sizeof report,"Before first FG group: G-SYNC=%s capable=%d statuses=%d/%d/%d; LS presentAPI=%s",baseline.Label(),int(baseline.capable),baseline.handleStatus,baseline.capableStatus,baseline.activeStatus,PresentHook::UsesPresent1()?"Present1":"Present");Log(report);
             presentationReported=true;
         }
         sync=mode.sync;flags=mode.flags;const double step=timeline.Step(targetFps,effectiveMultiplier);
@@ -207,15 +209,6 @@ HRESULT OnPresent(IDXGISwapChain* sc,UINT& sync,UINT& flags,bool& handled) {
             ++submitted;
         }
         generated+=submitted;
-        if(submitted && GetTickCount64()>=probeAt) {
-            probeAt=GetTickCount64()+2000;gsyncState=gsyncProbe.Query(back.Get());
-            ComPtr<IDXGISwapChainMedia> media;DXGI_FRAME_STATISTICS_MEDIA stats{};
-            const HRESULT statsHr=SUCCEEDED(sc->QueryInterface(IID_PPV_ARGS(&media)))?media->GetFrameStatisticsMedia(&stats):E_NOINTERFACE;
-            RECT windowRect{};MONITORINFO monitor{sizeof(MONITORINFO)};
-            const bool covers=sd.OutputWindow && GetWindowRect(sd.OutputWindow,&windowRect) && GetMonitorInfoW(MonitorFromWindow(sd.OutputWindow,MONITOR_DEFAULTTONEAREST),&monitor) && EqualRect(&windowRect,&monitor.rcMonitor);
-            char measured[512];std::snprintf(measured,sizeof measured,"FG output: G-SYNC=%s capable=%d statuses=%d/%d/%d; unique_interval_ms=%.3f generation_ms=%.3f preprocess_cpu_ms=%.3f multiplier=%u flowQuality=%u duplicates=%llu; LS presentAPI=%s requestedAPI=%u; mediaHr=0x%08x composition=%u; fullscreenBounds=%d foregroundOutput=%d exStyle=0x%llx",
-                gsyncState.Label(),int(gsyncState.capable),gsyncState.handleStatus,gsyncState.capableStatus,gsyncState.activeStatus,timeline.Interval()*1000,generateMs,latestPreprocessMs,effectiveMultiplier,actualFlowQuality,static_cast<unsigned long long>(duplicates),PresentHook::UsesPresent1()?"Present1":"Present",unsigned(configuration.presentApi),unsigned(statsHr),SUCCEEDED(statsHr)?unsigned(stats.CompositionMode):~0u,int(covers),int(GetForegroundWindow()==sd.OutputWindow),static_cast<unsigned long long>(GetWindowLongPtrW(sd.OutputWindow,GWL_EXSTYLE)));Log(measured);
-        }
         // Every generated flip rotates the buffer. Restore the current buffer,
         // including on a partially submitted group, before LS's outer Present.
         back.Reset();if(FAILED(sc->GetBuffer(0,IID_PPV_ARGS(&back)))) {handled=true;Off("Cannot restore real frame after flip; restart LS");return FAILED(made)?made:E_FAIL;}
@@ -226,8 +219,7 @@ HRESULT OnPresent(IDXGISwapChain* sc,UINT& sync,UINT& flags,bool& handled) {
             if(FAILED(made)) Off("Generated Present/queue failed; original LS frame restored");return S_OK;
         }
         const double realDue=presented+step;timeline.Finish(realDue,step);if(sync==0) WaitUntil(realDue);
-        char message[256];std::snprintf(message,sizeof message,"DLSS FG x%u: %llu submitted; %.2f ms; OF=%s; %s; %s; G-SYNC %s",effectiveMultiplier,static_cast<unsigned long long>(generated),generateMs,actualFlowQuality?"NVOF":"None",sync?"LS vsync":targetFps?"profile pacing":"adaptive pacing",mode.vrrRequested?"VRR-compatible Present":preferVRR?"VRR request unavailable":"LS Present preserved",gsyncState.Label());Status(message,1);
-        host->PublishMetric(id,"real_interval_ms",timeline.Interval()*1000,"ms");host->PublishMetric(id,"generated_total",double(generated),"submitted frames");
+        pendingOutput=PendingOutput::Generated;pendingSync=sync;pendingVRR=mode.vrrRequested;
         return S_OK;
     } catch(...) {
         sync=originalSync;flags=originalFlags;
@@ -244,8 +236,44 @@ HRESULT OnPresent(IDXGISwapChain* sc,UINT& sync,UINT& flags,bool& handled) {
     }
 }
 
+// Slow driver queries and host callbacks belong after the real Present. Keeping
+// them between generated and real flips consumes the scheduled frame interval.
+void AfterPresent(IDXGISwapChain* sc,HRESULT result) noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(mutex);
+        if(!callbacksReady || !host || disabled || selected!=reinterpret_cast<uintptr_t>(sc)) return;
+        const auto pending=pendingOutput;pendingOutput=PendingOutput::None;
+        if(pending==PendingOutput::None) return;
+        if(result!=S_OK) {resetHistory=true;timeline.Reset();return;}
+        if(pending==PendingOutput::Duplicate) {
+            host->PublishMetric(id,"duplicates_total",double(duplicates),"frames");
+            Status("Duplicate LS frame: FG skipped; original LS output preserved",0);return;
+        }
+        if(GetTickCount64()>=probeAt) {
+            probeAt=GetTickCount64()+2000;
+            ComPtr<ID3D11Texture2D> back;
+            gsyncState=SUCCEEDED(sc->GetBuffer(0,IID_PPV_ARGS(&back)))?gsyncProbe.Query(back.Get()):fg::GSyncState{};
+            ComPtr<IDXGISwapChainMedia> media;DXGI_FRAME_STATISTICS_MEDIA stats{};DXGI_SWAP_CHAIN_DESC sd{};
+            const HRESULT statsHr=SUCCEEDED(sc->QueryInterface(IID_PPV_ARGS(&media)))?media->GetFrameStatisticsMedia(&stats):E_NOINTERFACE;
+            sc->GetDesc(&sd);
+            RECT windowRect{};MONITORINFO monitor{sizeof(MONITORINFO)};
+            const bool covers=sd.OutputWindow && GetWindowRect(sd.OutputWindow,&windowRect) && GetMonitorInfoW(MonitorFromWindow(sd.OutputWindow,MONITOR_DEFAULTTONEAREST),&monitor) && EqualRect(&windowRect,&monitor.rcMonitor);
+            char measured[640];std::snprintf(measured,sizeof measured,"FG output: G-SYNC=%s capable=%d statuses=%d/%d/%d; unique_interval_ms=%.3f generation_ms=%.3f preprocess_cpu_ms=%.3f multiplier=%u flowQuality=%u flowScale=%u duplicates=%llu; LS presentAPI=%s requestedAPI=%u; mediaHr=0x%08x composition=%u; fullscreenBounds=%d foregroundOutput=%d exStyle=0x%llx; queryAfterRealPresent=1 monitorHz=unmeasured",
+                gsyncState.Label(),int(gsyncState.capable),gsyncState.handleStatus,gsyncState.capableStatus,gsyncState.activeStatus,timeline.Interval()*1000,latestGenerationMs,latestPreprocessMs,effectiveMultiplier,actualFlowQuality,configuration.flowScale,static_cast<unsigned long long>(duplicates),PresentHook::UsesPresent1()?"Present1":"Present",unsigned(configuration.presentApi),unsigned(statsHr),SUCCEEDED(statsHr)?unsigned(stats.CompositionMode):~0u,int(covers),int(GetForegroundWindow()==sd.OutputWindow),static_cast<unsigned long long>(GetWindowLongPtrW(sd.OutputWindow,GWL_EXSTYLE)));Log(measured);
+        }
+        host->PublishMetric(id,"generation_ms",latestGenerationMs,"ms");host->PublishMetric(id,"preprocess_cpu_ms",latestPreprocessMs,"ms");
+        if(pending==PendingOutput::History) {Status("DLSS FG: priming history / interpolation disabled by runtime",2);return;}
+        const double step=timeline.Step(targetFps,effectiveMultiplier);
+        // The current synchronous path must finish inference before presenting
+        // any intermediates. A target step is a budget, not achieved throughput.
+        const bool overBudget=pendingSync==0 && latestGenerationMs>step*1000;
+        char message[320];std::snprintf(message,sizeof message,"DLSS FG x%u: %llu submitted; %.2f ms; OF=%s; %s; %s; driver G-SYNC %s%s",effectiveMultiplier,static_cast<unsigned long long>(generated),latestGenerationMs,actualFlowQuality?"NVOF":"None",pendingSync?"LS vsync":targetFps?"profile pacing":"adaptive pacing",pendingVRR?"VRR-compatible Present":preferVRR?"VRR request unavailable":"LS Present preserved",gsyncState.Label(),overBudget?"; processing exceeds output-step budget":"");Status(message,overBudget?2:1);
+        host->PublishMetric(id,"real_interval_ms",timeline.Interval()*1000,"ms");host->PublishMetric(id,"generated_total",double(generated),"submitted frames");
+    } catch(...) {std::lock_guard<std::mutex> lock(mutex);Off("Post-Present telemetry failed; original LS frame was already submitted");}
+}
+
 void Install(IDXGISwapChain* chain) {
-    if(chain && !PresentHook::Installed() && !PresentHook::Install(chain,OnPresent,Log)) Off("Could not install LS Present hook");
+    if(chain && !PresentHook::Installed() && !PresentHook::Install(chain,OnPresent,Log,AfterPresent)) Off("Could not install LS Present hook");
 }
 void PostDispatch(uint32_t,uint32_t,uint32_t,void*) {
     std::lock_guard<std::mutex> lock(mutex);
@@ -299,7 +327,7 @@ void Initialize(IHost* h) {
     }
     StartupStep("register_dispatch");h->SetPostDispatchCallback(PostDispatch,nullptr);
     StartupStep("initial_status");SettingsStatus(h);
-    StartupStep("initial_log");h->Log(EAM_LOG_INFO,"LS_DLSSFG 0.2.0 initialized without GPU access; waiting for a live LS output pass");
+    StartupStep("initial_log");h->Log(EAM_LOG_INFO,"LS_DLSSFG 0.2.1 initialized without GPU access; waiting for a live LS output pass");
     {
         std::lock_guard<std::mutex> lock(mutex);callbacksReady=true;
     }
@@ -333,7 +361,7 @@ EAM_EXPORT void AddonShutdown() {
 }
 EAM_EXPORT uint32_t GetAddonCapabilities() {return EAM_CAP_HAS_SETTINGS|EAM_CAP_REQUIRES_RESTART|EAM_CAP_D3D11_DEVICE_ACCESS|EAM_CAP_DISPATCH_HOOK;}
 EAM_EXPORT const char* GetAddonName() {return "DLSS Frame Generation (experimental)";}
-EAM_EXPORT const char* GetAddonVersion() {return "0.2.0";}
+EAM_EXPORT const char* GetAddonVersion() {return "0.2.1";}
 EAM_EXPORT const char* GetAddonAuthor() {return "Anton / Magpie experiments";}
 EAM_EXPORT const char* GetAddonDescription() {return "DLSS FG x2-x4, NVOF and Duplicate Frame Filtering on LS output. Disable native LSFG first.";}
 
@@ -366,6 +394,9 @@ EAM_EXPORT void AddonRenderSettings() {
     if(draft.flow==fg::FlowMethod::Nvidia) {
         int q=int(draft.flowQuality)-1;
         if(ImGui::Combo("OF Quality",&q,"Performance (4x4 Fast)\0Balanced (4x4 Medium)\0Quality (4x4 Slow)\0High Quality (2x2 Medium)\0Highest Quality (2x2 Slow)\0")) {draft.flowQuality=unsigned(q+1);dirty=true;}
+        int scale=int(draft.flowScale/25)-1;
+        if(ImGui::Combo("OF Analysis Resolution",&scale,"25%\0 50% (recommended)\0 75%\0 100%\0")) {draft.flowScale=unsigned(scale+1)*25;dirty=true;}
+        ImGui::TextWrapped("Only the motion-analysis image is reduced. Output resolution stays unchanged; vectors are scaled to output pixels. 50% uses one quarter of the analysis pixels. Try Performance at 50% if OF causes stutter.");
         ImGui::TextWrapped("NVOF estimates screenshot motion; engine depth is unavailable. Higher quality adds cost. Unsupported 2x2 profiles fall back to the matching 4x4 preset; unavailable NVOF falls back to None and is reported.");
     }
     dirty|=ImGui::Checkbox("Duplicate Frame Filtering (exact RGB)",&draft.duplicateFiltering);
@@ -397,6 +428,7 @@ EAM_EXPORT void AddonRenderSettings() {
         auto save=[&](const wchar_t* key,unsigned value){wchar_t text[32]{};std::swprintf(text,32,L"%u",value);ok=WritePrivateProfileStringW(L"FrameGeneration",key,text,ini.c_str()) && ok;};
         save(L"NativeLSFGDisabled",draft.nativeFGDisabled);save(L"Multiplier",draft.multiplier);
         save(L"OpticalFlowMethod",unsigned(draft.flow));save(L"NvidiaOpticalFlowQuality",draft.flowQuality);
+        save(L"OpticalFlowScale",draft.flowScale);
         save(L"DuplicateFrameFiltering",draft.duplicateFiltering);save(L"PreferVRR",draft.preferVRR);
         save(L"MaximumFrameLatency",draft.maximumFrameLatency);save(L"GeneratedPresentAPI",unsigned(draft.presentApi));
         wchar_t fps[64]{};std::swprintf(fps,64,L"%.3f",draft.targetFPS);ok=WritePrivateProfileStringW(L"FrameGeneration",L"TargetFPS",fps,ini.c_str()) && ok;
@@ -407,6 +439,7 @@ EAM_EXPORT void AddonRenderSettings() {
     ImGui::Separator();
     ImGui::Text("G-SYNC driver query: %s",gsync.Label());
     ImGui::Text("NVOF effective quality: %u; motion: %s",quality,motion?"estimated":"zero / history reset");
+    if(quality) ImGui::Text("OF analysis scale: %u%%",current.flowScale);
     ImGui::Text("Generation: %.2f ms; preprocessing CPU submit/check: %.2f ms",genMs,preMs);
     ImGui::Text("Unique LS-input interval: %.2f ms; duplicates filtered: %llu",interval*1000,static_cast<unsigned long long>(duplicateCount));
     ImGui::Text("Generated frames submitted: %llu",static_cast<unsigned long long>(submitted));

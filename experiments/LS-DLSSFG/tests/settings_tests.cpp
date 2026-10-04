@@ -7,10 +7,15 @@ void Check(bool condition,const char* message) {if(!condition) {std::fprintf(std
 int main() {
     Check(fg::ParseTargetFPS(L"bad")==136 && fg::ParseTargetFPS(L"")==136 && fg::ParseTargetFPS(L"136 FPS")==136 && fg::ParseTargetFPS(L"NaN")==136 && fg::ParseTargetFPS(L"500")==136,"bad INI FPS never enables adaptive pacing");
     Check(fg::ParseTargetFPS(L"0")==0 && fg::ParseTargetFPS(L" 68.5 \t")==68.5,"explicit adaptive and fractional INI FPS accepted");
-    fg::Settings settings;settings.multiplier=99;settings.flowQuality=99;
+    Check(fg::Settings{}.flowScale==50,"reduced analysis is the default");
+    Check(fg::AnalysisDimension(3440,50)==1720 && fg::AnalysisDimension(1440,50)==720,"50 percent analyses one quarter of ultrawide pixels");
+    Check(fg::AnalysisDimension(41,75)==31 && fg::AnalysisDimension(25,75)==19,"odd analysis dimensions round up");
+    Check(fg::AnalysisDimension(41,25,32)==32 && fg::AnalysisDimension(25,25,32)==25,"driver minimum cannot exceed output extent");
+    for(const unsigned scale:{25u,50u,75u,100u}) {fg::Settings valid;valid.flowScale=scale;valid.Validate();Check(valid.flowScale==scale,"supported OF scale preserved");}
+    fg::Settings settings;settings.multiplier=99;settings.flowQuality=99;settings.flowScale=99;
     settings.flow=static_cast<fg::FlowMethod>(1);settings.maximumFrameLatency=99;
     settings.targetFPS=std::numeric_limits<double>::quiet_NaN();settings.presentApi=static_cast<fg::PresentApi>(99);settings.Validate();
-    Check(settings.multiplier==4 && settings.flow==fg::FlowMethod::None && settings.flowQuality==5 && settings.maximumFrameLatency==1 && settings.targetFPS==136 && settings.presentApi==fg::PresentApi::Auto,"invalid settings normalized");
+    Check(settings.multiplier==4 && settings.flow==fg::FlowMethod::None && settings.flowQuality==5 && settings.flowScale==50 && settings.maximumFrameLatency==1 && settings.targetFPS==136 && settings.presentApi==fg::PresentApi::Auto,"invalid settings normalized");
     settings.targetFPS=0;settings.maximumFrameLatency=0;settings.Validate();Check(settings.targetFPS==0 && settings.maximumFrameLatency==0,"adaptive/preserve LS accepted");
     for(unsigned m=2;m<=4;++m) {
         Check(fg::Plan(m,true).count==1 && fg::Plan(m,true).reset,"reset must be 1/1 at every multiplier");

@@ -11,7 +11,10 @@ namespace PresentHook {
     // DXGI_PRESENT_TEST present.
     // Reference arguments also update the outer real-frame Present/Present1.
     using Callback = HRESULT (*)(IDXGISwapChain* sc, UINT& sync, UINT& flags, bool& handled);
-    bool Install(IDXGISwapChain* chain, Callback cb, LogFn log);
+    // Invoked once after the outer full-frame LS Present has returned, while
+    // nesting protection is still active. Not for TEST, partial or handled calls.
+    using AfterCallback = void (*)(IDXGISwapChain* sc, HRESULT result) noexcept;
+    bool Install(IDXGISwapChain* chain, Callback cb, LogFn log, AfterCallback after=nullptr);
     void Uninstall();
     bool Installed();
     unsigned Hits();             // presents seen in the process, by anyone

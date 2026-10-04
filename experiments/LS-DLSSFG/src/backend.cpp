@@ -250,7 +250,7 @@ bool Backend::Init(ID3D11Device* dev, const D3D11_TEXTURE2D_DESC& desc,
     }
     if(settings.flow==FlowMethod::Nvidia) {
         s.flow=std::make_unique<OpticalFlow>();
-        s.flowUsable=s.flow->Init(s.privateDevice.Get(),desc,settings.flowQuality,s.log);
+        s.flowUsable=s.flow->Init(s.privateDevice.Get(),desc,settings.flowQuality,s.log,settings.flowScale);
         if(s.flowUsable && !Import(s.d12.Get(),s.flow->Motion(),s.opticalMotion)) s.flowUsable=false;
         if(!s.flowUsable) s.log("NVOF unavailable; using zero motion until settings are reapplied (LS remains active)");
     }

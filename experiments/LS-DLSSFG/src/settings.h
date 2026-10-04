@@ -2,6 +2,7 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cwchar>
 #include <cwctype>
 namespace fg {
@@ -14,11 +15,17 @@ inline double ParseTargetFPS(const wchar_t* text) {
 }
 enum class FlowMethod : unsigned { None=0, Nvidia=2 };
 enum class PresentApi : unsigned { Auto=0, Present=1, Present1=2 };
+inline unsigned AnalysisDimension(unsigned full,unsigned percent,unsigned minimum=1) {
+    percent=std::clamp(percent,25u,100u);
+    const auto scaled=unsigned((static_cast<uint64_t>(full)*percent+99)/100);
+    return std::clamp(scaled,std::min(full,std::max(1u,minimum)),full);
+}
 struct Settings {
     bool nativeFGDisabled=false;
     unsigned multiplier=2;
     FlowMethod flow=FlowMethod::Nvidia;
     unsigned flowQuality=2;
+    unsigned flowScale=50;
     bool duplicateFiltering=true;
     bool preferVRR=true;
     unsigned maximumFrameLatency=1;
@@ -28,6 +35,7 @@ struct Settings {
         multiplier=std::clamp(multiplier,2u,4u);
         if(flow!=FlowMethod::Nvidia) flow=FlowMethod::None;
         flowQuality=std::clamp(flowQuality,1u,5u);
+        if(flowScale!=25 && flowScale!=50 && flowScale!=75 && flowScale!=100) flowScale=50;
         if(maximumFrameLatency>16) maximumFrameLatency=1;
         if(!std::isfinite(targetFPS) || (targetFPS!=0 && (targetFPS<30 || targetFPS>360))) targetFPS=136;
         if(unsigned(presentApi)>2) presentApi=PresentApi::Auto;

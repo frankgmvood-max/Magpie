@@ -24,6 +24,7 @@ std::atomic<PresentFn> g_present{nullptr};
 std::atomic<Present1Fn> g_present1{nullptr};
 void** g_table = nullptr;
 std::atomic<PresentHook::Callback> g_callback{ nullptr };
+std::atomic<PresentHook::AfterCallback> g_after{nullptr};
 std::atomic<unsigned> g_hits{ 0 };
 thread_local int t_nesting = 0;
 thread_local bool t_present1 = false;
@@ -35,21 +36,28 @@ HRESULT Before(IDXGISwapChain* sc, UINT& sync, UINT& flags, bool& handled) {
         if (const PresentHook::Callback cb = g_callback.load(std::memory_order_acquire)) return cb(sc, sync, flags, handled);
     return S_OK;
 }
+void After(IDXGISwapChain* sc,UINT flags,bool handled,HRESULT hr) noexcept {
+    if(t_nesting==1 && !handled && !(flags & (DXGI_PRESENT_TEST|DXGI_PRESENT_DO_NOT_WAIT)))
+        if(const auto cb=g_after.load(std::memory_order_acquire)) cb(sc,hr);
+}
 HRESULT STDMETHODCALLTYPE OnPresent(IDXGISwapChain* sc, UINT sync, UINT flags) {
     const bool previous=t_present1;t_present1=false;
     ++t_nesting; bool handled = false; const HRESULT result = Before(sc, sync, flags, handled);
     const auto original = g_present.load(std::memory_order_acquire);
-    const HRESULT hr = handled ? result : (original ? original(sc, sync, flags) : E_FAIL); --t_nesting;
+    const HRESULT hr = handled ? result : (original ? original(sc, sync, flags) : E_FAIL);
+    After(sc,flags,handled,hr);--t_nesting;
     t_present1=previous;return hr;
 }
 HRESULT STDMETHODCALLTYPE OnPresent1(IDXGISwapChain1* sc, UINT sync, UINT flags, const DXGI_PRESENT_PARAMETERS* params) {
     const bool previous=t_present1;t_present1=true;
     ++t_nesting; bool handled = false;
     // Dirty/scroll presents cannot be expanded into two full-screen presents.
-    const HRESULT result = (!params || (!params->DirtyRectsCount && !params->pScrollRect))
+    const bool full=!params || (!params->DirtyRectsCount && !params->pScrollRect);
+    const HRESULT result = full
         ? Before(sc, sync, flags, handled) : S_OK;
     const auto original = g_present1.load(std::memory_order_acquire);
-    const HRESULT hr = handled ? result : (original ? original(sc, sync, flags, params) : E_FAIL); --t_nesting;
+    const HRESULT hr = handled ? result : (original ? original(sc, sync, flags, params) : E_FAIL);
+    if(full) After(sc,flags,handled,hr);--t_nesting;
     t_present1=previous;return hr;
 }
 
@@ -68,7 +76,7 @@ template<class Fn> bool Swap(void** table, int slot, void* fn, std::atomic<Fn>& 
 }
 } // namespace
 
-bool PresentHook::Install(IDXGISwapChain* chain, Callback cb, LogFn log) {
+bool PresentHook::Install(IDXGISwapChain* chain, Callback cb, LogFn log,AfterCallback after) {
     if (g_table) return true;
     IDXGISwapChain1* view=nullptr;
     if (!chain || FAILED(chain->QueryInterface(IID_PPV_ARGS(&view)))) {
@@ -78,7 +86,7 @@ bool PresentHook::Install(IDXGISwapChain* chain, Callback cb, LogFn log) {
     view->Release(); // caller owns the live chain throughout installation
     if (g_patched) {
         if (g_patched!=table) {log("PresentHook: output vtable changed; restart LS");return false;}
-        g_callback.store(cb,std::memory_order_release);g_table=g_patched;return true;
+        g_after.store(after,std::memory_order_release);g_callback.store(cb,std::memory_order_release);g_table=g_patched;return true;
     }
     HMODULE self=nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
@@ -88,7 +96,7 @@ bool PresentHook::Install(IDXGISwapChain* chain, Callback cb, LogFn log) {
     }
     const bool present1=Swap(table,kPresent1Slot,reinterpret_cast<void*>(&OnPresent1),g_present1);
     g_table=g_patched=table;
-    g_callback.store(cb,std::memory_order_release);
+    g_after.store(after,std::memory_order_release);g_callback.store(cb,std::memory_order_release);
     char text[180];
     std::snprintf(text,sizeof text,"PresentHook: installed directly on live LS output %p; Present1=%s; no probe window/device",
         static_cast<void*>(chain),present1?"yes":"no");
@@ -96,6 +104,7 @@ bool PresentHook::Install(IDXGISwapChain* chain, Callback cb, LogFn log) {
 }
 
 void PresentHook::Uninstall() {
+    g_after.store(nullptr,std::memory_order_release);
     g_callback.store(nullptr, std::memory_order_release);   // our functions stay in the table and pass straight through (see above)
     g_table = nullptr;
 }
