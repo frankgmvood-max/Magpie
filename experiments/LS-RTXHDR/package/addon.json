@@ -1,0 +1,17 @@
+{
+  "name": "RTX Video HDR (Magpie backend)",
+  "version": "0.1.0",
+  "author": "Anton / Magpie experiments",
+  "description": "NVIDIA TrueHDR from Magpie 0.6.9. Contrast, saturation, middle gray, peak nits, HDR/SDR output. Disable native LS HDR.",
+  "min_host_version": "1.1.0",
+  "dll": "LS_RTXHDR.dll",
+  "enabled_by_default": false,
+  "conflicts": [
+    "DLSS5NR01"
+  ],
+  "dependencies": [],
+  "tags": [
+    "experimental",
+    "hdr"
+  ]
+}

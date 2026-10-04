@@ -1,0 +1,5 @@
+ItsAdeline/NVSmooth30 main 21fa43521c2753ffd5c8e9d2092cfc79f9c6c456
+https://github.com/ItsAdeline/NVSmooth30
+Adaptations: explicit configuration/log callbacks, active driver path and SHA256 validation before initialization, guarded initialization, inference counters, retained modules. No proxy, generic DXGI hooks or same-HWND D3D12 bridge are copied.
+0.1.1 additions: independently inspected 66ace profile with loaded-image validation; profile-specific config and D3D12 private-controller methods; bool initializer ABI; D3D12-only enablement; ELF ABI-preserving metadata retargeting. No NVIDIA DLL or model is distributed in source or test fixtures.
+0.1.2 correction: the real controller vtable is 1d1d08 with methods 19/20, bound by the actual constructor; the earlier 1d1cd8 candidate was an adjacent three-method class. Inference confirmation includes worker launches between Presents.
