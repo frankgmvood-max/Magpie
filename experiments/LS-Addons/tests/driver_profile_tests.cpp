@@ -29,10 +29,10 @@ struct Fixture {
         // A synthetic named IAT with graph at slot 0 and module-load at 13.
         nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT]={0x1d0b00,2*sizeof(IMAGE_IMPORT_DESCRIPTOR)};
         auto* desc=reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(bytes+0x1d0b00);desc->Name=0x1d2000;desc->OriginalFirstThunk=0x1d1000;desc->FirstThunk=0x1d07a8;
-        std::strcpy(reinterpret_cast<char*>(bytes+desc->Name),"nvcuda.dll");
+        strcpy_s(reinterpret_cast<char*>(bytes+desc->Name),64,"nvcuda.dll");
         auto* names=reinterpret_cast<IMAGE_THUNK_DATA64*>(bytes+desc->OriginalFirstThunk);
         for(unsigned i=0;i<=13;++i){const auto rva=0x1d2100+i*64;names[i].u1.AddressOfData=rva;
-            std::strcpy(reinterpret_cast<char*>(bytes+rva+2),i==0?"cuGraphLaunch":i==13?"cuModuleLoadData":"unused");}
+            strcpy_s(reinterpret_cast<char*>(bytes+rva+2),62,i==0?"cuGraphLaunch":i==13?"cuModuleLoadData":"unused");}
     }
     ~Fixture(){if(bytes)VirtualFree(bytes,0,MEM_RELEASE);}
 };

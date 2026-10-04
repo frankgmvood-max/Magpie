@@ -52,8 +52,8 @@ int main(){
     Check(legacy.valid && legacy.stats.entries==2 && legacy.stats.sm89_to_sm86==1 && legacy.stats.sm120_left==1,"mixed CUDA ELF ABIs accepted");
     auto expected=mixed;Write<uint32_t>(expected,second+0x1c,0x56);Write<uint32_t>(expected,payload+0x30,0x00560556);
     Check(legacy.bytes==expected,"SM89 real/virtual arch changed; all other bytes including SM120 preserved");
-    Check(nvs30::fatbin::sm86_elf_flags(65,8,0x16005984)==0x16005684,"modern ELF flags unrelated bits preserved");
-    Check(nvs30::fatbin::sm86_elf_flags(51,7,0x80591559)==0x80561556,"legacy ELF flags unrelated bits preserved");
+    Check(nvs30::fatbin::sm86_elf_flags(65,8,0x16005984)==0x16005684u,"modern ELF flags unrelated bits preserved");
+    Check(nvs30::fatbin::sm86_elf_flags(51,7,0x80591559)==0x80561556u,"legacy ELF flags unrelated bits preserved");
     mixed[payload+8]=std::byte{99};
     Check(!nvs30::fatbin::rewrite_sm89_to_sm86(mixed.data()).valid,"unknown ELF ABI fails without a partial rewrite");
     mixed[payload+8]=std::byte{7};Write<uint32_t>(mixed,payload+0x30,0x00590556);
