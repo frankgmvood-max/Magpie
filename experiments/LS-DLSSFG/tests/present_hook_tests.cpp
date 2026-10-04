@@ -6,15 +6,16 @@
 using Microsoft::WRL::ComPtr;
 namespace {
 struct Call {UINT sync,flags;bool present1;const DXGI_PRESENT_PARAMETERS* params;};
-Call calls[16]{};unsigned count=0, callbacks=0;
+Call calls[32]{};unsigned count=0, callbacks=0,intermediateCount=1;
+fg::PresentApi requestedApi=fg::PresentApi::Auto;
 IDXGISwapChain* selected=nullptr;
 bool reject=false;
 void Check(bool ok,const char* why) {if(!ok){std::fprintf(stderr,"%s\n",why);std::exit(1);}}
 HRESULT STDMETHODCALLTYPE CapturePresent(IDXGISwapChain*,UINT sync,UINT flags) {
-    Check(count<16,"too many presents");calls[count++]={sync,flags,false,nullptr};return S_OK;
+    Check(count<32,"too many presents");calls[count++]={sync,flags,false,nullptr};return S_OK;
 }
 HRESULT STDMETHODCALLTYPE CapturePresent1(IDXGISwapChain1*,UINT sync,UINT flags,const DXGI_PRESENT_PARAMETERS* p) {
-    Check(count<16,"too many presents");calls[count++]={sync,flags,true,p};return S_OK;
+    Check(count<32,"too many presents");calls[count++]={sync,flags,true,p};return S_OK;
 }
 void Replace(void** table,int slot,void* fn) {
     DWORD old=0,ignored=0;Check(VirtualProtect(table+slot,sizeof(void*),PAGE_READWRITE,&old)!=FALSE,"protect table");
@@ -25,7 +26,11 @@ HRESULT Callback(IDXGISwapChain* sc,UINT& sync,UINT& flags,bool&) {
     ++callbacks;
     if(reject) return S_OK; // runtime rejection must leave the original contract
     sync=0;flags=DXGI_PRESENT_ALLOW_TEARING;
-    return PresentHook::PresentOriginal(sc,sync,flags);
+    for(unsigned index=0;index<intermediateCount;++index) {
+        const HRESULT hr=PresentHook::PresentOriginal(sc,sync,flags,requestedApi);
+        if(hr!=S_OK) return hr;
+    }
+    return S_OK;
 }
 }
 int main() {
@@ -57,8 +62,16 @@ int main() {
     RECT dirty{0,0,16,16};p.DirtyRectsCount=1;p.pDirtyRects=&dirty;
     Check(chain->Present1(1,0,&p)==S_OK && callbacks==before && count==7 && calls[6].sync==1 && calls[6].params==&p,"partial Present1 bypass");
     selected=nullptr;Check(chain->Present(1,0)==S_OK && callbacks==before && count==8 && calls[7].sync==1,"unselected UI bypass");
-    PresentHook::Uninstall();Check(chain->Present(1,0)==S_OK && count==9 && calls[8].sync==1,"shutdown pass-through");
+    selected=chain.Get();intermediateCount=3;requestedApi=fg::PresentApi::Present1;
+    Check(chain->Present(1,0)==S_OK && count==12,"x4 group: three generated frames then outer real Present");
+    for(unsigned i=8;i<11;++i) Check(calls[i].present1 && calls[i].sync==0 && calls[i].flags==0x200,"explicit Present1 applies to all generated frames");
+    Check(!calls[11].present1,"explicit generated Present1 preserves outer LS Present");
+    requestedApi=fg::PresentApi::Present;p={};
+    Check(chain->Present1(1,0,&p)==S_OK && count==16,"x4 group on LS Present1");
+    for(unsigned i=12;i<15;++i) Check(!calls[i].present1 && calls[i].sync==0 && calls[i].flags==0x200,"explicit Present applies to all generated frames");
+    Check(calls[15].present1 && calls[15].params==&p,"explicit generated Present preserves outer LS Present1 parameters");
+    PresentHook::Uninstall();Check(chain->Present(1,0)==S_OK && count==17 && calls[16].sync==1,"shutdown pass-through");
     Replace(table,8,original);Replace(table,22,original1);
     chain.Reset();DestroyWindow(window);
-    std::puts("generated and real Present/Present1 argument forwarding, rejection, TEST, partial and UI bypass passed");
+    std::puts("Auto/Present/Present1 forwarding, x4 groups, rejection, TEST, partial, UI and shutdown bypass passed");
 }

@@ -13,7 +13,6 @@
 #include <shlwapi.h>
 #include <dxgi1_5.h>
 #include <imgui.h>
-#include <eam/widgets.h>
 #include <cwchar>
 
 using Microsoft::WRL::ComPtr;
@@ -82,10 +81,11 @@ LONG StartupFault(EXCEPTION_POINTERS* fault) {
 double Now() { LARGE_INTEGER n{}, f{}; QueryPerformanceCounter(&n); QueryPerformanceFrequency(&f); return double(n.QuadPart)/f.QuadPart; }
 void Log(const char* text) { if(host) host->Log(EAM_LOG_INFO,text); }
 void Status(const char* text,int level) { if(host && GetTickCount64()-statusAt>=500) {statusAt=GetTickCount64();host->SetStatus(id,text,level);} }
-void Off(const char* why) {
+void Off(const char* why) noexcept {
     disabled=true; resetHistory=true;
     outputQueue.Reset();
-    Log(why); if(host) host->SetStatus(id,why,3);
+    try {Log(why);} catch(...) {StartupTrace(why);}
+    try {if(host) host->SetStatus(id,why,3);} catch(...) {}
 }
 void Reset() {
     backend.reset();outputQueue.Reset();gsyncProbe.Reset();gsyncState={};probeAt=0;
@@ -105,7 +105,7 @@ void Settings() {
     configuration.preferVRR=get(L"PreferVRR",1)==1;
     configuration.maximumFrameLatency=get(L"MaximumFrameLatency",1);
     wchar_t fps[64]{};GetPrivateProfileStringW(L"FrameGeneration",L"TargetFPS",L"136",fps,64,ini.c_str());
-    configuration.targetFPS=std::wcstod(fps,nullptr);
+    configuration.targetFPS=fg::ParseTargetFPS(fps);
     configuration.presentApi=static_cast<fg::PresentApi>(get(L"GeneratedPresentAPI",0));
     configuration.Validate();
     armed=configuration.nativeFGDisabled;preferVRR=configuration.preferVRR;
@@ -134,6 +134,8 @@ HRESULT OnPresent(IDXGISwapChain* sc,UINT& sync,UINT& flags,bool& handled) {
     uint64_t tag=0;UINT size=sizeof tag;
     if(FAILED(sc->GetPrivateData(outputTag,&size,&tag)) || size!=sizeof tag || tag!=epoch) return S_OK;
     const UINT originalSync=sync,originalFlags=flags;
+    ComPtr<ID3D11DeviceContext> restoreContext;
+    bool restoreNeeded=false;
     try {
         DXGI_SWAP_CHAIN_DESC sd{};
         if(FAILED(sc->GetDesc(&sd)) || sd.SampleDesc.Count!=1 ||
@@ -169,6 +171,7 @@ HRESULT OnPresent(IDXGISwapChain* sc,UINT& sync,UINT& flags,bool& handled) {
         }
         const double arrived=Now();if(timeline.NeedsReset(arrived)) resetHistory=true;
         ComPtr<ID3D11DeviceContext> context;device->GetImmediateContext(&context);
+        restoreContext=context;
         context->CopyResource(real.Get(),back.Get());
         const double start=Now();const auto result=backend->Generate(back.Get(),resetHistory);const double generateMs=(Now()-start)*1000;
         if(result==fg::Result::Duplicate) {
@@ -196,6 +199,7 @@ HRESULT OnPresent(IDXGISwapChain* sc,UINT& sync,UINT& flags,bool& handled) {
             if(sync==0) WaitUntil(due);
             if(latencyWait && WaitForSingleObject(latencyWait,500)!=WAIT_OBJECT_0) {made=E_FAIL;break;}
             back.Reset();if(FAILED(sc->GetBuffer(0,IID_PPV_ARGS(&back)))) {made=E_FAIL;break;}
+            restoreNeeded=true;
             context->CopyResource(back.Get(),backend->Output(index));context->Flush();
             made=PresentHook::PresentOriginal(sc,sync,flags,configuration.presentApi);presented=Now();
             if(made!=S_OK) break;
@@ -215,6 +219,7 @@ HRESULT OnPresent(IDXGISwapChain* sc,UINT& sync,UINT& flags,bool& handled) {
         // including on a partially submitted group, before LS's outer Present.
         back.Reset();if(FAILED(sc->GetBuffer(0,IID_PPV_ARGS(&back)))) {handled=true;Off("Cannot restore real frame after flip; restart LS");return FAILED(made)?made:E_FAIL;}
         context->CopyResource(back.Get(),real.Get());context->Flush();
+        restoreNeeded=false;
         if(made!=S_OK) {
             sync=originalSync;flags=originalFlags;resetHistory=true;timeline.Reset();
             if(FAILED(made)) Off("Generated Present/queue failed; original LS frame restored");return S_OK;
@@ -223,7 +228,19 @@ HRESULT OnPresent(IDXGISwapChain* sc,UINT& sync,UINT& flags,bool& handled) {
         char message[256];std::snprintf(message,sizeof message,"DLSS FG x%u: %llu submitted; %.2f ms; OF=%s; %s; %s; G-SYNC %s",effectiveMultiplier,static_cast<unsigned long long>(generated),generateMs,actualFlowQuality?"NVOF":"None",sync?"LS vsync":targetFps?"profile pacing":"adaptive pacing",mode.vrrRequested?"VRR-compatible Present":preferVRR?"VRR request unavailable":"LS Present preserved",gsyncState.Label());Status(message,1);
         host->PublishMetric(id,"real_interval_ms",timeline.Interval()*1000,"ms");host->PublishMetric(id,"generated_total",double(generated),"submitted frames");
         return S_OK;
-    } catch(...) {sync=originalSync;flags=originalFlags;Off("Addon exception; passing original LS frames through");return S_OK;}
+    } catch(...) {
+        sync=originalSync;flags=originalFlags;
+        // A host logging/metric callback can throw after a generated flip.
+        // Restore the newly current buffer before allowing LS's outer Present.
+        if(restoreNeeded) {
+            ComPtr<ID3D11Texture2D> current;
+            if(!restoreContext || !real || FAILED(sc->GetBuffer(0,IID_PPV_ARGS(&current)))) {
+                handled=true;Off("Addon exception; cannot restore real frame after flip");return E_FAIL;
+            }
+            restoreContext->CopyResource(current.Get(),real.Get());restoreContext->Flush();
+        }
+        Off("Addon exception; real LS frame restored and passed through");return S_OK;
+    }
 }
 
 void Install(IDXGISwapChain* chain) {

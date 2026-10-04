@@ -306,7 +306,7 @@ Result Backend::Generate(ID3D11Texture2D* input, bool reset) {
     std::swap(b.Transition.StateBefore,b.Transition.StateAfter); s.cmd->ResourceBarrier(1,&b);
     for(auto& x:barriers) std::swap(x.Transition.StateBefore,x.Transition.StateAfter);
     s.cmd->ResourceBarrier(2,barriers);
-    if(s.flowUsable) {auto b=Transition(s.opticalMotion.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON);s.cmd->ResourceBarrier(1,&b);}
+    if(s.flowUsable) {auto motionBarrier=Transition(s.opticalMotion.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON);s.cmd->ResourceBarrier(1,&motionBarrier);}
     if (!s.Submit() || FAILED(s.c11->Wait(s.out11.Get(),s.outputValue))) return Result::Failed;
     void* mapped=nullptr; const D3D12_RANGE read={0,4};
     if (FAILED(s.readback->Map(0,&read,&mapped)) || !mapped) return Result::Failed;

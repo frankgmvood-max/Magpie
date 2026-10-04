@@ -2,7 +2,16 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <cwchar>
+#include <cwctype>
 namespace fg {
+inline double ParseTargetFPS(const wchar_t* text) {
+    if(!text) return 136;
+    wchar_t* end=nullptr;const double fps=std::wcstod(text,&end);
+    if(end==text) return 136;
+    while(std::iswspace(*end)) ++end;
+    return !*end && std::isfinite(fps) && (fps==0 || (fps>=30 && fps<=360))?fps:136;
+}
 enum class FlowMethod : unsigned { None=0, Nvidia=2 };
 enum class PresentApi : unsigned { Auto=0, Present=1, Present1=2 };
 struct Settings {

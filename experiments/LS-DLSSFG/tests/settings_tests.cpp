@@ -5,6 +5,8 @@
 #include <limits>
 void Check(bool condition,const char* message) {if(!condition) {std::fprintf(stderr,"%s\n",message);std::exit(1);}}
 int main() {
+    Check(fg::ParseTargetFPS(L"bad")==136 && fg::ParseTargetFPS(L"")==136 && fg::ParseTargetFPS(L"136 FPS")==136 && fg::ParseTargetFPS(L"NaN")==136 && fg::ParseTargetFPS(L"500")==136,"bad INI FPS never enables adaptive pacing");
+    Check(fg::ParseTargetFPS(L"0")==0 && fg::ParseTargetFPS(L" 68.5 \t")==68.5,"explicit adaptive and fractional INI FPS accepted");
     fg::Settings settings;settings.multiplier=99;settings.flowQuality=99;
     settings.flow=static_cast<fg::FlowMethod>(1);settings.maximumFrameLatency=99;
     settings.targetFPS=std::numeric_limits<double>::quiet_NaN();settings.presentApi=static_cast<fg::PresentApi>(99);settings.Validate();

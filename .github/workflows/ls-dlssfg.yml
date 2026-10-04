@@ -44,7 +44,7 @@ jobs:
           Copy-Item out/ls-fg/_deps/imgui-src/LICENSE.txt out/package/addons/LS_DLSSFG/IMGUI-LICENSE.txt
           git rev-parse HEAD | Set-Content out/package/addons/LS_DLSSFG/build-commit.txt
           Copy-Item experiments/LS-DLSSFG/package out/package/addons/LS_DLSSFG/source/package -Recurse
-          Copy-Item experiments/LS-DLSSFG/README-RU.md,experiments/LS-DLSSFG/NOTICE.md,experiments/LS-DLSSFG/LICENSE,experiments/LS-DLSSFG/LICENSE-EAM out/package/addons/LS_DLSSFG/source
+          Copy-Item experiments/LS-DLSSFG/README-RU.md,experiments/LS-DLSSFG/NOTICE.md,experiments/LS-DLSSFG/LICENSE,experiments/LS-DLSSFG/LICENSE-EAM,experiments/LS-DLSSFG/RESEARCH.md out/package/addons/LS_DLSSFG/source
           Get-FileHash out/package/addons/LS_DLSSFG/LS_DLSSFG.dll -Algorithm SHA256 | Format-List | Out-File out/package/addons/LS_DLSSFG/SHA256.txt
       - uses: actions/upload-artifact@v4
         with:
