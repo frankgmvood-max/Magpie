@@ -40,12 +40,16 @@ try {
     # terminating ErrorRecord. Redirect at the process boundary instead.
     $helpProcess=Start-Process -FilePath $presentMon -ArgumentList '--help' -NoNewWindow -Wait -PassThru -RedirectStandardOutput $helpOut -RedirectStandardError $helpError
     $help=([IO.File]::ReadAllText($helpOut)+[IO.File]::ReadAllText($helpError)).Replace([string][char]0,'')
-    if ($helpProcess.ExitCode -ne 0) {throw 'PresentMon cannot start.'}
+    # v2.6.0 prints --help from ParseCommandLine and returns false; wmain
+    # consequently returns 1 even for valid help. Require the expected text
+    # below as well: exit 1 without help is still a startup failure.
+    if ($helpProcess.ExitCode -notin @(0,1)) {throw ('PresentMon cannot start (exit '+$helpProcess.ExitCode+'): '+$help)}
 } finally {
     foreach ($file in @($helpOut,$helpError)) {if (Test-Path -LiteralPath $file) {Remove-Item -LiteralPath $file}}
 }
-foreach ($flag in @('--process_id','--timed','--delay','--v2_metrics','--qpc_time','--write_display_metadata','--session_name','--terminate_after_timed','--no_console_stats','--no_track_input','--track_hybrid_present')) {
-    if ($help -notmatch [regex]::Escape($flag)) {throw ('PresentMon option unavailable: '+$flag)}
+if ($help -notmatch 'PresentMon\s+2\.6\.0') {throw ('PresentMon help/version unavailable (exit '+$helpProcess.ExitCode+'): '+$help)}
+foreach ($flag in @('--process_id','--output_file','--timed','--delay','--v2_metrics','--qpc_time','--write_display_metadata','--session_name','--terminate_after_timed','--no_console_stats','--no_track_input','--track_hybrid_present')) {
+    if ($help -notmatch [regex]::Escape($flag)) {throw ('PresentMon option unavailable: '+$flag+'; help: '+$help)}
 }
 if ($PrepareOnly) {Write-Host 'Pinned PresentMon hash and required command-line options verified.';exit 0}
 
