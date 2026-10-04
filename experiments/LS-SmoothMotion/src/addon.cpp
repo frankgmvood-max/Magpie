@@ -20,7 +20,7 @@ std::mutex mutex;IHost* host=nullptr;std::wstring directory,driverPath;
 sm::Settings settings;ls::GenerationLease lease;std::unique_ptr<sm::Backend> backend;
 ls::ComPtr<ID3D11Device> device;uintptr_t selected=0;UINT width=0,height=0;DXGI_FORMAT format=DXGI_FORMAT_UNKNOWN;
 uint64_t epoch=1,revision=0,statusAt=0,lastFrameAt=0,submitted=0,duplicates=0;
-bool ready=false,ui=false,pendingSettings=false,resetPending=false,disabled=false,plainFallback=false;
+bool ready=false,ui=false,pendingSettings=false,resetPending=false,disabled=false,plainFallback=false,shutdownQuarantined=false;
 unsigned recoveryAttempts=0;uint64_t recoveryWindow=0;
 double milliseconds=0;UINT currentSync=0;
 void Log(const char* text){if(host)host->Log(EAM_LOG_INFO,text);}
@@ -41,7 +41,13 @@ void Read(){
     lease.Reset();plainFallback=false;disabled=false;pendingSettings=false;resetPending=false;++revision;++epoch;
 }
 bool Tagged(IDXGISwapChain* sc){uint64_t tag=0;UINT n=sizeof tag;return SUCCEEDED(sc->GetPrivateData(tagGuid,&n,&tag)) && n==sizeof tag && tag==epoch;}
-void Fail(const char* why){disabled=true;if(backend)backend->Hide();Log(why);Status(why,3);lease.Reset();sm::StopDriver();}
+void Fail(const char* why){disabled=true;Reset();Log(why);Status(why,3);lease.Reset();sm::StopDriver();}
+bool ScheduleRecovery(const char* reason){
+    if(!settings.automaticRecovery)return false;
+    const auto now=GetTickCount64();if(now-recoveryWindow>60000){recoveryWindow=now;recoveryAttempts=0;}
+    if(recoveryAttempts>=3)return false;
+    ++recoveryAttempts;resetPending=true;if(backend)backend->Hide();Log(reason);return true;
+}
 HRESULT WINAPI Before(IDXGISwapChain* sc,UINT* sync,UINT* flags,BOOL* handled,LsBridgeFrame* frame,void*){
     std::lock_guard<std::mutex> lock(mutex);
     if(!ready || !host || !settings.enabled || !settings.nativeFGDisabled || disabled || !ls::LegalPresent(*flags) || !Tagged(sc))return S_OK;
@@ -64,14 +70,11 @@ HRESULT WINAPI Before(IDXGISwapChain* sc,UINT* sync,UINT* flags,BOOL* handled,Ls
             if(!backend->Init(device.Get(),sd.OutputWindow,d,settings,plainFallback,Log)){Fail("Smooth Motion D3D12 bridge initialization failed; LS output preserved");return S_OK;}
         }
         if(!backend->Prepare(source.Get())){
-            if(settings.automaticRecovery){
-                if(now-recoveryWindow>60000){recoveryWindow=now;recoveryAttempts=0;}
-                if(recoveryAttempts++<3){resetPending=true;backend->Hide();Log("Smooth Motion: copy/queue recovery scheduled (bounded to 3 per minute)");return S_OK;}
-            }
+            if(ScheduleRecovery("Smooth Motion: copy/queue recovery scheduled (bounded to 3 per minute)"))return S_OK;
             Fail("Smooth Motion GPU synchronization failed; LS output preserved");return S_OK;
         }
         currentSync=*sync;const HRESULT hr=backend->Present(*sync);milliseconds=backend->Milliseconds();
-        if(hr!=S_OK){backend->Hide();resetPending=true;return S_OK;}
+        if(hr!=S_OK){if(!ScheduleRecovery("Smooth Motion: output Present recovery scheduled (bounded to 3 per minute)"))Fail("Smooth Motion output repeatedly unavailable; LS output preserved");return S_OK;}
         if(backend->TimedOut()){
             if(!plainFallback && settings.preferVRR){plainFallback=true;resetPending=true;Log("Smooth Motion: no verified inference on tearing chain; trying the reference plain-chain descriptor once");return S_OK;}
             Fail("Smooth Motion: wrapper/CUDA inference not confirmed after warmup; LS output preserved");return S_OK;
@@ -94,7 +97,7 @@ void WINAPI After(IDXGISwapChain* sc,HRESULT hr,LsBridgeFrame*,void*){
     std::lock_guard<std::mutex> lock(mutex);
     if(!ready || !host || disabled || selected!=reinterpret_cast<uintptr_t>(sc) || !backend)return;
     try {
-        if(hr!=S_OK){backend->Hide();resetPending=true;return;}
+        if(hr!=S_OK){if(!ScheduleRecovery("Smooth Motion: source Present recovery scheduled (bounded to 3 per minute)"))Fail("Smooth Motion source output repeatedly unavailable; LS output preserved");return;}
         const bool active=backend->Confirmed();
         host->PublishMetric(id,"copy_ms",milliseconds,"ms");host->PublishMetric(id,"base_frames_submitted",double(submitted),"frames");
         host->PublishMetric(id,"cuda_graph_launches",double(nvs30::nvpresent::graph_launch_count()),"launches");
@@ -120,7 +123,7 @@ std::wstring Wide(const char* s){const int n=MultiByteToWideChar(CP_UTF8,MB_ERR_
 EAM_EXPORT void AddonInitialize(IHost* h,ImGuiContext* ctx,void* allocate,void* release,void* user){
     if(!h || h->GetHostVersion()<0x010100)return;
     if(ctx && allocate && release){ImGui::SetAllocatorFunctions(reinterpret_cast<ImGuiMemAllocFunc>(allocate),reinterpret_cast<ImGuiMemFreeFunc>(release),user);ImGui::SetCurrentContext(ctx);eam::ui::InitAddonImGui();ui=true;}else ui=false;
-    {std::lock_guard<std::mutex> lock(mutex);if(host)return;host=h;HMODULE self=nullptr;GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&AddonInitialize),&self);wchar_t path[32768]{};GetModuleFileNameW(self,path,32768);directory=std::filesystem::path(path).parent_path().wstring();Read();}
+    {std::lock_guard<std::mutex> lock(mutex);if(host)return;if(shutdownQuarantined){h->Log(EAM_LOG_ERROR,"Previous output did not drain; restart LS before reinitializing this addon");return;}host=h;HMODULE self=nullptr;GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&AddonInitialize),&self);wchar_t path[32768]{};GetModuleFileNameW(self,path,32768);directory=std::filesystem::path(path).parent_path().wstring();Read();}
     LsBridgeCallbacks cb{};cb.owner=LS_OWNER_SMOOTH;cb.kind=LS_BRIDGE_SINK;cb.before=Before;cb.after=After;
     if(!LsBridgeRegister(&cb)){h->Log(EAM_LOG_ERROR,"Smooth Motion: bridge registration failed");return;}
     for(uint32_t e:{EAM_EVENT_D3D11_DEVICE_READY,EAM_EVENT_D3D11_DEVICE_CHANGED,EAM_EVENT_SETTINGS_APPLIED})h->SubscribeEvent(e,Event);
@@ -129,9 +132,12 @@ EAM_EXPORT void AddonInitialize(IHost* h,ImGuiContext* ctx,void* allocate,void* 
 }
 EAM_EXPORT void AddonShutdown(){
     IHost* h=nullptr;{std::lock_guard<std::mutex> lock(mutex);ready=false;h=host;}
-    LsBridgeUnregister(LS_OWNER_SMOOTH);
+    const bool drained=LsBridgeUnregister(LS_OWNER_SMOOTH)!=FALSE;
     if(h){h->SetPostDispatchCallback(nullptr);for(uint32_t e:{EAM_EVENT_D3D11_DEVICE_READY,EAM_EVENT_D3D11_DEVICE_CHANGED,EAM_EVENT_SETTINGS_APPLIED})h->UnsubscribeEvent(e,Event);h->SetStatus(id,"",0);}
-    std::lock_guard<std::mutex> lock(mutex);Reset();lease.Reset();sm::StopDriver();host=nullptr;
+    std::lock_guard<std::mutex> lock(mutex);
+    if(drained){Reset();lease.Reset();sm::StopDriver();}
+    else{shutdownQuarantined=true;sm::DetachDriverLogger();OutputDebugStringA("Smooth Motion shutdown: in-flight output resources retained until process exit\n");}
+    host=nullptr;
 }
 EAM_EXPORT uint32_t GetAddonCapabilities(){return EAM_CAP_HAS_SETTINGS|EAM_CAP_REQUIRES_RESTART|EAM_CAP_D3D11_DEVICE_ACCESS|EAM_CAP_DISPATCH_HOOK;}
 EAM_EXPORT const char* GetAddonName(){return "Smooth Motion for RTX 30 (experimental)";}
@@ -146,7 +152,7 @@ EAM_EXPORT void AddonRenderSettings(){
     ImGui::TextWrapped("An alternative x2 generator using NVIDIA NvPresent and the open NVSmooth30 Ampere compatibility path. Disable native LSFG, this suite's DLSS FG addon and all other Smooth Motion loaders. A GPU model alone does not establish runtime compatibility.");
     dirty|=ImGui::Checkbox("Enable Smooth Motion",&draft.enabled);dirty|=ImGui::Checkbox("I have disabled native LS frame generation",&draft.nativeFGDisabled);
     ImGui::Text("Frame multiplier: 2x (driver contract)");
-    bool adaptive=draft.targetFPS==0;if(ImGui::Checkbox("Uncapped base input",&adaptive)){draft.targetFPS=adaptive?0:136;dirty=true;}
+    bool adaptive=draft.targetFPS==0;if(ImGui::Checkbox("Uncapped base input",&adaptive)){draft.targetFPS=adaptive?0.f:136.f;dirty=true;}
     if(!adaptive){dirty|=ImGui::InputFloat("Target output FPS",&draft.targetFPS,1,10,"%.2f");ImGui::Text("Base submission / suggested game cap: %.2f FPS",draft.targetFPS/2);}
     int sync=int(draft.syncMode);if(ImGui::Combo("Output synchronization",&sync,"VRR-compatible (sync 0)\0Follow LS sync interval\0Vsync (sync 1)\0")){draft.syncMode=unsigned(sync);dirty=true;}
     dirty|=ImGui::Checkbox("Prefer tearing-capable output (VRR request)",&draft.preferVRR);

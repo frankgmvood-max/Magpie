@@ -28,6 +28,7 @@ public:
         ls::ComPtr<ID3D11Texture2D> back;
         if(FAILED(chain_->GetBuffer(0,IID_PPV_ARGS(&back))))return false;
         context_->CopyResource(back.Get(),texture);context_->Flush();
+        window_.Show(true); // hidden output can report OCCLUDED indefinitely
         const HRESULT hr=chain_->Present(0,ls::PresentFlags(0,tearing_));window_.Show(hr==S_OK);return hr==S_OK;
     }
     void Reset(){window_.Show(false);chain_.Reset();context_.Reset();if(latency_)CloseHandle(latency_);latency_=nullptr;window_.Reset();}

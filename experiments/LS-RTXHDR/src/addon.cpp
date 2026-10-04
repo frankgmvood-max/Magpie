@@ -18,7 +18,7 @@ std::mutex mutex;IHost* host=nullptr;std::wstring directory;
 hdr::Settings settings;std::unique_ptr<hdr::Backend> backend;hdr::Presenter presenter;
 ls::ComPtr<ID3D11Device> device;uintptr_t selected=0;UINT width=0,height=0;DXGI_FORMAT format=DXGI_FORMAT_UNKNOWN;
 uint64_t epoch=1,revision=0,statusAt=0,displayAt=0,processed=0,duplicates=0;
-bool ready=false,ui=false,pendingSettings=false,resetPending=false,disabled=false,displayHdr=false,hdrOutput=false;
+bool ready=false,ui=false,pendingSettings=false,resetPending=false,disabled=false,displayHdr=false,hdrOutput=false,shutdownQuarantined=false;
 double milliseconds=0;uint64_t lastFrameAt=0;
 void Log(const char* text){if(host)host->Log(EAM_LOG_INFO,text);}
 void WINAPI BridgeLog(const char* text,void*){Log(text);}
@@ -96,7 +96,7 @@ void Event(uint32_t event,const void*,uint32_t,void*){
 EAM_EXPORT void AddonInitialize(IHost* h,ImGuiContext* ctx,void* allocate,void* release,void* user){
     if(!h || h->GetHostVersion()<0x010100)return;
     if(ctx && allocate && release){ImGui::SetAllocatorFunctions(reinterpret_cast<ImGuiMemAllocFunc>(allocate),reinterpret_cast<ImGuiMemFreeFunc>(release),user);ImGui::SetCurrentContext(ctx);eam::ui::InitAddonImGui();ui=true;}else ui=false;
-    {std::lock_guard<std::mutex> lock(mutex);if(host)return;host=h;HMODULE self=nullptr;GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&AddonInitialize),&self);wchar_t path[32768];GetModuleFileNameW(self,path,32768);directory=std::filesystem::path(path).parent_path().wstring();Read();}
+    {std::lock_guard<std::mutex> lock(mutex);if(host)return;if(shutdownQuarantined){h->Log(EAM_LOG_ERROR,"Previous output did not drain; restart LS before reinitializing this addon");return;}host=h;HMODULE self=nullptr;GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&AddonInitialize),&self);wchar_t path[32768];GetModuleFileNameW(self,path,32768);directory=std::filesystem::path(path).parent_path().wstring();Read();}
     LsBridgeCallbacks cb{};cb.owner=LS_OWNER_HDR;cb.kind=LS_BRIDGE_FILTER;cb.before=Before;cb.after=After;
     if(!LsBridgeRegister(&cb)){h->Log(EAM_LOG_ERROR,"RTX HDR: bridge registration failed");return;}
     for(uint32_t e:{EAM_EVENT_D3D11_DEVICE_READY,EAM_EVENT_D3D11_DEVICE_CHANGED,EAM_EVENT_SETTINGS_APPLIED})h->SubscribeEvent(e,Event);
@@ -105,9 +105,12 @@ EAM_EXPORT void AddonInitialize(IHost* h,ImGuiContext* ctx,void* allocate,void* 
 }
 EAM_EXPORT void AddonShutdown(){
     IHost* h=nullptr;{std::lock_guard<std::mutex> lock(mutex);ready=false;h=host;}
-    LsBridgeUnregister(LS_OWNER_HDR);
+    const bool drained=LsBridgeUnregister(LS_OWNER_HDR)!=FALSE;
     if(h){h->SetPostDispatchCallback(nullptr);for(uint32_t e:{EAM_EVENT_D3D11_DEVICE_READY,EAM_EVENT_D3D11_DEVICE_CHANGED,EAM_EVENT_SETTINGS_APPLIED})h->UnsubscribeEvent(e,Event);h->SetStatus(id,"",0);}
-    std::lock_guard<std::mutex> lock(mutex);Reset();host=nullptr;
+    std::lock_guard<std::mutex> lock(mutex);
+    if(drained)Reset();
+    else{shutdownQuarantined=true;OutputDebugStringA("RTX HDR shutdown: borrowed frame resources retained until process exit\n");}
+    host=nullptr;
 }
 EAM_EXPORT uint32_t GetAddonCapabilities(){return EAM_CAP_HAS_SETTINGS|EAM_CAP_REQUIRES_RESTART|EAM_CAP_D3D11_DEVICE_ACCESS|EAM_CAP_DISPATCH_HOOK;}
 EAM_EXPORT const char* GetAddonName(){return "RTX Video HDR (Magpie backend)";}

@@ -13,7 +13,12 @@ namespace {
 IDXGISwapChain* selected=nullptr;
 unsigned originalCalls=0,filtered=0,sunk=0,groups=0;bool replace=false;
 std::mutex mutex;std::condition_variable condition;bool blocked=false,entered=false,released=false;
-HRESULT STDMETHODCALLTYPE Capture(IDXGISwapChain*,UINT,UINT){++originalCalls;return S_OK;}
+bool blockOriginal=false;
+HRESULT STDMETHODCALLTYPE Capture(IDXGISwapChain*,UINT,UINT){
+    ++originalCalls;
+    if(blockOriginal){std::unique_lock<std::mutex> lock(mutex);entered=true;condition.notify_all();condition.wait(lock,[]{return released;});}
+    return S_OK;
+}
 HRESULT STDMETHODCALLTYPE Capture1(IDXGISwapChain1*,UINT,UINT,const DXGI_PRESENT_PARAMETERS*){++originalCalls;return S_OK;}
 void Check(bool b,const char* why){if(!b){std::fprintf(stderr,"%s\n",why);std::exit(1);}}
 HRESULT WINAPI Generate(IDXGISwapChain* sc,UINT* s,UINT* f,BOOL*,LsBridgeFrame*,void*){
@@ -64,6 +69,14 @@ int main(){
     std::atomic<bool> drained{false};std::thread shutdown([&]{Check(LsBridgeUnregister(LS_OWNER_HDR),"filter drain");drained=true;});
     std::this_thread::sleep_for(std::chrono::milliseconds(30));Check(!drained,"shutdown waits for borrowed frame resources");
     {std::lock_guard<std::mutex> lock(mutex);released=true;}condition.notify_all();render.join();shutdown.join();Check(drained,"shutdown completes after frame exits");
+    blocked=false;entered=released=false;blockOriginal=true;
+    Check(LsBridgeRegister(&filter),"filter re-registers after drain");
+    std::thread stalled([&]{chain->Present(0,0);});
+    {std::unique_lock<std::mutex> lock(mutex);Check(condition.wait_for(lock,std::chrono::seconds(2),[]{return entered;}),"entered original Present after filter");}
+    Check(!LsBridgeUnregister(LS_OWNER_HDR),"bounded unregister reports resources still borrowed across original Present");
+    Check(!LsBridgeRegister(&filter),"cannot overwrite callback while its frame still runs");
+    {std::lock_guard<std::mutex> lock(mutex);released=true;}condition.notify_all();stalled.join();blockOriginal=false;
+    Check(LsBridgeUnregister(LS_OWNER_HDR) && LsBridgeRegister(&filter) && LsBridgeUnregister(LS_OWNER_HDR),"quarantined callback drains and becomes reusable");
     *reinterpret_cast<void***>(chain.Get())=table;Replace(table,8,old);Replace(table,22,old1);chain.Reset();DestroyWindow(hwnd);
-    std::puts("phase order, x4/Present1, alternative sink, partial bypass, new table and callback lifetime passed");
+    std::puts("phase order, x4/Present1, alternative sink, partial bypass, new table, callback lifetime and bounded original-Present drain passed");
 }

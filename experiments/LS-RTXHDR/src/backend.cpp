@@ -113,8 +113,8 @@ bool Backend::Process(ID3D11Texture2D* input,const Settings& settings,bool hdrOu
     s.gpu.context->ClearState();
     if(FAILED(hr)){s.faulted=hr==E_UNEXPECTED;return s.Error("TrueHDR evaluation",hr,status);}
     if(!hdrOutput){
-        const float values[4]={settings.exposure,settings.sdrWhiteNits,settings.shoulder,0};
-        s.gpu.context->UpdateSubresource(s.constants.Get(),0,nullptr,values,0,0);
+        const float toneValues[4]={settings.exposure,settings.sdrWhiteNits,settings.shoulder,0};
+        s.gpu.context->UpdateSubresource(s.constants.Get(),0,nullptr,toneValues,0,0);
         ID3D11RenderTargetView* rt=s.sdrTarget.Get();ID3D11ShaderResourceView* source=s.hdrView.Get();ID3D11Buffer* cb=s.constants.Get();
         s.gpu.context->OMSetRenderTargets(1,&rt,nullptr);
         const D3D11_VIEWPORT viewport{0,0,float(s.width),float(s.height),0,1};s.gpu.context->RSSetViewports(1,&viewport);

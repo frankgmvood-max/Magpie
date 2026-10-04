@@ -51,7 +51,7 @@ uint64_t epoch=1, statusAt=0, generated=0, baseFrames=0;
 UINT width=0,height=0;
 DXGI_FORMAT format=DXGI_FORMAT_UNKNOWN;
 HANDLE timer=nullptr;
-bool armed=false, disabled=false, resetHistory=true, callbacksReady=false;
+bool armed=false, disabled=false, resetHistory=true, callbacksReady=false,shutdownQuarantined=false;
 bool preferVRR=true, presentationReported=false;
 enum class PendingOutput {None,Duplicate,History,Generated};
 PendingOutput pendingOutput=PendingOutput::None;
@@ -334,6 +334,7 @@ void Initialize(IHost* h) {
     {
         std::lock_guard<std::mutex> lock(mutex);
         if(host) return; // manager initialization must be idempotent
+        if(shutdownQuarantined){h->Log(EAM_LOG_ERROR,"FG: a previous Present did not drain; restart LS before reinitializing");return;}
         host=h;callbacksReady=false;
         HMODULE self=nullptr;
         if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -376,14 +377,16 @@ EAM_EXPORT void AddonShutdown() {
     {
         std::lock_guard<std::mutex> lock(mutex);callbacksReady=false;h=host;
     }
-    PresentHook::Uninstall();
+    const bool drained=PresentHook::Uninstall();
     if(h) {
         h->SetPostDispatchCallback(nullptr,nullptr);
         for(uint32_t e:{EAM_EVENT_D3D11_DEVICE_READY,EAM_EVENT_D3D11_DEVICE_CHANGED,EAM_EVENT_SETTINGS_APPLIED}) h->UnsubscribeEvent(e,Event);
         h->SetStatus(id,"",0);
     }
     std::lock_guard<std::mutex> lock(mutex);
-    Reset();generationLease.Reset(); if(timer) {CloseHandle(timer);timer=nullptr;} host=nullptr;armed=false;
+    if(drained){Reset();generationLease.Reset();if(timer){CloseHandle(timer);timer=nullptr;}}
+    else {shutdownQuarantined=true;StartupTrace("FG shutdown: in-flight Present retained; resources quarantined until process exit");}
+    host=nullptr;armed=false;
 }
 EAM_EXPORT uint32_t GetAddonCapabilities() {return EAM_CAP_HAS_SETTINGS|EAM_CAP_REQUIRES_RESTART|EAM_CAP_D3D11_DEVICE_ACCESS|EAM_CAP_DISPATCH_HOOK;}
 EAM_EXPORT const char* GetAddonName() {return "DLSS Frame Generation (experimental)";}

@@ -1,5 +1,5 @@
-// PresentHook: sees every frame Lossless Scaling presents (real and generated) just before it goes to the screen, by patching Present and
-// Present1 in the function table that every window swap chain of the DXGI runtime shares. The table comes directly from LS's live output chain. No probe window or swap chain is created.
+// Generator facade over the shared output bridge. Each live DXGI vtable keeps
+// its own original Present/Present1 pair; no probe swapchain is created.
 #pragma once
 #include <dxgi1_2.h>
 #include "settings.h"
@@ -15,7 +15,7 @@ namespace PresentHook {
     // nesting protection is still active. Not for TEST, partial or handled calls.
     using AfterCallback = void (*)(IDXGISwapChain* sc, HRESULT result) noexcept;
     bool Install(IDXGISwapChain* chain, Callback cb, LogFn log, AfterCallback after=nullptr);
-    void Uninstall();
+    bool Uninstall(); // false: an in-flight frame still owns backend resources
     bool Installed();
     unsigned Hits();             // presents seen in the process, by anyone
     // A present of our own, from inside the callback (a frame of our own before Lossless Scaling's): the original Present, which does not

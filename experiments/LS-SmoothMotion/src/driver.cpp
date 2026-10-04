@@ -80,7 +80,8 @@ bool InitializeDriver(const std::wstring& configured,const Settings& settings,st
     if(!InitGuard()){StopGuard();status=faulted?"NVIDIA initialization exception; restart LS required":"Known driver profile did not initialize / inference hooks unavailable";return false;}
     status="Known profile initialized; awaiting wrapper and CUDA inference";return true;
 }
-void StopDriver(){if(nvs30::nvpresent::initialized())stoppedAfterInit=true;StopGuard();std::lock_guard<std::mutex> lock(logMutex);logCallback={};}
+void DetachDriverLogger(){std::lock_guard<std::mutex> lock(logMutex);logCallback={};}
+void StopDriver(){if(nvs30::nvpresent::initialized())stoppedAfterInit=true;StopGuard();DetachDriverLogger();}
 bool DriverFaulted(){return faulted;}
 std::string DriverStatus(){return status;}
 }

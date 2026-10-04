@@ -25,9 +25,10 @@ bool PresentHook::Install(IDXGISwapChain* sc,Callback cb,LogFn log,AfterCallback
     }
     return LsBridgeInstall(sc,Log,&log)!=FALSE;
 }
-void PresentHook::Uninstall() {
+bool PresentHook::Uninstall() {
     callback.store(nullptr);afterCallback.store(nullptr);
-    if(registered.exchange(false))LsBridgeUnregister(LS_OWNER_DLSSFG);
+    registered.store(false);
+    return LsBridgeUnregister(LS_OWNER_DLSSFG)!=FALSE;
 }
 bool PresentHook::Installed(){return registered.load();}
 unsigned PresentHook::Hits(){return LsBridgeHits();}

@@ -45,7 +45,13 @@ int main(int argc,char** argv){
             init(&host,ctx,reinterpret_cast<void*>(allocate),reinterpret_cast<void*>(release),data);Check(host.subscriptions.size()==3 && host.post,"host registration");
             host.PublishEvent(EAM_EVENT_D3D11_DEVICE_READY,nullptr,0);host.PublishEvent(EAM_EVENT_D3D11_DEVICE_CHANGED,nullptr,0);host.PublishEvent(EAM_EVENT_SETTINGS_APPLIED,nullptr,0);host.post(1,1,1,host.postData);
             auto& io=ImGui::GetIO();io.DisplaySize=ImVec2(1280,1000);io.DeltaTime=1.f/60;unsigned char* pixels=nullptr;int w=0,h=0;io.Fonts->GetTexDataAsRGBA32(&pixels,&w,&h);
-            ImGui::NewFrame();ImGui::Begin("Addon settings");panel();ImGui::End();ImGui::Render();Check(ImGui::GetDrawData() && ImGui::GetDrawData()->TotalVtxCount>0,"actual settings rendering");
+            // A new ImGui window can be hidden for its initial auto-fit frame.
+            // Exercise real settings on subsequent frames with a known size.
+            for(unsigned frame=0;frame<3;++frame){
+                ImGui::NewFrame();ImGui::SetNextWindowPos(ImVec2(10,10),ImGuiCond_Always);ImGui::SetNextWindowSize(ImVec2(1100,900),ImGuiCond_Always);
+                ImGui::Begin("Addon settings");panel();ImGui::End();ImGui::Render();
+            }
+            Check(ImGui::GetDrawData() && ImGui::GetDrawData()->TotalVtxCount>0,"actual settings rendering");
             stop();Check(host.subscriptions.empty() && !host.post && !host.deviceReads,"shutdown, registration race or stale borrowed-device access");ImGui::DestroyContext(ctx);
         }
         Check(host.logs>0,"host logging");FreeLibrary(dll);

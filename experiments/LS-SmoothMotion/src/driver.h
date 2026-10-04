@@ -10,6 +10,7 @@ Profile CheckProfile(const std::wstring&,std::string& sha);
 std::wstring ActiveDriverPath();
 bool InitializeDriver(const std::wstring&,const Settings&,std::function<void(const char*)>);
 void StopDriver();
+void DetachDriverLogger(); // disable host calls without changing live driver hooks
 bool DriverFaulted();
 std::string DriverStatus();
 }
