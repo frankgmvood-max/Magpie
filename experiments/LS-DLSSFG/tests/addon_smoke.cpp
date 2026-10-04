@@ -72,7 +72,7 @@ int main(int argc,char** argv) {
     Check((caps()&EAM_CAP_DISPATCH_HOOK)!=0 && (caps()&EAM_CAP_REQUIRES_RESTART)!=0,"missing capabilities");
     Check((caps()&EAM_CAP_HAS_SETTINGS)!=0,"missing settings capability");
     auto panel=reinterpret_cast<AddonRenderSettings_t>(GetProcAddress(dll,"AddonRenderSettings"));
-    Check(panel!=nullptr && std::string(version())=="0.2.1","settings export / version");
+    Check(panel!=nullptr && std::string(version())=="0.3.0","settings export / version");
     Check(InitializeGuarded(init,reinterpret_cast<IHost*>(uintptr_t(1)))==EXCEPTION_ACCESS_VIOLATION,
         "init fault must propagate to the manager after recording a breadcrumb");
     Host host;
@@ -116,7 +116,7 @@ int main(int argc,char** argv) {
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"LSFGSmoke";
     RegisterClassW(&wc);
     HWND window=CreateWindowW(wc.lpszClassName,L"LS test",WS_POPUP,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);
-    Check(window!=nullptr,"create test window");
+    Check(window!=nullptr,"create test window");ShowWindow(window,SW_SHOWNOACTIVATE);
     ComPtr<IDXGIDevice> dx;ComPtr<IDXGIAdapter> adapter;ComPtr<IDXGIFactory2> factory;
     Check(SUCCEEDED(device.As(&dx)) && SUCCEEDED(dx->GetAdapter(&adapter)) && SUCCEEDED(adapter->GetParent(IID_PPV_ARGS(&factory))),"software DXGI factory");
     DXGI_SWAP_CHAIN_DESC1 desc{};desc.Width=64;desc.Height=64;desc.Format=DXGI_FORMAT_R8G8B8A8_UNORM;

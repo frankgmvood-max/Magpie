@@ -24,6 +24,7 @@ public:
     unsigned FlowQuality() const;
     bool RealMotion() const;
     double PreprocessMilliseconds() const;
+    bool OutputDisabledByRuntime() const;
 private:
     struct State;
     std::unique_ptr<State> s_;

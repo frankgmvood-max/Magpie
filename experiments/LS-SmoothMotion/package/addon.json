@@ -1,0 +1,18 @@
+{
+  "name": "Smooth Motion for RTX 30 (experimental)",
+  "version": "0.1.0",
+  "author": "Anton / Magpie experiments",
+  "description": "NVIDIA driver Smooth Motion x2 via same-GPU D3D12 output. Validated NvPresent profile required. No NVIDIA or process proxy binaries bundled.",
+  "min_host_version": "1.1.0",
+  "dll": "LS_SmoothMotion.dll",
+  "enabled_by_default": false,
+  "conflicts": [
+    "LS_DLSSFG",
+    "DLSS5NR01"
+  ],
+  "dependencies": [],
+  "tags": [
+    "experimental",
+    "frame-generation"
+  ]
+}

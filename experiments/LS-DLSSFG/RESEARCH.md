@@ -1,8 +1,8 @@
-# Implementation and VRR review — 0.2.1
+# Implementation and VRR review — 0.3.0
 
 References checked 2026-10-04. Hardware VRR success is still unverified.
 
-## 0.2.1: measured processing cost and presentation gap
+## 0.3.0: measured processing cost and presentation gap
 
 The supplied 0.2.0 log contains a long NVOF x2 session at 3440x1440:
 208 telemetry samples, median generation_ms 8.449 and unique_interval_ms 21.075.
@@ -15,7 +15,7 @@ The long OF session reports G-SYNC active in 207/208 samples after its initial
 query. This does not override the user's observed fixed refresh/tearing.
 Driver status alone does not measure physical scanout frequency.
 
-0.2.1 reduces the OF analysis image to 50% width/height by default, retaining
+0.3.0 reduces the OF analysis image to 50% width/height by default, retaining
 full-resolution LS colour, DLSSG output and dense motion. 25/50/75/100% are
 selectable. Driver minimum extents are queried; motion displacement and grid
 coordinates are scaled independently per axis, including odd-sized extents.

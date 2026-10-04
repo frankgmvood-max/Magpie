@@ -1,10 +1,10 @@
-name: LS DLSS FG addon
+name: LS experimental addon suite
 on:
   workflow_dispatch:
   push:
-    paths: ['experiments/LS-DLSSFG/**', '.github/workflows/ls-dlssfg.yml']
+    paths: ['experiments/LS-*/**', '.github/workflows/ls-dlssfg.yml']
   pull_request:
-    paths: ['experiments/LS-DLSSFG/**', '.github/workflows/ls-dlssfg.yml']
+    paths: ['experiments/LS-*/**', '.github/workflows/ls-dlssfg.yml']
 permissions:
   contents: read
 jobs:
@@ -30,10 +30,12 @@ jobs:
         run: |
           pwsh -File scripts/Fetch-NvapiHeaders.ps1 -OutputDirectory dependencies/nvapi-sdk
           if ($LASTEXITCODE) { throw 'NVAPI header fetch failed' }
-          cmake -S experiments/LS-DLSSFG -B out/ls-fg -A x64 -DEAM_ROOT="${{ github.workspace }}/dependencies/eam" -DNGX_ROOT="${{ github.workspace }}/dependencies/dlss" -DNVAPI_ROOT="${{ github.workspace }}/dependencies/nvapi-sdk"
-      - name: Build x64 DLL
+          pwsh -File scripts/Fetch-RtxVideoSdk.ps1 -Destination dependencies/rtx-video
+          if ($LASTEXITCODE) { throw 'RTX Video SDK fetch failed' }
+          cmake -S experiments/LS-Addons -B out/ls-fg -A x64 -DEAM_ROOT="${{ github.workspace }}/dependencies/eam" -DNGX_ROOT="${{ github.workspace }}/dependencies/dlss" -DNVAPI_ROOT="${{ github.workspace }}/dependencies/nvapi-sdk" -DRTX_VIDEO_ROOT="${{ github.workspace }}/dependencies/rtx-video"
+      - name: Build x64 addons
         run: cmake --build out/ls-fg --config Release --parallel
-      - name: Test ABI, lifecycle and presentation policy
+      - name: Test ABI, GPU transport, recovery and frame processing order
         run: ctest --test-dir out/ls-fg -C Release --output-on-failure
       - name: Package
         shell: pwsh
@@ -42,12 +44,15 @@ jobs:
           if ($LASTEXITCODE) { throw 'Package install failed' }
           Copy-Item dependencies/dlss/LICENSE.txt out/package/addons/LS_DLSSFG/NVIDIA-LICENSE.txt
           Copy-Item out/ls-fg/_deps/imgui-src/LICENSE.txt out/package/addons/LS_DLSSFG/IMGUI-LICENSE.txt
+          git rev-parse HEAD | Set-Content out/package/build-commit.txt
           git rev-parse HEAD | Set-Content out/package/addons/LS_DLSSFG/build-commit.txt
+          Copy-Item scripts/Fetch-RtxVideoSdk.ps1,scripts/Fetch-NvapiHeaders.ps1 out/package/source
+          Get-ChildItem out/package -Filter *.dll -Recurse | Get-FileHash -Algorithm SHA256 | Format-List | Out-File out/package/SHA256.txt
           Copy-Item experiments/LS-DLSSFG/package out/package/addons/LS_DLSSFG/source/package -Recurse
           Copy-Item experiments/LS-DLSSFG/README-RU.md,experiments/LS-DLSSFG/NOTICE.md,experiments/LS-DLSSFG/LICENSE,experiments/LS-DLSSFG/LICENSE-EAM,experiments/LS-DLSSFG/RESEARCH.md out/package/addons/LS_DLSSFG/source
           Get-FileHash out/package/addons/LS_DLSSFG/LS_DLSSFG.dll -Algorithm SHA256 | Format-List | Out-File out/package/addons/LS_DLSSFG/SHA256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: LS-DLSSFG-x64-${{ github.sha }}
+          name: LS-Addons-x64-${{ github.sha }}
           path: out/package
           if-no-files-found: error

@@ -1,0 +1,3 @@
+SAOG0721/Magpie experimental 2fceab5e241bc9f8ded001ab3266762f1f8bc51e (0.6.9)
+https://github.com/SAOG0721/Magpie
+RtxVideoBridge.cpp/.h are copied unchanged under the upstream GNU GPL v3.

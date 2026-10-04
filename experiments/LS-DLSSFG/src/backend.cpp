@@ -76,7 +76,7 @@ struct Backend::State {
     std::unique_ptr<OpticalFlow> flow;
     std::unique_ptr<DuplicateFilter> duplicate;
     unsigned multiplier=2,maxMultiplier=2,outputCount=0;
-    bool flowUsable=false,realMotion=false,hdr=false;
+    bool flowUsable=false,realMotion=false,hdr=false,runtimeRejected=false;
     uint64_t privateValue=0;
     double preprocessMs=0;
     UINT width = 0, height = 0;
@@ -260,7 +260,7 @@ bool Backend::Init(ID3D11Device* dev, const D3D11_TEXTURE2D_DESC& desc,
 }
 Result Backend::Generate(ID3D11Texture2D* input, bool reset) {
     auto& s=*s_;
-    s.outputCount=0;s.realMotion=false;
+    s.outputCount=0;s.realMotion=false;s.runtimeRejected=false;
     if (s.lost || ngxFault.load() || !s.Wait()) return Result::Failed;
     s.c11->CopyResource(s.input11.Get(),input);
     if (FAILED(s.c11->Signal(s.in11.Get(),++s.inputValue))) return Result::Failed;
@@ -268,6 +268,9 @@ Result Backend::Generate(ID3D11Texture2D* input, bool reset) {
     if(FAILED(s.privateContext->Wait(s.privateInputFence.Get(),s.inputValue))) return Result::Failed;
     const auto preStart=std::chrono::steady_clock::now();
     if(s.duplicate) {
+        // A history reset must reach NGX even if the resumed scene has exactly
+        // the same pixels as the last frame before suspension.
+        if(reset)s.duplicate->Reset();
         const auto duplicate=s.duplicate->Check(s.privateContext.Get(),s.privateInput.Get());
         if(duplicate==DuplicateResult::Duplicate) return Result::Duplicate;
         if(duplicate==DuplicateResult::Failed) {
@@ -318,7 +321,7 @@ Result Backend::Generate(ID3D11Texture2D* input, bool reset) {
     if (FAILED(s.readback->Map(0,&read,&mapped)) || !mapped) return Result::Failed;
     const bool disabled=*static_cast<const unsigned char*>(mapped)!=0;
     const D3D12_RANGE written={0,0}; s.readback->Unmap(0,&written);
-    if(disabled || reset) {s.outputCount=0;return Result::HistoryOnly;}
+    if(disabled || reset) {s.runtimeRejected=disabled && !reset;s.outputCount=0;return Result::HistoryOnly;}
     ++s.outputCount;
     }
     return Result::Ready;
@@ -330,4 +333,5 @@ unsigned Backend::MaxMultiplier() const {return s_?s_->maxMultiplier:2;}
 unsigned Backend::FlowQuality() const {return s_ && s_->flowUsable?s_->flow->Quality():0;}
 bool Backend::RealMotion() const {return s_ && s_->realMotion;}
 double Backend::PreprocessMilliseconds() const {return s_?s_->preprocessMs:0;}
+bool Backend::OutputDisabledByRuntime() const {return s_ && s_->runtimeRejected;}
 }

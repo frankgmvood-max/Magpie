@@ -1,0 +1,3 @@
+ItsAdeline/NVSmooth30 main 21fa43521c2753ffd5c8e9d2092cfc79f9c6c456
+https://github.com/ItsAdeline/NVSmooth30
+Adaptations: explicit configuration/log callbacks, active driver path and SHA256 validation before initialization, guarded initialization, inference counters, retained modules. No proxy, generic DXGI hooks or same-HWND D3D12 bridge are copied.

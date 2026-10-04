@@ -4,6 +4,8 @@
 #include "present_hook.h"
 #include "policy.h"
 #include "output_state.h"
+#include "recovery.h"
+#include <generation_lease.h>
 #include <wrl/client.h>
 #include <filesystem>
 #include <mutex>
@@ -27,6 +29,11 @@ std::unique_ptr<fg::Backend> backend;
 ComPtr<ID3D11Device> device;
 ComPtr<ID3D11Texture2D> real;
 fg::Timeline timeline;
+fg::Recovery recovery;
+ls::GenerationLease generationLease;
+bool resetPending=false,automaticRecovery=true;
+unsigned recoveryAttempts=0;
+uint64_t recoveryWindow=0;
 fg::OutputQueue outputQueue;
 fg::GSyncProbe gsyncProbe;
 fg::GSyncState gsyncState;
@@ -65,7 +72,7 @@ void StartupTrace(const char* message) {
     HANDLE file=CreateFileW(path,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(file==INVALID_HANDLE_VALUE) return;
     SYSTEMTIME now{};GetLocalTime(&now);
-    char line[768];const int n=std::snprintf(line,sizeof line,"%04u-%02u-%02u %02u:%02u:%02u pid=%lu v0.2.1 %s\r\n",
+    char line[768];const int n=std::snprintf(line,sizeof line,"%04u-%02u-%02u %02u:%02u:%02u pid=%lu v0.3.0 %s\r\n",
         now.wYear,now.wMonth,now.wDay,now.wHour,now.wMinute,now.wSecond,GetCurrentProcessId(),message);
     DWORD written=0;if(n>0 && n<int(sizeof line)) WriteFile(file,line,DWORD(n),&written,nullptr);
     CloseHandle(file);
@@ -89,6 +96,7 @@ void Status(const char* text,int level) { if(host && GetTickCount64()-statusAt>=
 void Off(const char* why) noexcept {
     disabled=true; resetHistory=true;pendingOutput=PendingOutput::None;
     outputQueue.Reset();
+    generationLease.Reset();
     try {Log(why);} catch(...) {StartupTrace(why);}
     try {if(host) host->SetStatus(id,why,3);} catch(...) {}
 }
@@ -98,6 +106,7 @@ void Reset() {
     if(latencyWait) {CloseHandle(latencyWait);latencyWait=nullptr;}
     effectiveMultiplier=runtimeMultiplier=2;actualFlowQuality=0;lastRealMotion=false;
     width=height=0; format=DXGI_FORMAT_UNKNOWN; timeline.Reset(); resetHistory=true; presentationReported=false;pendingOutput=PendingOutput::None;
+    recovery.Reset();
 }
 void Settings() {
     const auto ini=(std::filesystem::path(directory)/L"LS_DLSSFG.ini").wstring();
@@ -114,10 +123,11 @@ void Settings() {
     configuration.targetFPS=fg::ParseTargetFPS(fps);
     configuration.presentApi=static_cast<fg::PresentApi>(get(L"GeneratedPresentAPI",0));
     configuration.Validate();
+    automaticRecovery=get(L"AutomaticRecovery",1)==1;
     armed=configuration.nativeFGDisabled;preferVRR=configuration.preferVRR;
     maximumFrameLatency=configuration.maximumFrameLatency;targetFps=configuration.targetFPS;
     settingsPending=false;++configurationRevision;
-    disabled=false; Reset(); ++epoch;
+    disabled=false; Reset();generationLease.Reset();resetPending=false; ++epoch;
 }
 void SettingsStatus(IHost* h) {
     h->SetStatus(id,armed?"Ready; waiting for LS output compute pass":"Disable native LSFG, then confirm in addon Settings",armed?0:2);
@@ -139,6 +149,8 @@ HRESULT OnPresent(IDXGISwapChain* sc,UINT& sync,UINT& flags,bool& handled) {
     if(!callbacksReady || !host || !armed || disabled || !fg::SafePresent(sync,flags)) return S_OK;
     uint64_t tag=0;UINT size=sizeof tag;
     if(FAILED(sc->GetPrivateData(outputTag,&size,&tag)) || size!=sizeof tag || tag!=epoch) return S_OK;
+    if(resetPending){Reset();disabled=false;resetPending=false;}
+    if(!generationLease.Acquire()){Status("Another FG addon owns output; disable it before enabling DLSS FG",2);return S_OK;}
     pendingOutput=PendingOutput::None;
     const UINT originalSync=sync,originalFlags=flags;
     ComPtr<ID3D11DeviceContext> restoreContext;
@@ -147,6 +159,12 @@ HRESULT OnPresent(IDXGISwapChain* sc,UINT& sync,UINT& flags,bool& handled) {
         DXGI_SWAP_CHAIN_DESC sd{};
         if(FAILED(sc->GetDesc(&sd)) || sd.SampleDesc.Count!=1 ||
            (sd.SwapEffect!=DXGI_SWAP_EFFECT_FLIP_DISCARD && sd.SwapEffect!=DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL)) return S_OK;
+        const double arrived=Now();
+        const HWND root=sd.OutputWindow?GetAncestor(sd.OutputWindow,GA_ROOT):nullptr;
+        const bool visible=root && IsWindow(root) && IsWindowVisible(root) && !IsIconic(root);
+        const auto recoveryAction=recovery.Observe(arrived,reinterpret_cast<uintptr_t>(sd.OutputWindow),visible,true);
+        if(recoveryAction==fg::RecoveryAction::Suspend){resetHistory=true;timeline.Reset();return S_OK;}
+        if(automaticRecovery && recoveryAction==fg::RecoveryAction::Recreate){Reset();Log("FG recovery: output resumed / presentation gap; recreating NGX, NVOF and duplicate history");}
         ComPtr<ID3D11Device> currentDevice;ComPtr<ID3D11Texture2D> back;
         if(FAILED(sc->GetDevice(IID_PPV_ARGS(&currentDevice))) || FAILED(sc->GetBuffer(0,IID_PPV_ARGS(&back)))) return S_OK;
         D3D11_TEXTURE2D_DESC d{};back->GetDesc(&d);
@@ -175,7 +193,7 @@ HRESULT OnPresent(IDXGISwapChain* sc,UINT& sync,UINT& flags,bool& handled) {
                 if(SUCCEEDED(sc->QueryInterface(IID_PPV_ARGS(&chain2)))) latencyWait=chain2->GetFrameLatencyWaitableObject();
             }
         }
-        const double arrived=Now();if(timeline.NeedsReset(arrived)) resetHistory=true;
+        if(timeline.NeedsReset(arrived)) resetHistory=true;
         ComPtr<ID3D11DeviceContext> context;device->GetImmediateContext(&context);
         restoreContext=context;
         context->CopyResource(real.Get(),back.Get());
@@ -186,6 +204,11 @@ HRESULT OnPresent(IDXGISwapChain* sc,UINT& sync,UINT& flags,bool& handled) {
         const bool timingReady=timeline.Observe(arrived);++baseFrames;
         latestGenerationMs=generateMs;latestPreprocessMs=backend->PreprocessMilliseconds();actualFlowQuality=backend->FlowQuality();lastRealMotion=backend->RealMotion();
         if(result==fg::Result::Failed) {Off("DLSS FG failed; LS output preserved until settings reapply/restart");return S_OK;}
+        if(automaticRecovery && recovery.RuntimeRejected(backend->OutputDisabledByRuntime())) {
+            const auto tick=GetTickCount64();
+            if(tick-recoveryWindow>60000){recoveryWindow=tick;recoveryAttempts=0;}
+            if(recoveryAttempts<3){++recoveryAttempts;resetPending=true;Log("FG recovery: runtime rejected interpolation for 60 unique frames; scheduling feature recreation");}
+        }
         resetHistory=false;
         if(result==fg::Result::HistoryOnly || !timingReady) {pendingOutput=PendingOutput::History;return S_OK;}
         BOOL fullscreen=TRUE;const bool windowed=SUCCEEDED(sc->GetFullscreenState(&fullscreen,nullptr)) && !fullscreen;
@@ -244,7 +267,7 @@ void AfterPresent(IDXGISwapChain* sc,HRESULT result) noexcept {
         if(!callbacksReady || !host || disabled || selected!=reinterpret_cast<uintptr_t>(sc)) return;
         const auto pending=pendingOutput;pendingOutput=PendingOutput::None;
         if(pending==PendingOutput::None) return;
-        if(result!=S_OK) {resetHistory=true;timeline.Reset();return;}
+        if(result!=S_OK) {resetHistory=true;timeline.Reset();if(automaticRecovery)resetPending=true;return;}
         if(pending==PendingOutput::Duplicate) {
             host->PublishMetric(id,"duplicates_total",double(duplicates),"frames");
             Status("Duplicate LS frame: FG skipped; original LS output preserved",0);return;
@@ -273,10 +296,11 @@ void AfterPresent(IDXGISwapChain* sc,HRESULT result) noexcept {
 }
 
 void Install(IDXGISwapChain* chain) {
-    if(chain && !PresentHook::Installed() && !PresentHook::Install(chain,OnPresent,Log,AfterPresent)) Off("Could not install LS Present hook");
+    if(chain && !PresentHook::Install(chain,OnPresent,Log,AfterPresent)) Off("Could not install LS Present hook on current output table");
 }
 void PostDispatch(uint32_t,uint32_t,uint32_t,void*) {
     std::lock_guard<std::mutex> lock(mutex);
+    if(settingsPending && callbacksReady && host)Settings();
     if(!callbacksReady || !host || !armed || disabled) return;
     auto* ctx=static_cast<ID3D11DeviceContext*>(host->GetDispatchingContext());
     if(!ctx) return;
@@ -297,7 +321,9 @@ void PostDispatch(uint32_t,uint32_t,uint32_t,void*) {
 void Event(uint32_t event,const void*,uint32_t,void*) {
     std::lock_guard<std::mutex> lock(mutex);
     if(!callbacksReady || !host) return;
-    if(event==EAM_EVENT_D3D11_DEVICE_CHANGED) {Reset();++epoch;disabled=false;}
+    // READY is also sent when a COM address is reused: CHANGED is absent in
+    // that case. Defer GPU destruction to the next tagged presentation.
+    if(event==EAM_EVENT_D3D11_DEVICE_READY || event==EAM_EVENT_D3D11_DEVICE_CHANGED) {resetPending=true;++epoch;disabled=false;}
     // DEVICE_READY supplies no owned device. Hook only from a live compute pass.
     if(event==EAM_EVENT_SETTINGS_APPLIED) {Settings();SettingsStatus(host);}
 }
@@ -327,7 +353,7 @@ void Initialize(IHost* h) {
     }
     StartupStep("register_dispatch");h->SetPostDispatchCallback(PostDispatch,nullptr);
     StartupStep("initial_status");SettingsStatus(h);
-    StartupStep("initial_log");h->Log(EAM_LOG_INFO,"LS_DLSSFG 0.2.1 initialized without GPU access; waiting for a live LS output pass");
+    StartupStep("initial_log");h->Log(EAM_LOG_INFO,"LS_DLSSFG 0.3.0 initialized without GPU access; waiting for a live LS output pass");
     {
         std::lock_guard<std::mutex> lock(mutex);callbacksReady=true;
     }
@@ -357,11 +383,11 @@ EAM_EXPORT void AddonShutdown() {
         h->SetStatus(id,"",0);
     }
     std::lock_guard<std::mutex> lock(mutex);
-    Reset(); if(timer) {CloseHandle(timer);timer=nullptr;} host=nullptr;armed=false;
+    Reset();generationLease.Reset(); if(timer) {CloseHandle(timer);timer=nullptr;} host=nullptr;armed=false;
 }
 EAM_EXPORT uint32_t GetAddonCapabilities() {return EAM_CAP_HAS_SETTINGS|EAM_CAP_REQUIRES_RESTART|EAM_CAP_D3D11_DEVICE_ACCESS|EAM_CAP_DISPATCH_HOOK;}
 EAM_EXPORT const char* GetAddonName() {return "DLSS Frame Generation (experimental)";}
-EAM_EXPORT const char* GetAddonVersion() {return "0.2.1";}
+EAM_EXPORT const char* GetAddonVersion() {return "0.3.0";}
 EAM_EXPORT const char* GetAddonAuthor() {return "Anton / Magpie experiments";}
 EAM_EXPORT const char* GetAddonDescription() {return "DLSS FG x2-x4, NVOF and Duplicate Frame Filtering on LS output. Disable native LSFG first.";}
 
@@ -369,20 +395,20 @@ EAM_EXPORT void AddonRenderSettings() {
     if(!uiReady) return;
     static fg::Settings draft;
     static uint64_t seen=UINT64_MAX;
-    static bool dirty=false;
+    static bool dirty=false,draftRecovery=true;
     fg::Settings current;uint64_t revision=0,duplicateCount=0,submitted=0;
     unsigned effective=2,maximum=2,quality=0;
-    bool active=false,motion=false;
+    bool active=false,motion=false,currentRecovery=true;
     double genMs=0,preMs=0,interval=0;
     fg::GSyncState gsync;
     {
         std::lock_guard<std::mutex> lock(mutex);
         if(!host) return;
-        current=configuration;revision=configurationRevision;duplicateCount=duplicates;submitted=generated;
+        currentRecovery=automaticRecovery;current=configuration;revision=configurationRevision;duplicateCount=duplicates;submitted=generated;
         effective=effectiveMultiplier;maximum=runtimeMultiplier;quality=actualFlowQuality;motion=lastRealMotion;
         active=backend && !disabled;genMs=latestGenerationMs;preMs=latestPreprocessMs;interval=timeline.Interval();gsync=gsyncState;
     }
-    if(seen!=revision && !dirty) {draft=current;seen=revision;}
+    if(seen!=revision && !dirty) {draft=current;draftRecovery=currentRecovery;seen=revision;}
     ImGui::TextWrapped("DLSS FG uses the LS output window and GPU. Turn native LSFG OFF before enabling this addon. Your compatible runtime/mod stays unchanged.");
     dirty|=ImGui::Checkbox("I have disabled native LS frame generation",&draft.nativeFGDisabled);
     int mult=int(draft.multiplier)-2;
@@ -415,18 +441,20 @@ EAM_EXPORT void AddonRenderSettings() {
     int api=int(draft.presentApi);
     if(ImGui::Combo("Generated frame Present API",&api,"Follow LS (recommended)\0Present\0Present1\0")) {draft.presentApi=static_cast<fg::PresentApi>(api);dirty=true;}
     ImGui::TextWrapped("Alternate API choices affect full generated frames only. LS's original Present/Present1 and partial updates remain intact.");
+    dirty|=ImGui::Checkbox("Automatic recovery after minimize / runtime stalls",&draftRecovery);
+    if(ImGui::Button("Reinitialize generator now")) {std::lock_guard<std::mutex> lock(mutex);disabled=false;resetPending=true;}
     if(ImGui::Button("136 FPS profile")) {
         const bool confirmed=draft.nativeFGDisabled;draft={};draft.nativeFGDisabled=confirmed;dirty=true;
     }
     ImGui::SameLine();
-    if(ImGui::Button("Reload saved settings")) {draft=current;seen=revision;dirty=false;}
+    if(ImGui::Button("Reload saved settings")) {draft=current;draftRecovery=currentRecovery;seen=revision;dirty=false;}
     if(ImGui::Button("Save and apply")) {
         draft.Validate();
         std::lock_guard<std::mutex> lock(mutex);
         const auto ini=(std::filesystem::path(directory)/L"LS_DLSSFG.ini").wstring();
         bool ok=true;
         auto save=[&](const wchar_t* key,unsigned value){wchar_t text[32]{};std::swprintf(text,32,L"%u",value);ok=WritePrivateProfileStringW(L"FrameGeneration",key,text,ini.c_str()) && ok;};
-        save(L"NativeLSFGDisabled",draft.nativeFGDisabled);save(L"Multiplier",draft.multiplier);
+        save(L"AutomaticRecovery",draftRecovery);save(L"NativeLSFGDisabled",draft.nativeFGDisabled);save(L"Multiplier",draft.multiplier);
         save(L"OpticalFlowMethod",unsigned(draft.flow));save(L"NvidiaOpticalFlowQuality",draft.flowQuality);
         save(L"OpticalFlowScale",draft.flowScale);
         save(L"DuplicateFrameFiltering",draft.duplicateFiltering);save(L"PreferVRR",draft.preferVRR);

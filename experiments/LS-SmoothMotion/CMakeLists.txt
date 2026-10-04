@@ -1,0 +1,12 @@
+cmake_minimum_required(VERSION 3.24)
+project(LS_SmoothMotion LANGUAGES CXX)
+add_library(LS_SmoothMotion SHARED src/addon.cpp src/backend.cpp src/driver.cpp
+  vendor/nvsmooth30/src/nvpresent.cpp vendor/nvsmooth30/src/fatbin.cpp vendor/nvsmooth30/src/pe.cpp ../LS-DLSSFG/src/duplicates.cpp)
+target_include_directories(LS_SmoothMotion PRIVATE src vendor/nvsmooth30/include ../LS-DLSSFG/src "${EAM_ROOT}/manager/sdk/include")
+target_compile_features(LS_SmoothMotion PRIVATE cxx_std_20)
+target_compile_definitions(LS_SmoothMotion PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_compile_options(LS_SmoothMotion PRIVATE /W4 /EHsc /utf-8)
+target_link_libraries(LS_SmoothMotion PRIVATE LS_OutputBridge LS_SharedGpu addon_imgui d3d11 d3d12 d3dcompiler dxgi dxguid user32 bcrypt)
+install(TARGETS LS_SmoothMotion RUNTIME DESTINATION addons/LS_SmoothMotion)
+install(DIRECTORY package/ DESTINATION addons/LS_SmoothMotion)
+install(FILES README-RU.md vendor/nvsmooth30/LICENSE-MIT.txt DESTINATION addons/LS_SmoothMotion)
