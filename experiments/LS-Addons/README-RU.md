@@ -1,6 +1,9 @@
-# Экспериментальные аддоны LS 0.3.2
+# Экспериментальные аддоны LS 0.3.3
 
-В комплекте DLSS FG 0.3.0 с исправлениями восстановления, отдельные Smooth Motion 0.1.2 и RTX Video HDR 0.1.0.
+В комплекте DLSS FG 0.3.1 с общим output cap и точной CPU-трассировкой, отдельные Smooth Motion 0.1.2 и RTX Video HDR 0.1.0.
+Output Bridge 1.1 сохраняет ABI старых callbacks и добавляет времена реального DXGI вызова.
+В DLSS FG статус G-SYNC обычно кэшируется после одного запроса; периодический NVAPI опрос включается отдельно для диагностики.
+Для сравнительного измерения есть Capture-DLSSFG.cmd / Capture-Native-LSFG.cmd в папке аддона.
 Требуется установленный Echo-Storm LS addon manager 0.9.38 / API >= 1.1.
 
 Закройте LS. Передайте путь к каталогу с LosslessScaling.exe скрипту Install-Addons.ps1 либо перенесите LS_OutputBridge.dll в этот каталог,

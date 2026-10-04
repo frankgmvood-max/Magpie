@@ -1,6 +1,66 @@
-# Implementation and VRR review — 0.3.0
+# Implementation and VRR review — 0.3.1
 
 References checked 2026-10-04. Hardware VRR success is still unverified.
+
+## 0.3.1: supplied October 4 22:18 trace and submission schedule
+
+The fresh manager log selects DLSS FG x2 on LUID 00000000:00011e14, 3440x1440,
+NVOF Balanced 4x4 at 50%, native FG type 0, LS sync 0/ALLOW_TEARING and a chain
+created with flags 0x800. There are 25 steady telemetry samples from the final
+session: median generation 5.247 ms (range 4.918–5.616), median observed unique
+input interval 14.565 ms (range 14.491–18.517). Input intervals include addon's
+own backpressure. They do not establish the game's FPS or actual panel output.
+Driver state is active and media composition 1 is OVERLAY, not COMPOSED.
+The old log did not identify the addon's own TargetFPS/queue choice or output
+device name. The separate LS profile's target 136 cannot fill that omission.
+
+The FPS Monitor text contains 8864 samples: 8578 classified at 144, 12 at 120,
+274 Other. Its filename, logging style and graph resemble the Microsoft DRR
+Tool (with local changes, including a 144 bucket); the exact user's build and
+its classification threshold are unavailable. The upstream source measures
+DCompositionWaitForCompositorClock/QPC deltas and bins within 10 Hz of presets.
+Thus its categories and compositor ticks cannot be treated as exact panel Hz.
+Microsoft documents that compositor-frame statistics are incomplete for frames
+that bypass composition via independent flip. The new control uses PresentMon
+display tracing plus separate observations of monitor OSD.
+
+Sources read directly:
+https://github.com/microsoft/WindowsAppSDK-Samples/tree/main/Samples/Composition/DynamicRefreshRateTool/cpp-winui
+https://github.com/microsoft/WindowsAppSDK-Samples/blob/main/Samples/Composition/DynamicRefreshRateTool/cpp-winui/RefreshRateLogger.cpp
+https://github.com/microsoft/WindowsAppSDK-Samples/blob/main/Samples/Composition/DynamicRefreshRateTool/cpp-winui/RefreshRateMeter.cpp
+https://learn.microsoft.com/en-us/windows/win32/directcomp/compositor-clock/compositor-clock
+https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-present
+https://github.com/GameTechDev/PresentMon/blob/v2.6.0/README-ConsoleApplication.md
+https://github.com/GameTechDev/PresentMon/releases/tag/v2.6.0
+
+Changes follow the identified code issues, rather than forcing driver settings:
+
+* Measure the real underlying DXGI call's start/end after bridge filters, with
+  a separate additive bridge export; original callback structures retain ABI.
+* Anchor a single output cap to actual DXGI call starts for all intermediates,
+  outer real frames, duplicates and priming/runtime-rejected frames. A blocking
+  Present's elapsed time is not added again. Early deadlines are no longer
+  erased when more than 2 ms away; late frames never cause a catch-up burst.
+* Wait for any existing frame-latency queue, submit the copy, then wait until
+  the CPU deadline. Queue readiness is also checked before the outer frame.
+  Duplicate the queue event so our cleanup cannot invalidate LS's own handle.
+* Read driver G-SYNC once per output initialization by default; repeated slow
+  queries are opt-in. Cached status can be refreshed manually, and is labelled
+  as cached. Metrics are published at 500 ms rather than every base frame.
+* Log the addon's target, queue/effect/buffers, Windows and DXGI output names,
+  CPU gap and deadline statistics. Nominal mode Hz is labelled separately.
+* Optional bounded 60-second per-frame CPU trace writes via a background worker,
+  preserves order and reports dropped rows. No images or input are captured.
+* Portable timing collector pins PresentMon 2.6.0's official x64 executable
+  and SHA256, uses a unique ETW session, retains displayed and dropped frames,
+  display/layer metadata and hybrid-present info, and disables input capture.
+  Native LSFG and DLSS FG are compared in the same scene at 60 -> 120 first.
+
+These are CPU pacing and observation fixes. They do not prove GPU copies reach
+scanout on that schedule, turn ETW into a panel sensor, make missing game frames,
+or overcome all limits of synchronous inference in LS's thread. An independent
+presenter/worker is deferred until trace evidence establishes its necessity
+and safe ownership of LS capture/output resources is designed and tested.
 
 ## 0.3.0: measured processing cost and presentation gap
 

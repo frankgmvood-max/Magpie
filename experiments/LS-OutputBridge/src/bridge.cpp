@@ -22,6 +22,9 @@ std::condition_variable handlerIdle;
 std::atomic<uint32_t> hits{0};
 thread_local unsigned nesting=0,originalNesting=0,tableIndex=0;
 thread_local bool currentPresent1=false;
+thread_local LsBridgePresentTiming lastTiming{};
+thread_local IDXGISwapChain* timingChain=nullptr;
+std::atomic<uint64_t> timingSequence{0};
 
 struct Calls {
     std::array<Handler*,maxCallbacks> held{};
@@ -66,9 +69,15 @@ HRESULT Actual(unsigned index,IDXGISwapChain* sc,UINT sync,UINT flags,bool p1,
         const auto sinkHr=sinks.Before(sc,sync,flags,handled,frame);
         if(handled){sinks.After(sc,sinkHr,frame);filters.After(sc,sinkHr,frame);return sinkHr;}
     }
+    LsBridgePresentTiming timing{};
+    timing.generated=generated;timing.present1=p1;timing.sync=sync;timing.flags=flags;
+    LARGE_INTEGER stamp{},frequency{};QueryPerformanceFrequency(&frequency);timing.frequency=frequency.QuadPart;
     ++originalNesting;
+    QueryPerformanceCounter(&stamp);timing.beginQpc=stamp.QuadPart;
     const HRESULT hr=p1 ? (tables[index].present1.load()?tables[index].present1.load()(static_cast<IDXGISwapChain1*>(sc),sync,flags,params):E_NOINTERFACE)
                        : (tables[index].present.load()?tables[index].present.load()(sc,sync,flags):E_FAIL);
+    QueryPerformanceCounter(&stamp);timing.endQpc=stamp.QuadPart;
+    timing.result=hr;timing.sequence=timingSequence.fetch_add(1,std::memory_order_relaxed)+1;
     --originalNesting;
     if(process) {
         // SM gets first refusal on the processed HDR texture; HDR presents
@@ -76,6 +85,7 @@ HRESULT Actual(unsigned index,IDXGISwapChain* sc,UINT sync,UINT flags,bool p1,
         sinks.After(sc,hr,frame);
         filters.After(sc,hr,frame);
     }
+    lastTiming=timing;timingChain=sc;
     return hr;
 }
 HRESULT Dispatch(unsigned index,IDXGISwapChain* sc,UINT sync,UINT flags,bool p1,const DXGI_PRESENT_PARAMETERS* params) {
@@ -106,7 +116,11 @@ template<class Fn> bool Patch(void** table,unsigned slot,void* replacement,std::
     DWORD ignored=0;VirtualProtect(table+slot,sizeof(void*),protect,&ignored);return changed;
 }
 }
-uint32_t WINAPI LsBridgeVersion(){return 0x010000;}
+uint32_t WINAPI LsBridgeVersion(){return 0x010100;}
+BOOL WINAPI LsBridgeGetPresentTiming(IDXGISwapChain* sc,LsBridgePresentTiming* timing){
+    if(!timing || timing->size!=sizeof(*timing) || !sc || sc!=timingChain || !lastTiming.sequence)return FALSE;
+    *timing=lastTiming;return TRUE;
+}
 BOOL WINAPI LsBridgeRegister(const LsBridgeCallbacks* cb) {
     if(!cb || cb->size!=sizeof(*cb) || !cb->owner || cb->kind>LS_BRIDGE_SINK) return FALSE;
     const auto address=cb->before?reinterpret_cast<LPCWSTR>(cb->before):reinterpret_cast<LPCWSTR>(cb->after);

@@ -28,6 +28,7 @@ struct Settings {
     unsigned flowScale=50;
     bool duplicateFiltering=true;
     bool preferVRR=true;
+    bool periodicDriverQueries=false;
     unsigned maximumFrameLatency=1;
     double targetFPS=136;
     PresentApi presentApi=PresentApi::Auto;

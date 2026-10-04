@@ -260,7 +260,7 @@ bool Backend::Init(ID3D11Device* dev, const D3D11_TEXTURE2D_DESC& desc,
 }
 Result Backend::Generate(ID3D11Texture2D* input, bool reset) {
     auto& s=*s_;
-    s.outputCount=0;s.realMotion=false;s.runtimeRejected=false;
+    s.outputCount=0;s.realMotion=false;s.runtimeRejected=false;s.preprocessMs=0;
     if (s.lost || ngxFault.load() || !s.Wait()) return Result::Failed;
     s.c11->CopyResource(s.input11.Get(),input);
     if (FAILED(s.c11->Signal(s.in11.Get(),++s.inputValue))) return Result::Failed;
@@ -272,7 +272,7 @@ Result Backend::Generate(ID3D11Texture2D* input, bool reset) {
         // the same pixels as the last frame before suspension.
         if(reset)s.duplicate->Reset();
         const auto duplicate=s.duplicate->Check(s.privateContext.Get(),s.privateInput.Get());
-        if(duplicate==DuplicateResult::Duplicate) return Result::Duplicate;
+        if(duplicate==DuplicateResult::Duplicate){s.preprocessMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-preStart).count();return Result::Duplicate;}
         if(duplicate==DuplicateResult::Failed) {
             s.duplicate.reset();s.log("Duplicate filter readback failed; filter disabled until restart, LS frames retained");
         }

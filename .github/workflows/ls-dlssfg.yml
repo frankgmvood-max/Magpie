@@ -37,6 +37,13 @@ jobs:
         run: cmake --build out/ls-fg --config Release --parallel
       - name: Test ABI, GPU transport, recovery and frame processing order
         run: ctest --test-dir out/ls-fg -C Release --output-on-failure
+      - name: Verify portable timing collector and pinned PresentMon
+        run: |
+          $tokens=$null; $errors=$null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'experiments/LS-DLSSFG/package/Capture-Pacing.ps1'),[ref]$tokens,[ref]$errors) | Out-Null
+          if ($errors.Count) { throw ($errors | Out-String) }
+          powershell -NoProfile -ExecutionPolicy Bypass -File experiments/LS-DLSSFG/package/Capture-Pacing.ps1 -PrepareOnly
+          if ($LASTEXITCODE) { throw 'Timing collector verification failed' }
       - name: Package
         shell: pwsh
         run: |

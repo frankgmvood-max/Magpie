@@ -14,12 +14,14 @@ IDXGISwapChain* selected=nullptr;
 unsigned originalCalls=0,filtered=0,sunk=0,groups=0;bool replace=false;
 std::mutex mutex;std::condition_variable condition;bool blocked=false,entered=false,released=false;
 bool blockOriginal=false;
+int64_t filterExit=0,captureInside=0,filterAfterEnter=0;
 HRESULT STDMETHODCALLTYPE Capture(IDXGISwapChain*,UINT,UINT){
     ++originalCalls;
+    LARGE_INTEGER time{};QueryPerformanceCounter(&time);captureInside=time.QuadPart;
     if(blockOriginal){std::unique_lock<std::mutex> lock(mutex);entered=true;condition.notify_all();condition.wait(lock,[]{return released;});}
     return S_OK;
 }
-HRESULT STDMETHODCALLTYPE Capture1(IDXGISwapChain1*,UINT,UINT,const DXGI_PRESENT_PARAMETERS*){++originalCalls;return S_OK;}
+HRESULT STDMETHODCALLTYPE Capture1(IDXGISwapChain1*,UINT,UINT,const DXGI_PRESENT_PARAMETERS*){++originalCalls;LARGE_INTEGER time{};QueryPerformanceCounter(&time);captureInside=time.QuadPart;return S_OK;}
 void Check(bool b,const char* why){if(!b){std::fprintf(stderr,"%s\n",why);std::exit(1);}}
 HRESULT WINAPI Generate(IDXGISwapChain* sc,UINT* s,UINT* f,BOOL*,LsBridgeFrame*,void*){
     if(sc!=selected)return S_OK;++groups;
@@ -28,12 +30,14 @@ HRESULT WINAPI Generate(IDXGISwapChain* sc,UINT* s,UINT* f,BOOL*,LsBridgeFrame*,
 HRESULT WINAPI Filter(IDXGISwapChain* sc,UINT*,UINT*,BOOL*,LsBridgeFrame*,void*){
     if(sc!=selected)return S_OK;++filtered;
     if(blocked){std::unique_lock<std::mutex> lock(mutex);entered=true;condition.notify_all();condition.wait(lock,[]{return released;});}
+    LARGE_INTEGER time{};QueryPerformanceCounter(&time);filterExit=time.QuadPart;
     return S_OK;
 }
 HRESULT WINAPI Sink(IDXGISwapChain* sc,UINT*,UINT*,BOOL* h,LsBridgeFrame* frame,void*){
     if(sc!=selected)return S_OK;++sunk;if(replace){frame->externalPresented=TRUE;*h=TRUE;}return S_OK;
 }
 void WINAPI FilterAfter(IDXGISwapChain* sc,HRESULT,LsBridgeFrame* frame,void*){
+    LARGE_INTEGER time{};QueryPerformanceCounter(&time);filterAfterEnter=time.QuadPart;
     if(sc==selected && replace)Check(frame->externalPresented,"filter must observe alternative output, including handled submissions");
 }
 void Replace(void** t,unsigned slot,void* fn){DWORD old=0,unused=0;Check(VirtualProtect(t+slot,sizeof(void*),PAGE_READWRITE,&old)!=FALSE,"table protection");InterlockedExchangePointer(t+slot,fn);VirtualProtect(t+slot,sizeof(void*),old,&unused);}
@@ -52,6 +56,8 @@ int main(){
     // Register in the opposite order to processing; ordering is by phase.
     Check(LsBridgeRegister(&filter) && LsBridgeRegister(&sink) && LsBridgeRegister(&generator) && LsBridgeInstall(chain.Get()),"registrations / install");
     Check(chain->Present(0,0)==S_OK && originalCalls==4 && filtered==4 && sunk==4 && groups==1,"HDR and sink see every x4 frame");
+    LsBridgePresentTiming timing{};
+    Check(LsBridgeGetPresentTiming(chain.Get(),&timing) && !timing.generated && timing.beginQpc>=filterExit && timing.beginQpc<=captureInside && timing.endQpc>=captureInside && timing.endQpc<=filterAfterEnter,"timestamps surround only original DXGI call, excluding filter work");
     const DXGI_PRESENT_PARAMETERS full{};Check(chain->Present1(0,0,&full)==S_OK && originalCalls==8 && filtered==8 && groups==2,"Present1 x4 processing");
     replace=true;Check(chain->Present(0,0)==S_OK && originalCalls==8 && filtered==12 && sunk==12,"alternative output replaces submissions while HDR receives after callback");replace=false;
     RECT dirty{};DXGI_PRESENT_PARAMETERS partial{};partial.DirtyRectsCount=1;partial.pDirtyRects=&dirty;

@@ -31,7 +31,20 @@ struct LsBridgeCallbacks {
     LsBridgeAfter after=nullptr;
     void* user=nullptr;
 };
+// CPU timestamps around the underlying DXGI call, after filters have run.
+// This is submission timing, not a measurement of physical monitor refresh.
+// Kept separate from the original callback structs to preserve their ABI.
+struct LsBridgePresentTiming {
+    uint32_t size=sizeof(LsBridgePresentTiming);
+    BOOL generated=FALSE, present1=FALSE;
+    UINT sync=0,flags=0;
+    HRESULT result=E_FAIL;
+    uint64_t sequence=0;
+    int64_t beginQpc=0,endQpc=0,frequency=0;
+};
 LS_BRIDGE_API uint32_t WINAPI LsBridgeVersion();
+// Only the last completed call on this thread and this chain is returned.
+LS_BRIDGE_API BOOL WINAPI LsBridgeGetPresentTiming(IDXGISwapChain*,LsBridgePresentTiming*);
 LS_BRIDGE_API BOOL WINAPI LsBridgeRegister(const LsBridgeCallbacks*);
 LS_BRIDGE_API BOOL WINAPI LsBridgeUnregister(uint32_t owner);
 LS_BRIDGE_API BOOL WINAPI LsBridgeInstall(IDXGISwapChain*,LsBridgeLog=nullptr,void* user=nullptr);

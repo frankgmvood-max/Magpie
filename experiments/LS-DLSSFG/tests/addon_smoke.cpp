@@ -72,7 +72,7 @@ int main(int argc,char** argv) {
     Check((caps()&EAM_CAP_DISPATCH_HOOK)!=0 && (caps()&EAM_CAP_REQUIRES_RESTART)!=0,"missing capabilities");
     Check((caps()&EAM_CAP_HAS_SETTINGS)!=0,"missing settings capability");
     auto panel=reinterpret_cast<AddonRenderSettings_t>(GetProcAddress(dll,"AddonRenderSettings"));
-    Check(panel!=nullptr && std::string(version())=="0.3.0","settings export / version");
+    Check(panel!=nullptr && std::string(version())=="0.3.1","settings export / version");
     Check(InitializeGuarded(init,reinterpret_cast<IHost*>(uintptr_t(1)))==EXCEPTION_ACCESS_VIOLATION,
         "init fault must propagate to the manager after recording a breadcrumb");
     Host host;
