@@ -38,7 +38,7 @@ int main(int argc,char** argv){
     for(int addon=1;addon<argc;++addon){
         HMODULE dll=LoadLibraryA(argv[addon]);Check(dll!=nullptr,"addon cannot load / shared dependency missing");
         auto init=reinterpret_cast<AddonInit_t>(GetProcAddress(dll,"AddonInitialize"));auto stop=reinterpret_cast<AddonShutdown_t>(GetProcAddress(dll,"AddonShutdown"));auto panel=reinterpret_cast<AddonRenderSettings_t>(GetProcAddress(dll,"AddonRenderSettings"));auto caps=reinterpret_cast<GetAddonCaps_t>(GetProcAddress(dll,"GetAddonCapabilities"));auto version=reinterpret_cast<GetAddonVersion_t>(GetProcAddress(dll,"GetAddonVersion"));
-        Check(init && stop && panel && caps && version && std::string(version())=="0.1.0","exports / version");Check((caps()&(EAM_CAP_HAS_SETTINGS|EAM_CAP_DISPATCH_HOOK))==(EAM_CAP_HAS_SETTINGS|EAM_CAP_DISPATCH_HOOK),"settings capabilities");
+        Check(init && stop && panel && caps && version && std::string(version())==(addon==1?"0.1.0":"0.1.1"),"exports / version");Check((caps()&(EAM_CAP_HAS_SETTINGS|EAM_CAP_DISPATCH_HOOK))==(EAM_CAP_HAS_SETTINGS|EAM_CAP_DISPATCH_HOOK),"settings capabilities");
         Host host;
         for(unsigned attempt=0;attempt<3;++attempt){
             ImGuiContext* ctx=ImGui::CreateContext();ImGuiMemAllocFunc allocate=nullptr;ImGuiMemFreeFunc release=nullptr;void* data=nullptr;ImGui::GetAllocatorFunctions(&allocate,&release,&data);

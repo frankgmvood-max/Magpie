@@ -47,10 +47,7 @@ Profile CheckProfile(const std::wstring& path,std::string& sha){
     BCryptDestroyHash(hash);BCryptCloseAlgorithmProvider(algorithm,0);
     if(!good)return Profile::Unsupported;
     constexpr char digits[]="0123456789abcdef";for(auto b:digest){sha.push_back(digits[b>>4]);sha.push_back(digits[b&15]);}
-    // The upstream structural regression fingerprint is the only inspected
-    // runtime profile currently available. No force-unknown checkbox or blind
-    // offset patching. New profiles require source-level validation and tests.
-    return sha=="cd395d58f41c6e393c31a9898f2be3da83f7bc109a2228935c23e8c89b944c15"?Profile::Known:Profile::Unsupported;
+    return nvs30::profiles::find(sha)?Profile::Known:Profile::Unsupported;
 }
 std::wstring ActiveDriverPath(){
     for(const wchar_t* name:{L"nvwgf2umx.dll",L"nvldumdx.dll"}){
@@ -73,7 +70,9 @@ bool InitializeDriver(const std::wstring& configured,const Settings& settings,st
         if(logCallback){logCallback(status.c_str());if(!sha.empty())logCallback(("Smooth Motion: NvPresent64 SHA256="+sha).c_str());}
         return false;
     }
-    nvs30::Config cfg;cfg.nvpresent_path=path;cfg.diagnostics=settings.diagnostics;nvs30::set_config(cfg);
+    nvs30::Config cfg;cfg.nvpresent_path=path;cfg.diagnostics=settings.diagnostics;
+    cfg.runtime_profile=nvs30::profiles::find(sha);nvs30::set_config(cfg);
+    if(logCallback)logCallback((std::string("Smooth Motion: profile=")+cfg.runtime_profile->name+" SHA256="+sha).c_str());
     if(GetModuleHandleW(L"NvPresent64.dll") && !nvs30::nvpresent::module()){
         status="NvPresent is already loaded outside this addon; restart LS with other Smooth Motion loaders disabled";if(logCallback)logCallback(status.c_str());return false;
     }

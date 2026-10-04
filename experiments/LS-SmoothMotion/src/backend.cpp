@@ -14,21 +14,8 @@ namespace {
 D3D12_RESOURCE_BARRIER Transition(ID3D12Resource* r,D3D12_RESOURCE_STATES a,D3D12_RESOURCE_STATES b){
     D3D12_RESOURCE_BARRIER x{};x.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;x.Transition={r,D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,a,b};return x;
 }
-bool Readable(const void* address,size_t size){
-    MEMORY_BASIC_INFORMATION m{};if(!address || !size || !VirtualQuery(address,&m,sizeof m) || m.State!=MEM_COMMIT || (m.Protect & (PAGE_GUARD|PAGE_NOACCESS)))return false;
-    const auto a=reinterpret_cast<uintptr_t>(address),b=reinterpret_cast<uintptr_t>(m.BaseAddress);
-    return a>=b && size<=m.RegionSize && a-b<=m.RegionSize-size;
-}
-bool ToggleGuard(void* wrapper,void** table){
-    __try{using Toggle=void(*)(void*,bool);reinterpret_cast<Toggle>(table[19])(wrapper,true);reinterpret_cast<Toggle>(table[20])(wrapper,true);return true;}
-    __except(EXCEPTION_EXECUTE_HANDLER){return false;}
-}
 bool EnableWrapper(IDXGISwapChain* chain){
-    void* wrapper=nullptr;size_t offset=0;
-    if(!nvs30::nvpresent::wrapper_active(chain,&wrapper,&offset) || !offset || !Readable(wrapper,sizeof(void*)))return false;
-    void** table=nullptr;std::memcpy(&table,wrapper,sizeof table);
-    if(!Readable(table,21*sizeof(void*)) || !nvs30::nvpresent::contains_address(table[19]) || !nvs30::nvpresent::contains_address(table[20]))return false;
-    return ToggleGuard(wrapper,table);
+    return nvs30::nvpresent::enable_wrapper(chain);
 }
 }
 struct Backend::State {
@@ -73,7 +60,9 @@ bool Backend::Init(ID3D11Device* host,HWND parent,const D3D11_TEXTURE2D_DESC& d,
     // The reference driver observes the default-device path on some systems.
     // Use it only after checking adapter zero is the exact LS output adapter;
     // always verify the resulting D3D12 LUID. Never silently use the other GPU.
-    ComPtr<IDXGIFactory2> factory;if(FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))return s.Error("fresh DXGI factory");
+    // NvPresent initializes its native factory2 path. The manager's virtual
+    // output proxy hooks factory1; keep this private output on real DXGI.
+    ComPtr<IDXGIFactory2> factory;if(FAILED(CreateDXGIFactory2(0,IID_PPV_ARGS(&factory))))return s.Error("fresh physical DXGI factory2");
     ComPtr<IDXGIAdapter> first;DXGI_ADAPTER_DESC firstDesc{};const bool defaultMatches=SUCCEEDED(factory->EnumAdapters(0,&first)) && SUCCEEDED(first->GetDesc(&firstDesc)) && ls::SameLuid(firstDesc.AdapterLuid,s.luid);
     const bool useDefault=settings.devicePath!=1 && defaultMatches;
     if(FAILED(D3D12CreateDevice(useDefault?nullptr:adapter.Get(),D3D_FEATURE_LEVEL_11_0,IID_PPV_ARGS(&s.device))))return s.Error("same-adapter D3D12 device");

@@ -128,7 +128,7 @@ EAM_EXPORT void AddonInitialize(IHost* h,ImGuiContext* ctx,void* allocate,void* 
     if(!LsBridgeRegister(&cb)){h->Log(EAM_LOG_ERROR,"Smooth Motion: bridge registration failed");return;}
     for(uint32_t e:{EAM_EVENT_D3D11_DEVICE_READY,EAM_EVENT_D3D11_DEVICE_CHANGED,EAM_EVENT_SETTINGS_APPLIED})h->SubscribeEvent(e,Event);
     h->SetPostDispatchCallback(Dispatch);{std::lock_guard<std::mutex> lock(mutex);ready=true;}
-    h->Log(EAM_LOG_INFO,"LS_SmoothMotion 0.1.0 initialized without GPU/driver access; native LSFG and DLSS FG must be off");
+    h->Log(EAM_LOG_INFO,"LS_SmoothMotion 0.1.1 initialized without GPU/driver access; native LSFG and DLSS FG must be off");
 }
 EAM_EXPORT void AddonShutdown(){
     IHost* h=nullptr;{std::lock_guard<std::mutex> lock(mutex);ready=false;h=host;}
@@ -141,7 +141,7 @@ EAM_EXPORT void AddonShutdown(){
 }
 EAM_EXPORT uint32_t GetAddonCapabilities(){return EAM_CAP_HAS_SETTINGS|EAM_CAP_REQUIRES_RESTART|EAM_CAP_D3D11_DEVICE_ACCESS|EAM_CAP_DISPATCH_HOOK;}
 EAM_EXPORT const char* GetAddonName(){return "Smooth Motion for RTX 30 (experimental)";}
-EAM_EXPORT const char* GetAddonVersion(){return "0.1.0";}
+EAM_EXPORT const char* GetAddonVersion(){return "0.1.1";}
 EAM_EXPORT const char* GetAddonAuthor(){return "Anton / Magpie experiments; ItsAdeline NVSmooth30";}
 EAM_EXPORT const char* GetAddonDescription(){return "Driver Smooth Motion x2 via a same-GPU D3D12 output. Validated NvPresent profile required. No NVIDIA runtime or process proxy bundled.";}
 EAM_EXPORT void AddonRenderSettings(){
@@ -162,7 +162,7 @@ EAM_EXPORT void AddonRenderSettings(){
     dirty|=ImGui::Checkbox("Preserve original LS Present (compatibility option)",&draft.preserveLsPresent);
     dirty|=ImGui::Checkbox("Driver diagnostics",&draft.diagnostics);
     dirty|=ImGui::InputText("NvPresent64.dll (empty = active driver)",path,sizeof path);
-    ImGui::TextWrapped("The active driver package is used; old DriverStore versions are not searched by timestamp. Only the inspected SHA256 profile is enabled. Unknown versions pass LS frames through without driver patching. After changing the driver path or disabling an initialized driver backend, restart LS. No version.dll/dxgi.dll proxy replaces the addon manager.");
+    ImGui::TextWrapped("The active driver package is used; old DriverStore versions are not searched by timestamp. The upstream reference and inspected 66ace profile are enabled. Unknown versions pass LS frames through without driver patching. After changing the driver path or disabling an initialized driver backend, restart LS. No version.dll/dxgi.dll proxy replaces the addon manager.");
     ImGui::TextWrapped("Output uses a disabled, nonactivating child of the LS window on the exact LS GPU. It carries valid base frames while the model warms; the active status requires observed CUDA inference. If a tearing chain is rejected, the reference plain-chain descriptor is attempted once. This does not guarantee physical VRR. RTX HDR from this suite can supply scRGB directly.");
     if(ImGui::Button("Reinitialize output")){std::lock_guard<std::mutex> lock(mutex);disabled=false;resetPending=true;plainFallback=false;}
     ImGui::SameLine();if(ImGui::Button("136 FPS profile")){const bool enabled=draft.enabled,confirmed=draft.nativeFGDisabled;draft={};draft.enabled=enabled;draft.nativeFGDisabled=confirmed;dirty=true;}

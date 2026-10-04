@@ -1,5 +1,6 @@
 #pragma once
 #include "common.hpp"
+#include "profile.hpp"
 
 namespace nvs30 {
 struct Config {
@@ -12,10 +13,10 @@ struct Config {
     float base_fps_cap = 0.0f;
     bool bridge_linearize = false;
     std::wstring nvpresent_path;
+    const profiles::RuntimeProfile* runtime_profile = nullptr;
 };
 
 const Config& config();
 void load_config();
 void set_config(const Config&);
 }
-

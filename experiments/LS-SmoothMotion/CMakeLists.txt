@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 project(LS_SmoothMotion LANGUAGES CXX)
 add_library(LS_SmoothMotion SHARED src/addon.cpp src/backend.cpp src/driver.cpp
-  vendor/nvsmooth30/src/nvpresent.cpp vendor/nvsmooth30/src/fatbin.cpp vendor/nvsmooth30/src/pe.cpp ../LS-DLSSFG/src/duplicates.cpp)
+  vendor/nvsmooth30/src/nvpresent.cpp vendor/nvsmooth30/src/fatbin.cpp vendor/nvsmooth30/src/pe.cpp vendor/nvsmooth30/src/profile.cpp ../LS-DLSSFG/src/duplicates.cpp)
 target_include_directories(LS_SmoothMotion PRIVATE src vendor/nvsmooth30/include ../LS-DLSSFG/src "${EAM_ROOT}/manager/sdk/include")
 target_compile_features(LS_SmoothMotion PRIVATE cxx_std_20)
 target_compile_definitions(LS_SmoothMotion PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)

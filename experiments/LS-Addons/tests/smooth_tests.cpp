@@ -1,6 +1,7 @@
 #include "backend.h"
 #include "driver.h"
 #include <nvs30/fatbin.hpp>
+#include <nvs30/elf_flags.hpp>
 #include <generation_lease.h>
 #include <d3d12.h>
 #include <wrl/client.h>
@@ -20,6 +21,12 @@ uint64_t Retargets(){return 1;}
 HRESULT STDMETHODCALLTYPE Present(IDXGISwapChain*,UINT sync,UINT flags){Check(sync==0 && !(flags&DXGI_PRESENT_ALLOW_TEARING),"plain chain never receives illegal tearing");++graphs;return S_OK;}
 void Replace(void** t,unsigned slot,void* fn){DWORD old=0,unused=0;Check(VirtualProtect(t+slot,sizeof(void*),PAGE_READWRITE,&old)!=FALSE,"table protection");InterlockedExchangePointer(t+slot,fn);VirtualProtect(t+slot,sizeof(void*),old,&unused);}
 template<class T>void Write(std::vector<std::byte>& b,size_t p,T v){std::memcpy(b.data()+p,&v,sizeof v);}
+void Elf(std::vector<std::byte>& b,size_t p,uint32_t flags,bool modern) {
+    b[p]=std::byte{0x7f};b[p+1]=std::byte{'E'};b[p+2]=std::byte{'L'};b[p+3]=std::byte{'F'};
+    b[p+4]=std::byte{2};b[p+5]=b[p+6]=std::byte{1};
+    b[p+7]=std::byte(modern?65:51);b[p+8]=std::byte(modern?8:7);
+    Write<uint16_t>(b,p+0x12,190);Write<uint16_t>(b,p+0x34,0x40);Write<uint32_t>(b,p+0x30,flags);
+}
 }
 int main(){
     // A mutex would incorrectly allow both owners on the same render thread.
@@ -30,10 +37,27 @@ int main(){
     std::vector<std::byte> fatbin(0x10+0x20+0x40);
     Write<uint32_t>(fatbin,0,0xba55ed50);Write<uint16_t>(fatbin,6,0x10);Write<uint64_t>(fatbin,8,0x60);
     Write<uint16_t>(fatbin,0x10,2);Write<uint32_t>(fatbin,0x14,0x20);Write<uint32_t>(fatbin,0x18,0x40);Write<uint32_t>(fatbin,0x2c,0x59);
-    fatbin[0x30]=std::byte{0x7f};fatbin[0x31]=std::byte{0x45};fatbin[0x32]=std::byte{0x4c};fatbin[0x33]=std::byte{0x46};Write<uint32_t>(fatbin,0x60,0x06005904);
+    Elf(fatbin,0x30,0x06005904,true);
     const auto rewritten=nvs30::fatbin::rewrite_sm89_to_sm86(fatbin.data());Check(rewritten.valid && rewritten.stats.sm89_to_sm86==1 && rewritten.stats.elf_headers==1,"fatbin metadata retarget");
     uint32_t arch=0,flags=0;std::memcpy(&arch,rewritten.bytes.data()+0x2c,4);std::memcpy(&flags,rewritten.bytes.data()+0x60,4);Check(arch==0x56 && flags==0x06005604,"exact SM86 flags");
     Write<uint32_t>(fatbin,0x2c,0x78);const auto untouched=nvs30::fatbin::rewrite_sm89_to_sm86(fatbin.data());Check(untouched.valid && untouched.stats.sm89_to_sm86==0 && untouched.bytes==fatbin,"SM120 remains unchanged");
+    // Reproduce the inspected DLL's mixed ABI container: header 0x60 for
+    // SM120, header 0x40 for SM89. Only the reviewed SM89 fields may change.
+    std::vector<std::byte> mixed(0x10+0x60+0x40+0x40+0x40);
+    Write<uint32_t>(mixed,0,0xba55ed50);Write<uint16_t>(mixed,6,0x10);Write<uint64_t>(mixed,8,mixed.size()-0x10);
+    Write<uint16_t>(mixed,0x10,2);Write<uint32_t>(mixed,0x14,0x60);Write<uint32_t>(mixed,0x18,0x40);Write<uint32_t>(mixed,0x2c,0x78);Elf(mixed,0x70,0x06007802,true);
+    const size_t second=0xb0,payload=0xf0;
+    Write<uint16_t>(mixed,second,2);Write<uint32_t>(mixed,second+4,0x40);Write<uint32_t>(mixed,second+8,0x40);Write<uint32_t>(mixed,second+0x1c,0x59);Elf(mixed,payload,0x00590559,false);
+    const auto legacy=nvs30::fatbin::rewrite_sm89_to_sm86(mixed.data());
+    Check(legacy.valid && legacy.stats.entries==2 && legacy.stats.sm89_to_sm86==1 && legacy.stats.sm120_left==1,"mixed CUDA ELF ABIs accepted");
+    auto expected=mixed;Write<uint32_t>(expected,second+0x1c,0x56);Write<uint32_t>(expected,payload+0x30,0x00560556);
+    Check(legacy.bytes==expected,"SM89 real/virtual arch changed; all other bytes including SM120 preserved");
+    Check(nvs30::fatbin::sm86_elf_flags(65,8,0x16005984)==0x16005684,"modern ELF flags unrelated bits preserved");
+    Check(nvs30::fatbin::sm86_elf_flags(51,7,0x80591559)==0x80561556,"legacy ELF flags unrelated bits preserved");
+    mixed[payload+8]=std::byte{99};
+    Check(!nvs30::fatbin::rewrite_sm89_to_sm86(mixed.data()).valid,"unknown ELF ABI fails without a partial rewrite");
+    mixed[payload+8]=std::byte{7};Write<uint32_t>(mixed,payload+0x30,0x00590556);
+    Check(!nvs30::fatbin::rewrite_sm89_to_sm86(mixed.data()).valid,"container/ELF architecture mismatch rejected");
     ComPtr<ID3D11Device> device;ComPtr<ID3D11DeviceContext> context;Check(SUCCEEDED(D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_WARP,nullptr,0,nullptr,0,D3D11_SDK_VERSION,&device,nullptr,&context)),"WARP");
     WNDCLASSW wc{};wc.lpfnWndProc=DefWindowProcW;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"SMTestParent";RegisterClassW(&wc);
     HWND parent=CreateWindowW(wc.lpszClassName,L"test",WS_POPUP,0,0,64,64,nullptr,nullptr,wc.hInstance,nullptr);Check(parent!=nullptr,"parent");ShowWindow(parent,SW_SHOWNOACTIVATE);

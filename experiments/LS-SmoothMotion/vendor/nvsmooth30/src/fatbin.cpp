@@ -1,4 +1,5 @@
 #include "nvs30/fatbin.hpp"
+#include "nvs30/elf_flags.hpp"
 
 namespace nvs30::fatbin {
 namespace {
@@ -6,7 +7,6 @@ constexpr std::uint32_t kFatbinMagic = 0xBA55ED50;
 constexpr std::uint32_t kSm86 = 0x56;
 constexpr std::uint32_t kSm89 = 0x59;
 constexpr std::uint32_t kSm120 = 0x78;
-constexpr std::uint32_t kElfSm86Flags = 0x06005604;
 constexpr std::size_t kMaximumFatbin = 64u * 1024u * 1024u;
 
 template <class T>
@@ -21,9 +21,15 @@ void write(std::byte* p, T value) {
     std::memcpy(p, &value, sizeof(value));
 }
 
-bool is_elf64(const std::byte* p, std::size_t size) {
-    return size >= 0x34 && p[0] == std::byte{0x7f} && p[1] == std::byte{0x45} &&
-           p[2] == std::byte{0x4c} && p[3] == std::byte{0x46};
+bool retarget_elf64(std::byte* p, std::size_t size) {
+    if(size<0x40 || p[0]!=std::byte{0x7f} || p[1]!=std::byte{0x45} ||
+       p[2]!=std::byte{0x4c} || p[3]!=std::byte{0x46} ||
+       p[4]!=std::byte{2} || p[5]!=std::byte{1} || p[6]!=std::byte{1} ||
+       read<std::uint16_t>(p+0x12)!=190 || read<std::uint16_t>(p+0x34)!=0x40)return false;
+    const auto flags=sm86_elf_flags(std::to_integer<std::uint8_t>(p[7]),
+                                  std::to_integer<std::uint8_t>(p[8]),read<std::uint32_t>(p+0x30));
+    if(!flags)return false;
+    write<std::uint32_t>(p+0x30,*flags);return true;
 }
 }
 
@@ -66,12 +72,12 @@ RewrittenImage rewrite_sm89_to_sm86(const void* image) {
 
         auto* payload = base + data_offset;
         if (kind == 2 && arch == kSm89) {
+            // Retarget only a reviewed ELF format. Never replace an ABI 51
+            // flags word with ABI 65 flags or pass a partly rewritten image.
+            if(!retarget_elf64(payload,data_size))return {};
             write<std::uint32_t>(entry + 0x1c, kSm86);
             ++result.stats.sm89_to_sm86;
-            if (is_elf64(payload, data_size)) {
-                write<std::uint32_t>(payload + 0x30, kElfSm86Flags);
-                ++result.stats.elf_headers;
-            }
+            ++result.stats.elf_headers;
         }
 
         const std::size_t next = align_up(data_offset + data_size, std::size_t{8});

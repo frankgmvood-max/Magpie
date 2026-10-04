@@ -11,7 +11,8 @@ namespace nvs30::nvpresent {
 namespace {
 using CuModuleLoadData = int (WINAPI*)(void** module, const void* image);
 using GetProcAddressFn = FARPROC (WINAPI*)(HMODULE, LPCSTR);
-using NvpInitD3D = BOOL (WINAPI*)();
+// The inspected export returns a C++ bool in AL, not a Win32 BOOL in EAX.
+using NvpInitD3D = bool (WINAPI*)();
 
 HMODULE g_nvp{};
 CuModuleLoadData g_real_cu_load{};
@@ -101,14 +102,18 @@ void log_nvp_exports() {
 struct BytePatch {
     std::byte* address{};
     std::vector<std::byte> original;
+    std::vector<std::byte> replacement;
     bool active{};
 
-    bool apply(const void* replacement, std::size_t size) {
-        if (!address || !replacement || !size) return false;
+    bool apply(const void* new_bytes, std::size_t size) {
+        if (!address || !new_bytes || !size) return false;
         original.assign(address, address + size);
-        active = pe::write_memory(address, replacement, size);
+        const auto* bytes=static_cast<const std::byte*>(new_bytes);
+        this->replacement.assign(bytes,bytes+size);
+        active = pe::write_memory(address, new_bytes, size);
         return active;
     }
+    bool reassert() { return active && pe::write_memory(address,replacement.data(),replacement.size()); }
     void restore() {
         if (active && !original.empty()) pe::write_memory(address, original.data(), original.size());
         active = false;
@@ -117,7 +122,7 @@ struct BytePatch {
 
 BytePatch g_arch_patch;
 BytePatch g_capability_patch;
-std::array<BytePatch, 2> g_config_patches;
+std::array<BytePatch, 4> g_config_patches;
 
 std::wstring locate_nvpresent() {
     // The addon resolves the active NVIDIA UMD package and validates its
@@ -486,10 +491,21 @@ bool initialize() {
         logf("[nvs30] NVP_Init_D3D export not found; no NvPresent patches retained.\n");
         return false;
     }
+    const auto* profile=config().runtime_profile;
+    if(!profile || !profiles::validate_layout(g_nvp,*profile)) {
+        logf("[nvs30] loaded NvPresent layout differs from the inspected profile; no patches applied.\n");
+        return false;
+    }
     const auto gate = find_gate(init);
     auto* cfg = init ? find_config(init) : nullptr;
     if (!gate || !cfg) {
         logf("[nvs30] gate/config validation failed; no NvPresent patches retained.\n");
+        return false;
+    }
+    if(profile->inspected_layout && (module_offset(init)!=0x59e0 ||
+       module_offset(gate->immediate)!=0xc3af || module_offset(gate->setge)!=0xc3c7 ||
+       module_offset(cfg)!=0x7d2d50 || cfg[2]!=std::byte{} || cfg[3]!=std::byte{})) {
+        logf("[nvs30] inspected gate/config or fresh-initializer state mismatch; restart LS required.\n");
         return false;
     }
     logf("[nvs30] Config structure resolved dynamically: +0x%zx.\n", module_offset(cfg));
@@ -513,14 +529,23 @@ bool initialize() {
         restore_all(); return false;
     }
 
-    const std::byte one{1};
-    logf("[nvs30] Config before init: 4c=%u e8=%u e9=%u 12a5=%u\n",
-         std::to_integer<unsigned>(cfg[0x4c]), std::to_integer<unsigned>(cfg[0xe8]),
-         std::to_integer<unsigned>(cfg[0xe9]), std::to_integer<unsigned>(cfg[0x12a5]));
+    const std::byte one{1},zero{0};
+    logf("[nvs30] Config before init: enable +0x%zx=%u bypass4c=%u DX11=%u DX12=%u\n",
+         profile->smooth_enable,std::to_integer<unsigned>(cfg[profile->smooth_enable]),
+         std::to_integer<unsigned>(cfg[0x4c]),std::to_integer<unsigned>(cfg[0x4f]),std::to_integer<unsigned>(cfg[0x50]));
     g_config_patches[0].address = cfg + 0x4c;
-    g_config_patches[1].address = cfg + 0xe9;
+    g_config_patches[1].address = cfg + profile->smooth_enable;
     if (!g_config_patches[0].apply(&one, 1) || !g_config_patches[1].apply(&one, 1)) {
         restore_all(); return false;
+    }
+    if(profile->inspected_layout) {
+        // This addon feeds a D3D12 output. Disable NvPresent's D3D11 path so
+        // the original LS surface cannot become a second SM generator.
+        g_config_patches[2].address=cfg+0x4f;
+        g_config_patches[3].address=cfg+0x50;
+        if(!g_config_patches[2].apply(&zero,1) || !g_config_patches[3].apply(&one,1)) {
+            restore_all();return false;
+        }
     }
     logf("[nvs30] NvPresent gate patches installed (arch + capability) and CUDA IAT hooked.\n");
     if (!init()) {
@@ -531,11 +556,10 @@ bool initialize() {
     // The working DLL reasserts the two config enables after NvPresent's
     // initializer returns, because some driver builds rewrite the structure
     // during NVP_Init_D3D.
-    pe::write_memory(cfg + 0x4c, &one, 1);
-    pe::write_memory(cfg + 0xe9, &one, 1);
-    logf("[nvs30] Config after init: 4c=%u e8=%u e9=%u 12a5=%u\n",
-         std::to_integer<unsigned>(cfg[0x4c]), std::to_integer<unsigned>(cfg[0xe8]),
-         std::to_integer<unsigned>(cfg[0xe9]), std::to_integer<unsigned>(cfg[0x12a5]));
+    for(auto& patch:g_config_patches)if(patch.active && !patch.reassert()){restore_all();return false;}
+    logf("[nvs30] Config after init: enable +0x%zx=%u bypass4c=%u DX11=%u DX12=%u; profile=%s\n",
+         profile->smooth_enable,std::to_integer<unsigned>(cfg[profile->smooth_enable]),
+         std::to_integer<unsigned>(cfg[0x4c]),std::to_integer<unsigned>(cfg[0x4f]),std::to_integer<unsigned>(cfg[0x50]),profile->name);
     logf("[nvs30] NVP_Init_D3D=TRUE.\n");
     g_initialized = true;
     return true;
@@ -608,6 +632,34 @@ bool wrapper_active(IDXGISwapChain* swapchain, void** wrapper, std::size_t* foun
 }
 bool wrapper_active(IDXGISwapChain* swapchain, void** wrapper) {
     return wrapper_active(swapchain, wrapper, nullptr);
+}
+namespace {
+bool toggle_guard(void* object,void* enable,void* option) {
+    __try {using Toggle=void(WINAPI*)(void*,bool);
+        reinterpret_cast<Toggle>(enable)(object,true);
+        reinterpret_cast<Toggle>(option)(object,true);return true;}
+    __except(EXCEPTION_EXECUTE_HANDLER){return false;}
+}
+}
+bool enable_wrapper(IDXGISwapChain* swapchain) {
+    const auto* profile=config().runtime_profile;
+    if(!swapchain || !g_nvp || !profile)return false;
+    const auto* bytes=reinterpret_cast<const std::byte*>(swapchain);
+    // Check the known private-controller field first, then other bounded
+    // fields. For the inspected profile the exact D3D12 vtable is required.
+    for(std::size_t probe=0;probe<=16;++probe) {
+        const auto offset=probe==0?std::size_t{0x18}:probe*sizeof(void*);
+        if(probe && offset==0x18)continue;
+        void* candidate{};
+        if(!read_offset_candidate(bytes,offset,candidate))continue;
+        void* enable{},*option{};
+        if(candidate==swapchain || !profiles::wrapper_controls(g_nvp,*profile,candidate,enable,option))continue;
+        if(!toggle_guard(candidate,enable,option))return false;
+        logf("[nvs30] D3D12 wrapper enabled: offset=+0x%zx methods=%u/%u profile=%s\n",
+             offset,profile->enable_slot,profile->option_slot,profile->name);
+        return true;
+    }
+    return false;
 }
 std::uint64_t cuda_intercept_count() { return g_cuda_intercepts.load(); }
 bool initialized() { return g_initialized.load(); }
