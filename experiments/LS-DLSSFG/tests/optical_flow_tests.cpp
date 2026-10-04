@@ -11,13 +11,13 @@ namespace {
 Ptr<ID3D11DeviceContext> context;
 unsigned width=0,height=0,grid=0,executions=0,registered=0,destroyed=0;
 NV_OF_PERF_LEVEL preset=NV_OF_PERF_LEVEL_UNDEFINED;
-bool grid2=true,fail=false,bgra=true;
+bool grid2=true,fail=false,bgra=true,expectedTemporalReset=true;
 std::array<unsigned char,4> previousColour{},currentColour{};
 void Check(bool value,const char* why) {if(!value){std::fprintf(stderr,"%s\n",why);std::exit(1);}}
 NV_OF_STATUS NVOFAPI Create(ID3D11Device* const device,ID3D11DeviceContext* const ctx,NvOFHandle* handle) {
     context=ctx;*handle=reinterpret_cast<NvOFHandle>(device);return NV_OF_SUCCESS;
 }
-NV_OF_STATUS NVOFAPI Init(NvOFHandle,const NV_OF_INIT_PARAMS* p) {width=p->width;height=p->height;grid=unsigned(p->outGridSize);preset=p->perfLevel;return NV_OF_SUCCESS;}
+NV_OF_STATUS NVOFAPI Init(NvOFHandle,const NV_OF_INIT_PARAMS* p) {width=p->width;height=p->height;grid=unsigned(p->outGridSize);preset=p->perfLevel;expectedTemporalReset=true;return NV_OF_SUCCESS;}
 NV_OF_STATUS NVOFAPI FormatCount(NvOFHandle,NV_OF_BUFFER_USAGE,NV_OF_MODE,uint32_t* count) {*count=1;return NV_OF_SUCCESS;}
 NV_OF_STATUS NVOFAPI Formats(NvOFHandle,NV_OF_BUFFER_USAGE usage,NV_OF_MODE,DXGI_FORMAT* format) {*format=usage==NV_OF_BUFFER_USAGE_INPUT?(bgra?DXGI_FORMAT_B8G8R8A8_UNORM:DXGI_FORMAT_R8G8B8A8_UNORM):DXGI_FORMAT_R16G16_SINT;return NV_OF_SUCCESS;}
 NV_OF_STATUS NVOFAPI Register(NvOFHandle,ID3D11Resource* resource,NvOFGPUBufferHandle* handle) {++registered;*handle=reinterpret_cast<NvOFGPUBufferHandle>(resource);return NV_OF_SUCCESS;}
@@ -44,6 +44,7 @@ void Colour(ID3D11Resource* resource,const std::array<unsigned char,4>& expected
 NV_OF_STATUS NVOFAPI Execute(NvOFHandle,const NV_OF_EXECUTE_INPUT_PARAMS* input,NV_OF_EXECUTE_OUTPUT_PARAMS* output) {
     if(fail) return NV_OF_ERR_GENERIC;
     Check(input->inputFrame!=input->referenceFrame && input->inputFrame && input->referenceFrame,"distinct current and previous inputs");
+    Check(input->disableTemporalHints==(expectedTemporalReset?NV_OF_TRUE:NV_OF_FALSE),"temporal hints disabled for first pair after reset, reused only on continuous pairs");expectedTemporalReset=false;
     Colour(reinterpret_cast<ID3D11Resource*>(input->inputFrame),currentColour);
     Colour(reinterpret_cast<ID3D11Resource*>(input->referenceFrame),previousColour);
     const unsigned w=(width+grid-1)/grid,h=(height+grid-1)/grid;
@@ -98,9 +99,15 @@ int main() {
                 Check(flow.Process(input.Get(),false,real) && real,"second frame estimated motion");
                 Check(Half(flow.Motion(),0)==0x4000 && Half(flow.Motion(),1)==0xc200,"S10.5 decode preserves +2/-3 pixel signs");
                 Check(executions==before+1,"one flow evaluation for one pair");
+                previousColour=currentColour;
+                Check(flow.Process(input.Get(),false,real) && real && executions==before+2,"continuous pair reuses temporal hints");
                 Fill(input.Get(),format,false);
                 Check(flow.Process(input.Get(),true,real) && !real && Half(flow.Motion(),1)==0,"history reset clears motion");
+                expectedTemporalReset=true;
                 fail=true;Check(!flow.Process(input.Get(),false,real),"driver failure propagated");fail=false;
+                Check(flow.Process(input.Get(),false,real) && !real,"failed pair reprimes history");
+                Fill(input.Get(),format,true);
+                Check(flow.Process(input.Get(),false,real) && real,"first pair after failure resets temporal hints");
             }
             Check(registered==0,"all NVOF resources unregistered on teardown");
         }

@@ -68,7 +68,7 @@ struct OpticalFlow::State {
     NvOFHandle session=nullptr;
     NvOFGPUBufferHandle registered[3]{};
     unsigned width=0,height=0,grid=4,quality=2,previous=0;
-    bool history=false;
+    bool history=false,temporalReset=true;
     DXGI_FORMAT inputFormat=DXGI_FORMAT_B8G8R8A8_UNORM;
     Log log;
     ~State() {
@@ -152,7 +152,7 @@ bool OpticalFlow::Init(ID3D11Device* device,const D3D11_TEXTURE2D_DESC& desc,uns
     return true;
 }
 bool OpticalFlow::Process(ID3D11Texture2D* input,bool reset,bool& realMotion) {
-    realMotion=false;auto& s=*s_;if(reset) s.history=false;
+    realMotion=false;auto& s=*s_;if(reset) {s.history=false;s.temporalReset=true;}
     const unsigned current=s.history?1-s.previous:0;
     Ptr<ID3D11ShaderResourceView> view;
     if(FAILED(s.device->CreateShaderResourceView(input,nullptr,&view))) return false;
@@ -167,8 +167,10 @@ bool OpticalFlow::Process(ID3D11Texture2D* input,bool reset,bool& realMotion) {
         const float zeros[4]{};s.context->ClearUnorderedAccessViewFloat(s.motionView.Get(),zeros);
     } else {
         NV_OF_EXECUTE_INPUT_PARAMS in{};in.inputFrame=s.registered[current];in.referenceFrame=s.registered[s.previous];
+        in.disableTemporalHints=s.temporalReset?NV_OF_TRUE:NV_OF_FALSE;
         NV_OF_EXECUTE_OUTPUT_PARAMS out{};out.outputBuffer=s.registered[2];
-        if(Call([&]{return s.api.nvOFExecute(s.session,&in,&out);})!=NV_OF_SUCCESS) {s.history=false;return false;}
+        if(Call([&]{return s.api.nvOFExecute(s.session,&in,&out);})!=NV_OF_SUCCESS) {s.history=false;s.temporalReset=true;return false;}
+        s.temporalReset=false;
         srv=s.coarseView.Get();ID3D11UnorderedAccessView* uav=s.motionView.Get();cb=s.params.Get();
         s.context->CSSetShaderResources(0,1,&srv);s.context->CSSetUnorderedAccessViews(0,1,&uav,nullptr);
         s.context->CSSetConstantBuffers(0,1,&cb);s.context->CSSetShader(s.densify.Get(),nullptr,0);

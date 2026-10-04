@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <utility>
 #include <chrono>
+#include <limits>
 
 using Microsoft::WRL::ComPtr;
 namespace fg {
@@ -75,7 +76,7 @@ struct Backend::State {
     std::unique_ptr<OpticalFlow> flow;
     std::unique_ptr<DuplicateFilter> duplicate;
     unsigned multiplier=2,maxMultiplier=2,outputCount=0;
-    bool flowUsable=false,realMotion=false;
+    bool flowUsable=false,realMotion=false,hdr=false;
     uint64_t privateValue=0;
     double preprocessMs=0;
     UINT width = 0, height = 0;
@@ -169,6 +170,7 @@ bool Backend::Init(ID3D11Device* dev, const D3D11_TEXTURE2D_DESC& desc,
     s_ = std::make_unique<State>(); auto& s=*s_; s.log=std::move(log);
     s.settings=settings;
     s.width=desc.Width; s.height=desc.Height;
+    s.hdr=desc.Format==DXGI_FORMAT_R16G16B16A16_FLOAT;
     if (FAILED(dev->QueryInterface(IID_PPV_ARGS(&s.d11)))) return s.Error("D3D11.4 device");
     ComPtr<ID3D11DeviceContext> ctx; dev->GetImmediateContext(&ctx);
     if (FAILED(ctx.As(&s.c11))) return s.Error("D3D11.4 context");
@@ -295,6 +297,10 @@ Result Backend::Generate(ID3D11Texture2D* input, bool reset) {
     ep.pOutputInterpFrame=s.output12[index].Get(); ep.pOutputDisableInterpolation=s.disable.Get();
     NVSDK_NGX_DLSSG_Opt_Eval_Params op{}; op.multiFrameCount=plan.count; op.multiFrameIndex=index+1; op.reset=plan.reset;
     op.cameraMotionIncluded=s.realMotion;
+    op.motionVectorsDilated=s.realMotion;
+    // Dense NVOF writes every pixel; stationary zero vectors are valid too.
+    op.motionVectorsInvalidValue=s.realMotion?std::numeric_limits<float>::max():0;
+    op.colorBuffersHDR=s.hdr;
     Identity(op.cameraViewToClip); Identity(op.clipToCameraView); Identity(op.clipToLensClip); Identity(op.clipToPrevClip); Identity(op.prevClipToClip);
     op.mvecScale[0]=op.mvecScale[1]=1; op.cameraUp[1]=op.cameraRight[0]=op.cameraFwd[2]=1;
     op.cameraNear=0.1f; op.cameraFar=1000; op.cameraFOV=1.04719755f; op.cameraAspectRatio=float(s.width)/s.height;

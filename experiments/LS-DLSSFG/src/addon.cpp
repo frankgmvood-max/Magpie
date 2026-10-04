@@ -13,6 +13,7 @@
 #include <shlwapi.h>
 #include <dxgi1_5.h>
 #include <imgui.h>
+#include <eam/widgets.h>
 #include <cwchar>
 
 using Microsoft::WRL::ComPtr;
