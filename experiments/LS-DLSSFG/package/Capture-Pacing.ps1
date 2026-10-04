@@ -33,8 +33,17 @@ if (!(Test-Path -LiteralPath $presentMon) -or (Get-FileHash -LiteralPath $presen
         Move-Item -LiteralPath $temporary -Destination $presentMon -Force
     } finally {if (Test-Path -LiteralPath $temporary) {Remove-Item -LiteralPath $temporary}}
 }
-$help=(& $presentMon --help 2>&1 | Out-String)
-if ($LASTEXITCODE -ne 0) {throw 'PresentMon cannot start.'}
+$helpOut=Join-Path $toolDirectory ([Guid]::NewGuid().ToString('N')+'.help.txt')
+$helpError=$helpOut+'.stderr'
+try {
+    # Windows PowerShell 5.1 can turn a harmless native stderr message into a
+    # terminating ErrorRecord. Redirect at the process boundary instead.
+    $helpProcess=Start-Process -FilePath $presentMon -ArgumentList '--help' -NoNewWindow -Wait -PassThru -RedirectStandardOutput $helpOut -RedirectStandardError $helpError
+    $help=([IO.File]::ReadAllText($helpOut)+[IO.File]::ReadAllText($helpError)).Replace([string][char]0,'')
+    if ($helpProcess.ExitCode -ne 0) {throw 'PresentMon cannot start.'}
+} finally {
+    foreach ($file in @($helpOut,$helpError)) {if (Test-Path -LiteralPath $file) {Remove-Item -LiteralPath $file}}
+}
 foreach ($flag in @('--process_id','--timed','--delay','--v2_metrics','--qpc_time','--write_display_metadata','--session_name','--terminate_after_timed','--no_console_stats','--no_track_input','--track_hybrid_present')) {
     if ($help -notmatch [regex]::Escape($flag)) {throw ('PresentMon option unavailable: '+$flag)}
 }
@@ -75,8 +84,12 @@ Write-Host ('Capture '+$Mode+': return to the same moving game scene. Recording 
 Write-Host 'Keep the manager window and measurement overlays off the game display. No LS or driver settings are changed.'
 $csv=Join-Path $capture 'presentmon.csv'
 $arguments=@('--process_id',[string]$lsProcess.Id,'--output_file',$csv,'--v2_metrics','--qpc_time','--write_display_metadata','--track_hybrid_present','--no_track_input','--no_console_stats','--session_name',('LS-Pacing-'+[Guid]::NewGuid().ToString('N')),'--delay','5','--timed',[string]$Seconds,'--terminate_after_timed')
-& $presentMon @arguments 2>&1 | Out-File -LiteralPath (Join-Path $capture 'presentmon-console.txt') -Encoding UTF8
-$exitCode=$LASTEXITCODE
+# Every argument is a validated value or a local Windows file path. Windows
+# file names cannot contain a quote; no argument ends in a backslash. Quote
+# each value so Desktop/user paths with spaces remain single arguments.
+$quotedArguments=($arguments | ForEach-Object {'"'+$_+'"'}) -join ' '
+$recording=Start-Process -FilePath $presentMon -ArgumentList $quotedArguments -NoNewWindow -Wait -PassThru -RedirectStandardOutput (Join-Path $capture 'presentmon-console.txt') -RedirectStandardError (Join-Path $capture 'presentmon-stderr.txt')
+$exitCode=$recording.ExitCode
 if ($Mode -eq 'DLSSFG') {
     # The addon polls the request within two seconds and its worker finishes
     # after 60 seconds. Wait at most another five seconds for the final footer.
