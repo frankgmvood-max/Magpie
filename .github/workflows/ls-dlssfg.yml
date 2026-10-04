@@ -51,6 +51,8 @@ jobs:
           Copy-Item experiments/LS-DLSSFG/package out/package/addons/LS_DLSSFG/source/package -Recurse
           Copy-Item experiments/LS-DLSSFG/README-RU.md,experiments/LS-DLSSFG/NOTICE.md,experiments/LS-DLSSFG/LICENSE,experiments/LS-DLSSFG/LICENSE-EAM,experiments/LS-DLSSFG/RESEARCH.md out/package/addons/LS_DLSSFG/source
           Get-FileHash out/package/addons/LS_DLSSFG/LS_DLSSFG.dll -Algorithm SHA256 | Format-List | Out-File out/package/addons/LS_DLSSFG/SHA256.txt
+      - name: Verify update preserves working FG runtime, settings and manager
+        run: pwsh -File experiments/LS-Addons/tests/install_package.ps1 -PackageDirectory out/package
       - uses: actions/upload-artifact@v4
         with:
           name: LS-Addons-x64-${{ github.sha }}
