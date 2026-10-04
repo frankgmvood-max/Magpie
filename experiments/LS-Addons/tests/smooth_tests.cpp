@@ -15,10 +15,11 @@ using Microsoft::WRL::ComPtr;
 namespace {
 void Check(bool b,const char* why){if(!b){std::fprintf(stderr,"%s\n",why);std::exit(1);}}
 uint64_t graphs=0;
+bool launchDuringPresent=true;
 bool Enable(IDXGISwapChain*){return true;}
 uint64_t Graphs(){return graphs;}
 uint64_t Retargets(){return 1;}
-HRESULT STDMETHODCALLTYPE Present(IDXGISwapChain*,UINT sync,UINT flags){Check(sync==0 && !(flags&DXGI_PRESENT_ALLOW_TEARING),"plain chain never receives illegal tearing");++graphs;return S_OK;}
+HRESULT STDMETHODCALLTYPE Present(IDXGISwapChain*,UINT sync,UINT flags){Check(sync==0 && !(flags&DXGI_PRESENT_ALLOW_TEARING),"plain chain never receives illegal tearing");if(launchDuringPresent)++graphs;return S_OK;}
 void Replace(void** t,unsigned slot,void* fn){DWORD old=0,unused=0;Check(VirtualProtect(t+slot,sizeof(void*),PAGE_READWRITE,&old)!=FALSE,"table protection");InterlockedExchangePointer(t+slot,fn);VirtualProtect(t+slot,sizeof(void*),old,&unused);}
 template<class T>void Write(std::vector<std::byte>& b,size_t p,T v){std::memcpy(b.data()+p,&v,sizeof v);}
 void Elf(std::vector<std::byte>& b,size_t p,uint32_t flags,bool modern) {
@@ -76,7 +77,14 @@ int main(){
         auto* chain=backend.TestChain();HWND child=nullptr;chain->GetHwnd(&child);Check(child && child!=parent && GetParent(child)==parent && !IsWindowEnabled(child),"separate disabled child HWND");
         Check((GetWindowLongPtrW(child,GWL_EXSTYLE)&WS_EX_NOACTIVATE)!=0 && GetForegroundWindow()==foreground,"focus remains unchanged");
         void** table=*reinterpret_cast<void***>(chain);void* old=table[8];Replace(table,8,reinterpret_cast<void*>(Present));
-        Check(backend.Prepare(input.Get()) && backend.Present(0)==S_OK && backend.Confirmed(),"simulated wrapper/inference confirmation after real GPU copy");
+        // An existing global launch count belongs to an earlier chain. The
+        // first successful inference for this one arrives on a worker after
+        // Present returns, before the next Present begins.
+        launchDuringPresent=false;
+        Check(backend.Prepare(input.Get()) && backend.Present(0)==S_OK && !backend.Confirmed(),"controller or stale inference count alone cannot confirm generation");
+        ++graphs;
+        Check(backend.Prepare(input.Get()) && backend.Present(0)==S_OK && backend.Confirmed(),"asynchronous inference between Presents is recognized after real GPU copies");
+        launchDuringPresent=true;
         Check(backend.Prepare(input.Get()) && backend.Duplicate(),"unchanged input filtered after confirmation");
         // Read the real D3D12 backbuffer filled by the bridge, including odd
         // dimensions and FP16 HDR. The inference controller alone is fake.

@@ -74,6 +74,10 @@ HRESULT WINAPI Before(IDXGISwapChain* sc,UINT* sync,UINT* flags,BOOL* handled,Ls
             Fail("Smooth Motion GPU synchronization failed; LS output preserved");return S_OK;
         }
         currentSync=*sync;const HRESULT hr=backend->Present(*sync);milliseconds=backend->Milliseconds();
+        // Initialization/model loading can itself take more than 250 ms.
+        // Detect pauses since completion, so our own work doesn't destroy
+        // the just-created driver controller on the next source frame.
+        lastFrameAt=GetTickCount64();
         if(hr!=S_OK){if(!ScheduleRecovery("Smooth Motion: output Present recovery scheduled (bounded to 3 per minute)"))Fail("Smooth Motion output repeatedly unavailable; LS output preserved");return S_OK;}
         if(backend->TimedOut()){
             if(!plainFallback && settings.preferVRR){plainFallback=true;resetPending=true;Log("Smooth Motion: no verified inference on tearing chain; trying the reference plain-chain descriptor once");return S_OK;}
@@ -128,7 +132,7 @@ EAM_EXPORT void AddonInitialize(IHost* h,ImGuiContext* ctx,void* allocate,void* 
     if(!LsBridgeRegister(&cb)){h->Log(EAM_LOG_ERROR,"Smooth Motion: bridge registration failed");return;}
     for(uint32_t e:{EAM_EVENT_D3D11_DEVICE_READY,EAM_EVENT_D3D11_DEVICE_CHANGED,EAM_EVENT_SETTINGS_APPLIED})h->SubscribeEvent(e,Event);
     h->SetPostDispatchCallback(Dispatch);{std::lock_guard<std::mutex> lock(mutex);ready=true;}
-    h->Log(EAM_LOG_INFO,"LS_SmoothMotion 0.1.1 initialized without GPU/driver access; native LSFG and DLSS FG must be off");
+    h->Log(EAM_LOG_INFO,"LS_SmoothMotion 0.1.2 initialized without GPU/driver access; native LSFG and DLSS FG must be off");
 }
 EAM_EXPORT void AddonShutdown(){
     IHost* h=nullptr;{std::lock_guard<std::mutex> lock(mutex);ready=false;h=host;}
@@ -141,7 +145,7 @@ EAM_EXPORT void AddonShutdown(){
 }
 EAM_EXPORT uint32_t GetAddonCapabilities(){return EAM_CAP_HAS_SETTINGS|EAM_CAP_REQUIRES_RESTART|EAM_CAP_D3D11_DEVICE_ACCESS|EAM_CAP_DISPATCH_HOOK;}
 EAM_EXPORT const char* GetAddonName(){return "Smooth Motion for RTX 30 (experimental)";}
-EAM_EXPORT const char* GetAddonVersion(){return "0.1.1";}
+EAM_EXPORT const char* GetAddonVersion(){return "0.1.2";}
 EAM_EXPORT const char* GetAddonAuthor(){return "Anton / Magpie experiments; ItsAdeline NVSmooth30";}
 EAM_EXPORT const char* GetAddonDescription(){return "Driver Smooth Motion x2 via a same-GPU D3D12 output. Validated NvPresent profile required. No NVIDIA runtime or process proxy bundled.";}
 EAM_EXPORT void AddonRenderSettings(){

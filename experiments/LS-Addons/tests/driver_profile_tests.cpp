@@ -25,7 +25,12 @@ struct Fixture {
         Put(0xa060,{0x40,0x38,0x77,0x4c,0x75,4,0x33,0xc0,0xeb,7,0x0f,0xb6,0x87,0xe1,0,0,0,0x88,0x87,0x9c,0x12,0,0});
         Put(0x12f50,{0x48,0x89,0x74,0x24,0x10,0x57,0x48,0x83,0xec,0x20,0x88,0x51,0x50,0x0f,0xb6,0xf2,0x48,0x8b,0xb9,0x10,0x13,0,0});
         Put(0x12ed0,{0x88,0x51,0x51,0xc3});
-        auto** table=reinterpret_cast<void**>(bytes+0x1d1cd8);table[25]=bytes+0x12f50;table[26]=bytes+0x12ed0;
+        Put(0x516c9,{0x48,0x8d,0x05,0x38,0x06,0x18,0,0x48,0x89,0x06});
+        // Preserve the real adjacency: the preceding tables have three
+        // methods each. The constructor-bound controller starts at 1d1d08.
+        auto** table=reinterpret_cast<void**>(bytes+0x1d1d08);
+        table[0]=bytes+0x52ad0;table[1]=bytes+0x56020;
+        table[19]=bytes+0x12f50;table[20]=bytes+0x12ed0;
         // A synthetic named IAT with graph at slot 0 and module-load at 13.
         nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT]={0x1d0b00,2*sizeof(IMAGE_IMPORT_DESCRIPTOR)};
         auto* desc=reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(bytes+0x1d0b00);desc->Name=0x1d2000;desc->OriginalFirstThunk=0x1d1000;desc->FirstThunk=0x1d07a8;
@@ -45,12 +50,17 @@ int main(){
     Fixture image;Check(validate_layout(image.module,inspected),"synthetic inspected image accepted");
     image.bytes[0xa06d]=0xe9;Check(!validate_layout(image.module,inspected),"old config field on new image rejected");image.bytes[0xa06d]=0xe1;
     image.bytes[0xc3af]=2;Check(!validate_layout(image.module,inspected),"externally patched gate rejected");image.bytes[0xc3af]=3;
-    auto** table=reinterpret_cast<void**>(image.bytes+inspected.wrapper_table);const auto saved=table[25];table[25]=image.bytes+0x12ed0;
-    Check(!validate_layout(image.module,inspected),"wrong D3D12 enable method rejected");table[25]=saved;
+    RuntimeProfile adjacent=inspected;adjacent.wrapper_table=0x1d1cd8;adjacent.enable_slot=25;adjacent.option_slot=26;
+    Check(!validate_layout(image.module,adjacent),"adjacent table refused despite matching enable addresses across its boundary");
+    image.bytes[0x516cc]=8;Check(!validate_layout(image.module,inspected),"constructor pointing to adjacent class rejected");image.bytes[0x516cc]=0x38;
+    auto** table=reinterpret_cast<void**>(image.bytes+inspected.wrapper_table);const auto saved=table[19];table[19]=image.bytes+0x12ed0;
+    Check(!validate_layout(image.module,inspected),"wrong D3D12 enable method rejected");table[19]=saved;
     auto* controller=static_cast<unsigned char*>(VirtualAlloc(nullptr,0x2000,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE));Check(controller!=nullptr,"controller allocation");
     std::memcpy(controller,&table,sizeof table);void* enable=nullptr,*option=nullptr;
-    Check(wrapper_controls(image.module,inspected,controller,enable,option) && enable==image.bytes+0x12f50 && option==image.bytes+0x12ed0,"correct private methods selected at 25/26");
-    void* impostor[27]{};impostor[25]=table[25];impostor[26]=table[26];auto* other=impostor;std::memcpy(controller,&other,sizeof other);
+    Check(wrapper_controls(image.module,inspected,controller,enable,option) && enable==image.bytes+0x12f50 && option==image.bytes+0x12ed0,"constructor-bound private methods selected at 19/20");
+    auto** adjacentTable=reinterpret_cast<void**>(image.bytes+0x1d1cd8);std::memcpy(controller,&adjacentTable,sizeof adjacentTable);
+    Check(!wrapper_controls(image.module,inspected,controller,enable,option),"object of adjacent class is not a D3D12 controller");
+    void* impostor[21]{};impostor[19]=table[19];impostor[20]=table[20];auto* other=impostor;std::memcpy(controller,&other,sizeof other);
     Check(!wrapper_controls(image.module,inspected,controller,enable,option) && !enable && !option,"matching method addresses on a different controller are insufficient");
     std::memcpy(controller+0x1ff8,&table,sizeof table);Check(!wrapper_controls(image.module,inspected,controller+0x1ff8,enable,option),"short controller range refused before calling driver");
     VirtualFree(controller,0,MEM_RELEASE);

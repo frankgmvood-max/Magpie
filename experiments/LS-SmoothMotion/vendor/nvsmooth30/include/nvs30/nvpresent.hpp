@@ -14,5 +14,7 @@ void note_present_trampoline(void* present, void* present1);
 bool present_hook_on_path();
 std::uint64_t cuda_intercept_count();
 std::uint64_t graph_launch_count();
+std::uint64_t graph_attempt_count();
+int graph_last_error();
 std::uint64_t retarget_count();
 }

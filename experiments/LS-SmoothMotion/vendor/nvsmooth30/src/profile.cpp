@@ -41,13 +41,22 @@ bool validate_layout(HMODULE module,const RuntimeProfile& profile) {
     constexpr unsigned char enable_method[]{0x48,0x89,0x74,0x24,0x10,0x57,0x48,0x83,0xec,0x20,
         0x88,0x51,0x50,0x0f,0xb6,0xf2,0x48,0x8b,0xb9,0x10,0x13,0x00,0x00};
     constexpr unsigned char option_method[]{0x88,0x51,0x51,0xc3};
+    // The actual D3D12 constructor binds this vptr at 0x516c9. Adjacent
+    // three-method tables at 0x1d1cd8/0x1d1cf0 belong to other classes;
+    // indexing across their boundaries can happen to find these methods.
+    constexpr unsigned char constructor_vptr[]{0x48,0x8d,0x05,0x38,0x06,0x18,0x00,0x48,0x89,0x06};
     if(!code_is(module,0xc3ac,cmp) || !code_is(module,0xc3c7,setge) ||
        !code_is(module,0x59e0,init) || !code_is(module,0xa060,enabled) ||
        !code_is(module,0x12f50,enable_method) || !code_is(module,0x12ed0,option_method) ||
+       !code_is(module,0x516c9,constructor_vptr) ||
        !pe::address_in_writable_section(module,base+0x7d2d50,0x12a6))return false;
+    std::int32_t displacement{};std::memcpy(&displacement,base+0x516cc,sizeof displacement);
+    if(base+0x516d0+displacement!=base+profile.wrapper_table ||
+       profile.enable_slot!=19 || profile.option_slot!=20)return false;
     const auto* table=reinterpret_cast<void* const*>(base+profile.wrapper_table);
-    if(!section_range(module,table,27*sizeof(void*),false) ||
-       table[25]!=base+0x12f50 || table[26]!=base+0x12ed0)return false;
+    if(!section_range(module,table,21*sizeof(void*),false) ||
+       table[0]!=base+0x52ad0 || table[1]!=base+0x56020 ||
+       table[19]!=base+0x12f50 || table[20]!=base+0x12ed0)return false;
     return pe::find_import_slot(module,"nvcuda.dll","cuModuleLoadData")==reinterpret_cast<void**>(const_cast<std::byte*>(base)+0x1d0810) &&
            pe::find_import_slot(module,"nvcuda.dll","cuGraphLaunch")==reinterpret_cast<void**>(const_cast<std::byte*>(base)+0x1d07a8);
 }
@@ -59,8 +68,8 @@ bool wrapper_controls(HMODULE module,const RuntimeProfile& profile,const void* o
     if(!readable(table,count*sizeof(void*)))return false;
     const auto* base=reinterpret_cast<const std::byte*>(module);
     if(profile.inspected_layout) {
-        // D3D12's private controller has more methods than the upstream one.
-        // Do not call slots 19/20 merely because they point inside NvPresent.
+        // Match the actual controller vptr, not an adjacent table whose
+        // out-of-bounds indices happen to reach the same function addresses.
         if(reinterpret_cast<const std::byte*>(table)!=base+profile.wrapper_table ||
            table[profile.enable_slot]!=base+0x12f50 || table[profile.option_slot]!=base+0x12ed0 ||
            !readable(object,0x1318))return false;

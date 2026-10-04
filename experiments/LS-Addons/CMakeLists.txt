@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(LS_Addons VERSION 0.3.1 LANGUAGES CXX)
+project(LS_Addons VERSION 0.3.2 LANGUAGES CXX)
 if(NOT WIN32 OR NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "The addon suite requires x64 MSVC on Windows")
 endif()

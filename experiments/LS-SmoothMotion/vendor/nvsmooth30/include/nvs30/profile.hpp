@@ -19,7 +19,7 @@ inline constexpr RuntimeProfile reference{
     "upstream cd395", 0xe9, false, 0, 19, 20};
 inline constexpr RuntimeProfile inspected{
     "66aceaa6f7539d3171de14e88b725a96f86fb9a370fe4d2e151e451cd11fd712",
-    "inspected 66ace", 0xe1, true, 0x1d1cd8, 25, 26};
+    "inspected 66ace", 0xe1, true, 0x1d1d08, 19, 20};
 inline const RuntimeProfile* find(std::string_view sha) {
     if(sha==reference.sha256)return &reference;
     if(sha==inspected.sha256)return &inspected;

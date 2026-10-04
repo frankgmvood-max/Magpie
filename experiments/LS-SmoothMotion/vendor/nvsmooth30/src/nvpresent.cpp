@@ -23,12 +23,20 @@ std::atomic_bool g_initialized{};
 std::mutex g_cuda_mutex;
 std::atomic_uint64_t g_cuda_intercepts{};
 std::atomic_uint64_t g_graph_launches{},g_retargets{};
+std::atomic_uint64_t g_graph_attempts{},g_graph_failures{};
+std::atomic_int g_graph_error{};
 using GraphLaunch=int (WINAPI*)(void*,void*);
 GraphLaunch g_real_graph{};
 std::vector<void**> g_graph_slots;
 int WINAPI hooked_graph_launch(void* graph,void* stream) {
+    const auto attempt=++g_graph_attempts;
     const int rc=g_real_graph?g_real_graph(graph,stream):3;
-    if(rc==0)++g_graph_launches;
+    if(rc==0) {
+        if(++g_graph_launches==1)logf("[nvs30] First successful CUDA graph launch observed.\n");
+    } else {
+        g_graph_error=rc;
+        if(++g_graph_failures<=3)logf("[nvs30] CUDA graph launch failed: rc=%d attempt=%llu\n",rc,static_cast<unsigned long long>(attempt));
+    }
     return rc;
 }
 bool install_graph_hook() {
@@ -664,5 +672,7 @@ bool enable_wrapper(IDXGISwapChain* swapchain) {
 std::uint64_t cuda_intercept_count() { return g_cuda_intercepts.load(); }
 bool initialized() { return g_initialized.load(); }
 std::uint64_t graph_launch_count() {return g_graph_launches.load();}
+std::uint64_t graph_attempt_count() {return g_graph_attempts.load();}
+int graph_last_error() {return g_graph_error.load();}
 std::uint64_t retarget_count() {return g_retargets.load();}
 }

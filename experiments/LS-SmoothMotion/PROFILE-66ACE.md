@@ -26,11 +26,16 @@ cuGraphLaunch IAT `0x1d07a8`. cuGetProcAddress_v2 is used for cuCtxCreate
 in this image; module load and graph launch call their named thunks. No
 additional CUDA resolver hook is justified for this inspected binary.
 
-The D3D12 private-controller vtable is at `0x1d1cd8`. Its enable/option
-methods are **25/26**, at `0x12f50`/`0x12ed0`, using a bool in DL and
-controller fields `+0x50`/`+0x51`. Slots 19/20 are unrelated methods here.
-The exact vtable, method addresses and readable controller range are
-required before calling the two methods.
+The D3D12 private-controller vtable is at `0x1d1d08`. The actual constructor
+at `0x516c9` loads this address and writes it to the object at `0x516d0`.
+Its enable/option methods are **19/20**, at `0x12f50`/`0x12ed0`, using a
+bool in DL and controller fields `+0x50`/`+0x51`.
+The adjacent tables at `0x1d1cd8` and `0x1d1cf0` each have three methods
+and belong to other classes. The previous profile incorrectly indexed
+25/26 from the first adjacent table; these indices crossed its boundary
+and happened to reach the same method addresses, but its vptr did not
+identify the real controller. The constructor reference, controller-table
+prefix, method addresses and readable object range are now checked.
 
 There are 37 valid fatbin containers, each containing SM120 and SM89 cubins.
 The SM120 entries use header size `0x60`, ELF OSABI/ABI 65/8, e_flags
@@ -49,3 +54,6 @@ containers offline. Metadata retargeting is not a general SASS translator;
 successful SM86 model execution, actual generated frames and physical VRR
 still require the NVIDIA GPU. The active UI status continues to require
 successful retargeted module loads and observed successful CUDA graphs.
+The graph counter is compared to a per-chain initialization baseline,
+including successful launches on a worker between Presents. The current
+checks do not infer physical scanout or generated-frame cadence from this.

@@ -120,12 +120,25 @@ HRESULT Backend::Present(UINT lsSync){
     // unconfirmed until a CUDA graph launch was actually observed.
     s.window.Show(true);
     if(!s.enabled && s.hooks.enable)s.enabled=s.hooks.enable(s.chain.Get());
-    const uint64_t before=s.hooks.graphs?s.hooks.graphs():0;
     const UINT sync=s.settings.syncMode==2?1:s.settings.syncMode==1?std::min(lsSync,1u):0;
     const HRESULT hr=s.chain->Present(sync,ls::PresentFlags(sync,s.tearing));++s.presents;
     const uint64_t after=s.hooks.graphs?s.hooks.graphs():0;
-    if(hr==S_OK && s.enabled && after>before && s.hooks.retargets && s.hooks.retargets()>0){s.confirmed=true;s.graphsSeen=after;s.window.Show(true);}
-    if(!s.confirmed && s.presents>=64){s.probeTimeout=true;s.window.Show(false);}
+    // CUDA can launch on a driver worker between two Presents. Compare
+    // against this chain's initialization baseline, not only the duration
+    // of the current Present call; stale launches from an old chain don't
+    // count toward the new one.
+    if(hr==S_OK && s.enabled && after>s.graphsSeen && s.hooks.retargets && s.hooks.retargets()>0){
+        if(!s.confirmed && s.log)s.log("Smooth Motion: private controller enabled and new CUDA inference observed");
+        s.confirmed=true;s.graphsSeen=after;s.window.Show(true);
+    }
+    if(!s.confirmed && s.presents>=64){
+        if(!s.probeTimeout && s.log){char text[320];std::snprintf(text,sizeof text,
+            "Smooth Motion warmup stopped: presents=%u controller_enabled=%u retargeted=%llu new_graphs=%llu graph_attempts=%llu last_graph_error=%d",
+            s.presents,unsigned(s.enabled),static_cast<unsigned long long>(s.hooks.retargets?s.hooks.retargets():0),
+            static_cast<unsigned long long>(after>=s.graphsSeen?after-s.graphsSeen:0),
+            static_cast<unsigned long long>(nvs30::nvpresent::graph_attempt_count()),nvs30::nvpresent::graph_last_error());s.log(text);}
+        s.probeTimeout=true;s.window.Show(false);
+    }
     if(hr!=S_OK)s.window.Show(false);return hr;
 }
 bool Backend::Confirmed()const{return state_ && state_->confirmed;}
