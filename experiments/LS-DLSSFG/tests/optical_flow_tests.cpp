@@ -14,10 +14,11 @@ unsigned minimumWidth=1,minimumHeight=1,fullWidth=0,fullHeight=0;
 NV_OF_PERF_LEVEL preset=NV_OF_PERF_LEVEL_UNDEFINED;
 bool grid2=true,fail=false,bgra=true,expectedTemporalReset=true;
 bool gradient=false,varyingFlow=false;
+std::array<bool,NV_OF_CAPS_SUPPORT_MAX> capabilityQueried{};
 std::array<unsigned char,4> previousColour{},currentColour{};
 void Check(bool value,const char* why) {if(!value){std::fprintf(stderr,"%s\n",why);std::exit(1);}}
 NV_OF_STATUS NVOFAPI Create(ID3D11Device* const device,ID3D11DeviceContext* const ctx,NvOFHandle* handle) {
-    context=ctx;*handle=reinterpret_cast<NvOFHandle>(device);return NV_OF_SUCCESS;
+    context=ctx;capabilityQueried.fill(false);*handle=reinterpret_cast<NvOFHandle>(device);return NV_OF_SUCCESS;
 }
 NV_OF_STATUS NVOFAPI Init(NvOFHandle,const NV_OF_INIT_PARAMS* p) {width=p->width;height=p->height;grid=unsigned(p->outGridSize);preset=p->perfLevel;expectedTemporalReset=true;return NV_OF_SUCCESS;}
 NV_OF_STATUS NVOFAPI FormatCount(NvOFHandle,NV_OF_BUFFER_USAGE,NV_OF_MODE,uint32_t* count) {*count=1;return NV_OF_SUCCESS;}
@@ -26,6 +27,8 @@ NV_OF_STATUS NVOFAPI Register(NvOFHandle,ID3D11Resource* resource,NvOFGPUBufferH
 NV_OF_STATUS NVOFAPI Unregister(NvOFGPUBufferHandle) {--registered;return NV_OF_SUCCESS;}
 NV_OF_STATUS NVOFAPI Destroy(NvOFHandle) {++destroyed;return NV_OF_SUCCESS;}
 NV_OF_STATUS NVOFAPI Caps(NvOFHandle,NV_OF_CAPS cap,uint32_t* values,uint32_t* count) {
+    if(!values) capabilityQueried[cap]=true;
+    else Check(capabilityQueried[cap],"NVOF requires the capability count before filling its buffer");
     if(cap!=NV_OF_CAPS_SUPPORTED_OUTPUT_GRID_SIZES) {
         if(values) {*values=cap==NV_OF_CAPS_WIDTH_MIN?minimumWidth:minimumHeight;}
         *count=1;

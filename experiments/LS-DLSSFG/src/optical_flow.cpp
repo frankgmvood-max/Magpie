@@ -89,7 +89,10 @@ struct OpticalFlow::State {
             std::find(formats.begin(),formats.end(),required)!=formats.end();
     }
     unsigned Minimum(NV_OF_CAPS cap) {
-        uint32_t count=1,value=1;
+        uint32_t count=0,value=1;
+        // The API specifies a count query before populating any capability,
+        // including scalar minima. Do not assume an output buffer size.
+        if(Call([&]{return api.nvOFGetCaps(session,cap,nullptr,&count);})!=NV_OF_SUCCESS || count!=1) return 1;
         return Call([&]{return api.nvOFGetCaps(session,cap,&value,&count);})==NV_OF_SUCCESS && count==1 && value?value:1u;
     }
 };
