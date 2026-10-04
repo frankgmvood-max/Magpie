@@ -26,6 +26,7 @@ void** g_table = nullptr;
 std::atomic<PresentHook::Callback> g_callback{ nullptr };
 std::atomic<unsigned> g_hits{ 0 };
 thread_local int t_nesting = 0;
+thread_local bool t_present1 = false;
 
 // Only the outermost present on a thread runs the callback, so a present made inside it (or by a hook we call on to) does not run it again.
 HRESULT Before(IDXGISwapChain* sc, UINT& sync, UINT& flags, bool& handled) {
@@ -35,19 +36,21 @@ HRESULT Before(IDXGISwapChain* sc, UINT& sync, UINT& flags, bool& handled) {
     return S_OK;
 }
 HRESULT STDMETHODCALLTYPE OnPresent(IDXGISwapChain* sc, UINT sync, UINT flags) {
+    const bool previous=t_present1;t_present1=false;
     ++t_nesting; bool handled = false; const HRESULT result = Before(sc, sync, flags, handled);
     const auto original = g_present.load(std::memory_order_acquire);
     const HRESULT hr = handled ? result : (original ? original(sc, sync, flags) : E_FAIL); --t_nesting;
-    return hr;
+    t_present1=previous;return hr;
 }
 HRESULT STDMETHODCALLTYPE OnPresent1(IDXGISwapChain1* sc, UINT sync, UINT flags, const DXGI_PRESENT_PARAMETERS* params) {
+    const bool previous=t_present1;t_present1=true;
     ++t_nesting; bool handled = false;
     // Dirty/scroll presents cannot be expanded into two full-screen presents.
     const HRESULT result = (!params || (!params->DirtyRectsCount && !params->pScrollRect))
         ? Before(sc, sync, flags, handled) : S_OK;
     const auto original = g_present1.load(std::memory_order_acquire);
     const HRESULT hr = handled ? result : (original ? original(sc, sync, flags, params) : E_FAIL); --t_nesting;
-    return hr;
+    t_present1=previous;return hr;
 }
 
 // Store the original BEFORE publishing our hook; UI Present can race installation.
@@ -99,8 +102,16 @@ void PresentHook::Uninstall() {
 
 bool PresentHook::Installed() { return g_table != nullptr; }
 HRESULT PresentHook::PresentOriginal(IDXGISwapChain* sc, UINT sync, UINT flags) {
+    if(t_present1) {
+        // LS selected Present1; keep its DXGI entry point for the generated
+        // frame too. Only full-frame presents reach the generation callback.
+        const auto original1=g_present1.load(std::memory_order_acquire);
+        const DXGI_PRESENT_PARAMETERS full{};
+        return original1?original1(static_cast<IDXGISwapChain1*>(sc),sync,flags,&full):E_FAIL;
+    }
     const auto original=g_present.load(std::memory_order_acquire);return original?original(sc,sync,flags):E_FAIL;
 }
+bool PresentHook::UsesPresent1() {return t_present1;}
 unsigned PresentHook::Hits() { return g_hits.load(std::memory_order_relaxed); }
 
 void PresentHook::DumpState(LogFn log) {

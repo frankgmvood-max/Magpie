@@ -3,6 +3,7 @@
 #include "backend.h"
 #include "present_hook.h"
 #include "policy.h"
+#include "output_state.h"
 #include <wrl/client.h>
 #include <filesystem>
 #include <mutex>
@@ -23,6 +24,11 @@ std::unique_ptr<fg::Backend> backend;
 ComPtr<ID3D11Device> device;
 ComPtr<ID3D11Texture2D> real;
 fg::Timeline timeline;
+fg::OutputQueue outputQueue;
+fg::GSyncProbe gsyncProbe;
+fg::GSyncState gsyncState;
+uint64_t probeAt=0;
+unsigned maximumFrameLatency=1;
 uintptr_t selected=0;
 uint64_t epoch=1, statusAt=0, generated=0, baseFrames=0;
 UINT width=0,height=0;
@@ -45,7 +51,7 @@ void StartupTrace(const char* message) {
     HANDLE file=CreateFileW(path,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(file==INVALID_HANDLE_VALUE) return;
     SYSTEMTIME now{};GetLocalTime(&now);
-    char line[768];const int n=std::snprintf(line,sizeof line,"%04u-%02u-%02u %02u:%02u:%02u pid=%lu v0.1.2 %s\r\n",
+    char line[768];const int n=std::snprintf(line,sizeof line,"%04u-%02u-%02u %02u:%02u:%02u pid=%lu v0.1.3 %s\r\n",
         now.wYear,now.wMonth,now.wDay,now.wHour,now.wMinute,now.wSecond,GetCurrentProcessId(),message);
     DWORD written=0;if(n>0 && n<int(sizeof line)) WriteFile(file,line,DWORD(n),&written,nullptr);
     CloseHandle(file);
@@ -68,10 +74,12 @@ void Log(const char* text) { if(host) host->Log(EAM_LOG_INFO,text); }
 void Status(const char* text,int level) { if(host && GetTickCount64()-statusAt>=500) {statusAt=GetTickCount64();host->SetStatus(id,text,level);} }
 void Off(const char* why) {
     disabled=true; resetHistory=true;
+    outputQueue.Reset();
     Log(why); if(host) host->SetStatus(id,why,3);
 }
 void Reset() {
-    backend.reset(); real.Reset(); device.Reset(); selected=0;
+    backend.reset();outputQueue.Reset();gsyncProbe.Reset();gsyncState={};probeAt=0;
+    real.Reset(); device.Reset(); selected=0;
     width=height=0; format=DXGI_FORMAT_UNKNOWN; timeline.Reset(); resetHistory=true; presentationReported=false;
 }
 void Settings() {
@@ -79,6 +87,8 @@ void Settings() {
     armed=GetPrivateProfileIntW(L"FrameGeneration",L"NativeLSFGDisabled",0,ini.c_str())==1;
     // Missing key in an existing 0.1.1 INI enables the new policy on update.
     preferVRR=GetPrivateProfileIntW(L"FrameGeneration",L"PreferVRR",1,ini.c_str())==1;
+    maximumFrameLatency=GetPrivateProfileIntW(L"FrameGeneration",L"MaximumFrameLatency",1,ini.c_str());
+    if(maximumFrameLatency>16) maximumFrameLatency=1; // 0 preserves LS's queue
     targetFps=GetPrivateProfileIntW(L"FrameGeneration",L"TargetFPS",136,ini.c_str());
     if (targetFps!=0 && (targetFps<30 || targetFps>240)) targetFps=136;
     disabled=false; Reset(); ++epoch;
@@ -129,6 +139,13 @@ HRESULT OnPresent(IDXGISwapChain* sc,UINT& sync,UINT& flags,bool& handled) {
             }
             backend=std::make_unique<fg::Backend>();
             if(!backend->Init(device.Get(),d,runtime,Log)) {Off("DLSS FG unavailable; see manager Logs. LS frames pass through");return S_OK;}
+            if(maximumFrameLatency) {
+                const bool applied=outputQueue.Set(sc,maximumFrameLatency);
+                char queueMessage[160];std::snprintf(queueMessage,sizeof queueMessage,
+                    "Output queue: applied=%d previous=%u requested=%u api=%s; restored on stop/failure",
+                    int(applied),outputQueue.Previous(),maximumFrameLatency,outputQueue.PerSwapChain()?"swapchain":"device");Log(queueMessage);
+            }
+            gsyncProbe.Init(device.Get(),Log);
         }
         const double arrived=Now();
         const bool timingReady=timeline.Observe(arrived);
@@ -150,10 +167,15 @@ HRESULT OnPresent(IDXGISwapChain* sc,UINT& sync,UINT& flags,bool& handled) {
         const auto mode=fg::ChoosePresent(sync,flags,preferVRR,
             (sd.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING)!=0,windowed);
         if(!presentationReported) {
+            const auto baseline=gsyncProbe.Query(back.Get());
             char report[256];std::snprintf(report,sizeof report,
                 "Output Present: LS sync=%u flags=0x%x; chain flags=0x%x; windowed=%d; FG sync=%u flags=0x%x; VRR request=%s (monitor activation not measured)",
                 sync,flags,sd.Flags,int(windowed),mode.sync,mode.flags,mode.vrrRequested?"yes":"no");
             Log(report);presentationReported=true;
+            char before[192];std::snprintf(before,sizeof before,
+                "Before first FG pair: G-SYNC=%s capable=%d statuses=%d/%d/%d; presentAPI=%s",
+                baseline.Label(),int(baseline.capable),baseline.handleStatus,baseline.capableStatus,baseline.activeStatus,
+                PresentHook::UsesPresent1()?"Present1":"Present");Log(before);
         }
         // Both generated AND outer real-frame Present receive the same policy.
         // The hook forwards these references, including the Present1 path.
@@ -166,6 +188,23 @@ HRESULT OnPresent(IDXGISwapChain* sc,UINT& sync,UINT& flags,bool& handled) {
         context->CopyResource(back.Get(),backend->Output()); context->Flush();
         const HRESULT made=PresentHook::PresentOriginal(sc,sync,flags);
         const double presented=Now();
+        if(made==S_OK && GetTickCount64()>=probeAt) {
+            probeAt=GetTickCount64()+2000;gsyncState=gsyncProbe.Query(back.Get());
+            ComPtr<IDXGISwapChainMedia> media;DXGI_FRAME_STATISTICS_MEDIA stats{};
+            const HRESULT statsHr=SUCCEEDED(sc->QueryInterface(IID_PPV_ARGS(&media)))
+                ?media->GetFrameStatisticsMedia(&stats):E_NOINTERFACE;
+            RECT windowRect{};MONITORINFO monitor{sizeof(MONITORINFO)};
+            const bool covers=sd.OutputWindow && GetWindowRect(sd.OutputWindow,&windowRect) &&
+                GetMonitorInfoW(MonitorFromWindow(sd.OutputWindow,MONITOR_DEFAULTTONEAREST),&monitor) &&
+                EqualRect(&windowRect,&monitor.rcMonitor);
+            char measured[384];std::snprintf(measured,sizeof measured,
+                "FG output: G-SYNC=%s capable=%d statuses=%d/%d/%d; real_interval_ms=%.3f generation_ms=%.3f presentAPI=%s; mediaHr=0x%08x composition=%u; fullscreenBounds=%d foregroundOutput=%d exStyle=0x%llx",
+                gsyncState.Label(),int(gsyncState.capable),gsyncState.handleStatus,gsyncState.capableStatus,gsyncState.activeStatus,
+                timeline.Interval()*1000,generateMs,PresentHook::UsesPresent1()?"Present1":"Present",
+                unsigned(statsHr),SUCCEEDED(statsHr)?unsigned(stats.CompositionMode):~0u,int(covers),
+                int(GetForegroundWindow()==sd.OutputWindow),static_cast<unsigned long long>(GetWindowLongPtrW(sd.OutputWindow,GWL_EXSTYLE)));
+            Log(measured);
+        }
         // Get the NEXT buffer after flip: the old pointer is no longer the
         // buffer LS's outer Present will submit.
         back.Reset();
@@ -181,9 +220,9 @@ HRESULT OnPresent(IDXGISwapChain* sc,UINT& sync,UINT& flags,bool& handled) {
         ++generated;
         const double realDue=timeline.RealDue(presented,step);
         if(sync==0) WaitUntil(realDue);
-        char message[192]; std::snprintf(message,sizeof message,"DLSS FG x2: %llu generated; %.2f ms; %s; %s",
+        char message[224]; std::snprintf(message,sizeof message,"DLSS FG x2: %llu generated; %.2f ms; %s; %s; G-SYNC %s",
             static_cast<unsigned long long>(generated),generateMs,sync?"LS vsync":targetFps?"profile pacing":"adaptive pacing",
-            mode.vrrRequested?"VRR-compatible Present":preferVRR?"VRR request unavailable on LS output":"LS Present preserved");
+            mode.vrrRequested?"VRR-compatible Present":preferVRR?"VRR request unavailable on LS output":"LS Present preserved",gsyncState.Label());
         Status(message,1);
         host->PublishMetric(id,"real_interval_ms",timeline.Interval()*1000,"ms");
         host->PublishMetric(id,"generated_total",double(generated),"frames");
@@ -246,7 +285,7 @@ void Initialize(IHost* h) {
     }
     StartupStep("register_dispatch");h->SetPostDispatchCallback(PostDispatch,nullptr);
     StartupStep("initial_status");SettingsStatus(h);
-    StartupStep("initial_log");h->Log(EAM_LOG_INFO,"LS_DLSSFG 0.1.2 initialized without GPU access; waiting for a live LS output pass");
+    StartupStep("initial_log");h->Log(EAM_LOG_INFO,"LS_DLSSFG 0.1.3 initialized without GPU access; waiting for a live LS output pass");
     {
         std::lock_guard<std::mutex> lock(mutex);callbacksReady=true;
     }
@@ -274,6 +313,6 @@ EAM_EXPORT void AddonShutdown() {
 }
 EAM_EXPORT uint32_t GetAddonCapabilities() {return EAM_CAP_REQUIRES_RESTART|EAM_CAP_D3D11_DEVICE_ACCESS|EAM_CAP_DISPATCH_HOOK;}
 EAM_EXPORT const char* GetAddonName() {return "DLSS Frame Generation (experimental)";}
-EAM_EXPORT const char* GetAddonVersion() {return "0.1.2";}
+EAM_EXPORT const char* GetAddonVersion() {return "0.1.3";}
 EAM_EXPORT const char* GetAddonAuthor() {return "Anton / Magpie experiments";}
 EAM_EXPORT const char* GetAddonDescription() {return "DLSS FG x2 on LS output, keeping LS input and window. Disable native LSFG first.";}

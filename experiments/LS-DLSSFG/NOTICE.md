@@ -8,5 +8,10 @@ The build uses NVIDIA/DLSS SDK commit
 code retain NVIDIA's terms (NVIDIA-LICENSE.txt in the compiled package).
 Runtime DLLs and third-party compatibility mods are not bundled.
 
+Read-only G-SYNC telemetry uses official NVIDIA NVAPI header declarations at
+revision 87dca625e83fd89a983e19b904e5f3a580da90d2, fetched and SHA-256 checked by
+scripts/Fetch-NvapiHeaders.ps1. NVAPI terms are in NVIDIA-NVAPI.txt. No NVIDIA
+driver DLL is bundled; only system nvapi64.dll is dynamically loaded.
+
 The addon is a separately built experiment. No Magpie source is linked into
 its DLL. The enclosing repository's license remains unchanged.

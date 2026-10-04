@@ -1,4 +1,4 @@
-# DLSS FG для Lossless Scaling — эксперимент 0.1.2
+# DLSS FG для Lossless Scaling — эксперимент 0.1.3
 
 Отдельный аддон для Echo-Storm/ls-addon-manager, API 1.1+. Генерирует один
 промежуточный кадр между двумя кадрами LS и показывает его через swap chain LS.
@@ -75,7 +75,7 @@ Faulted менеджера; ошибка не маскируется успеш�
 проверка использует намеренно недействительный указатель старого устройства.
 
 Для обновления полностью закрой LS и замени **LS_DLSSFG.dll и addon.json**.
-Твои LS_DLSSFG.ini и runtime оставь на месте. Версия карточки должна стать 0.1.2.
+Твои LS_DLSSFG.ini и runtime оставь на месте. Версия карточки должна стать 0.1.3.
 
 ## Изменение вывода для VRR в 0.1.2
 
@@ -99,6 +99,36 @@ Adaptive-Sync/G-SYNC должны быть включены для монито�
 `[FrameGeneration]` своего LS_DLSSFG.ini и полностью перезапусти LS.
 Обновление не требует повторного копирования рабочего runtime/мода SM86.
 
+## Вывод и проверка G-SYNC в 0.1.3
+
+Лог последнего запуска пользователя с 0.1.2 уже показал правильные флаги
+(LS sync=0, present flags=0x200, chain flags=0x800, windowed=1). Поэтому
+повторное выставление этих флагов не устраняет наблюдаемую проблему.
+Точная причина отсутствия G-SYNC пока не установлена.
+
+В 0.1.3 сгенерированный кадр использует тот же вход DXGI, что и LS:
+Present или Present1. Полные параметры настоящего Present1 сохраняются.
+Раньше собственный сгенерированный кадр всегда использовал Present.
+
+`MaximumFrameLatency=1` по умолчанию ограничивает очередь вывода. Для
+обычного swap chain применяется IDXGIDevice1, для waitable swap chain —
+IDXGISwapChain2. Прежнее значение восстанавливается при остановке/отказе;
+если LS успел задать новое значение, оно сохраняется. Ключ 0 отключает
+изменение очереди. Это настройка задержки, не гарантия включения G-SYNC.
+
+Статус теперь показывает ответ драйвера: `G-SYNC active`, `inactive` или
+`unknown`. Unknown означает, что соответствующий запрос NVAPI недоступен
+или неуспешен; это не считается выключенным G-SYNC. DLL драйвера загружается
+только из System32. Глобальные настройки NVIDIA/Windows не изменяются.
+В лог попадают результаты NVAPI, интервал настоящих кадров, время FG,
+Present/Present1, доступная статистика DXGI и геометрия/стиль окна LS.
+Статистика API и composition mode не доказывают реальный показ каждого
+кадра монитором; OSD монитора остаётся отдельной проверкой.
+
+Обновление не заменяет runtime, мод SM86 или рабочий INI. Значения новых
+ключей действуют и при их отсутствии в старом INI. Сохранение VRR на
+RTX 3080 с этой версией пока не подтверждено.
+
 ## Возврат к обычному LS
 
 Запусти `Deactivate.cmd`, выключи аддон в менеджере и перезапусти LS.
@@ -107,10 +137,12 @@ Adaptive-Sync/G-SYNC должны быть включены для монито�
 ## Сборка
 
 Точные версии: менеджер `fbcc3c179e4052785c032d157d8eb785608eb28e`, NVIDIA SDK
-`374959484e79a640feaba44c93ac8cfb0a03f5b5`.
+`374959484e79a640feaba44c93ac8cfb0a03f5b5`, NVAPI headers
+`87dca625e83fd89a983e19b904e5f3a580da90d2`.
 
 ```powershell
-cmake -S experiments/LS-DLSSFG -B out/ls-fg -A x64 -DEAM_ROOT=<manager> -DNGX_ROOT=<NVIDIA-DLSS>
+pwsh -File scripts/Fetch-NvapiHeaders.ps1 -OutputDirectory dependencies/nvapi-sdk
+cmake -S experiments/LS-DLSSFG -B out/ls-fg -A x64 -DEAM_ROOT=<manager> -DNGX_ROOT=<NVIDIA-DLSS> -DNVAPI_ROOT=dependencies/nvapi-sdk
 cmake --build out/ls-fg --config Release
 ctest --test-dir out/ls-fg -C Release --output-on-failure
 cmake --install out/ls-fg --config Release --prefix out/package

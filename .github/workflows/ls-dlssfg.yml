@@ -27,7 +27,10 @@ jobs:
           path: dependencies/dlss
           persist-credentials: false
       - name: Configure
-        run: cmake -S experiments/LS-DLSSFG -B out/ls-fg -A x64 -DEAM_ROOT="${{ github.workspace }}/dependencies/eam" -DNGX_ROOT="${{ github.workspace }}/dependencies/dlss"
+        run: |
+          pwsh -File scripts/Fetch-NvapiHeaders.ps1 -OutputDirectory dependencies/nvapi-sdk
+          if ($LASTEXITCODE) { throw 'NVAPI header fetch failed' }
+          cmake -S experiments/LS-DLSSFG -B out/ls-fg -A x64 -DEAM_ROOT="${{ github.workspace }}/dependencies/eam" -DNGX_ROOT="${{ github.workspace }}/dependencies/dlss" -DNVAPI_ROOT="${{ github.workspace }}/dependencies/nvapi-sdk"
       - name: Build x64 DLL
         run: cmake --build out/ls-fg --config Release --parallel
       - name: Test ABI, lifecycle and presentation policy

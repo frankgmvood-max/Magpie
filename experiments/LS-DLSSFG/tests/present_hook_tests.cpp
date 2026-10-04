@@ -49,7 +49,8 @@ int main() {
     Check(calls[0].sync==0 && calls[1].sync==0 && calls[0].flags==0x200 && calls[1].flags==0x200,"both Present calls receive VRR arguments");
     DXGI_PRESENT_PARAMETERS p{};
     Check(chain->Present1(1,0,&p)==S_OK && count==4,"generated plus outer real Present1");
-    Check(calls[2].sync==0 && calls[3].sync==0 && calls[2].flags==0x200 && calls[3].flags==0x200 && calls[3].present1 && calls[3].params==&p,"Present1 receives modified args and original parameters");
+    Check(calls[2].sync==0 && calls[3].sync==0 && calls[2].flags==0x200 && calls[3].flags==0x200 && calls[2].present1 && calls[3].present1 && calls[3].params==&p,"generated and real frames both retain Present1");
+    Check(!calls[0].present1 && !calls[1].present1,"Present path retains Present for both frames");
     reject=true;Check(chain->Present(1,0)==S_OK && count==5 && calls[4].sync==1 && calls[4].flags==0,"rejection preserves original Present");reject=false;
     unsigned before=callbacks;
     Check(chain->Present(0,DXGI_PRESENT_TEST)==S_OK && callbacks==before && count==6 && calls[5].flags==DXGI_PRESENT_TEST,"TEST bypass");

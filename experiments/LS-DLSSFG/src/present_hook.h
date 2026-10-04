@@ -17,5 +17,6 @@ namespace PresentHook {
     // A present of our own, from inside the callback (a frame of our own before Lossless Scaling's): the original Present, which does not
     // run the callback again.
     HRESULT PresentOriginal(IDXGISwapChain* sc, UINT sync, UINT flags);
+    bool UsesPresent1();         // entry point of the current LS present
     void DumpState(LogFn log);   // diagnostics: the hit count, and whether the patched slots are still ours
 }
