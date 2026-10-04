@@ -41,6 +41,7 @@ jobs:
           cmake --install out/ls-fg --config Release --prefix out/package
           if ($LASTEXITCODE) { throw 'Package install failed' }
           Copy-Item dependencies/dlss/LICENSE.txt out/package/addons/LS_DLSSFG/NVIDIA-LICENSE.txt
+          Copy-Item out/ls-fg/_deps/imgui-src/LICENSE.txt out/package/addons/LS_DLSSFG/IMGUI-LICENSE.txt
           git rev-parse HEAD | Set-Content out/package/addons/LS_DLSSFG/build-commit.txt
           Copy-Item experiments/LS-DLSSFG/package out/package/addons/LS_DLSSFG/source/package -Recurse
           Copy-Item experiments/LS-DLSSFG/README-RU.md,experiments/LS-DLSSFG/NOTICE.md,experiments/LS-DLSSFG/LICENSE,experiments/LS-DLSSFG/LICENSE-EAM out/package/addons/LS_DLSSFG/source

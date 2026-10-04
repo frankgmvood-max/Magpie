@@ -17,8 +17,9 @@ public:
         interval_ = interval_ == 0 ? dt : interval_ * 0.9 + dt * 0.1;
         return ++samples_ >= 3;
     }
-    double Step(double targetFps) const {
-        return targetFps >= 30 && targetFps <= 240 ? 1.0 / targetFps : interval_ * 0.5;
+    bool NeedsReset(double now) const {return !lastInput_ || now-lastInput_>0.1 || now<=lastInput_;}
+    double Step(double targetFps,unsigned multiplier=2) const {
+        return targetFps >= 30 && targetFps <= 360 ? 1.0 / targetFps : interval_ / std::clamp(multiplier,2u,4u);
     }
     double GeneratedDue(double now, double step) {
         if (next_ == 0 || now > next_ + step) next_ = now;
@@ -30,6 +31,8 @@ public:
         next_ = generatedPresentedAt + step * 2;
         return generatedPresentedAt + step;
     }
+    double FrameDue(double first,unsigned index,double step) const {return first+index*step;}
+    void Finish(double realDue,double step) {next_=realDue+step;}
     double Interval() const { return interval_; }
 private:
     double lastInput_ = 0, next_ = 0, interval_ = 0;

@@ -101,8 +101,8 @@ void PresentHook::Uninstall() {
 }
 
 bool PresentHook::Installed() { return g_table != nullptr; }
-HRESULT PresentHook::PresentOriginal(IDXGISwapChain* sc, UINT sync, UINT flags) {
-    if(t_present1) {
+HRESULT PresentHook::PresentOriginal(IDXGISwapChain* sc, UINT sync, UINT flags,fg::PresentApi api) {
+    if(api==fg::PresentApi::Present1 || (api==fg::PresentApi::Auto && t_present1)) {
         // LS selected Present1; keep its DXGI entry point for the generated
         // frame too. Only full-frame presents reach the generation callback.
         const auto original1=g_present1.load(std::memory_order_acquire);

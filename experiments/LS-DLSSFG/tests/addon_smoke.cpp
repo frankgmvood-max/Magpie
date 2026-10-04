@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <imgui.h>
 using Microsoft::WRL::ComPtr;
 struct Host final : IHost {
     struct Subscription {uint32_t event;EamEventCallback cb;void* data;};
@@ -69,9 +70,23 @@ int main(int argc,char** argv) {
     auto version=reinterpret_cast<GetAddonVersion_t>(GetProcAddress(dll,"GetAddonVersion"));
     Check(init && stop && caps && version,"missing SDK export");
     Check((caps()&EAM_CAP_DISPATCH_HOOK)!=0 && (caps()&EAM_CAP_REQUIRES_RESTART)!=0,"missing capabilities");
+    Check((caps()&EAM_CAP_HAS_SETTINGS)!=0,"missing settings capability");
+    auto panel=reinterpret_cast<AddonRenderSettings_t>(GetProcAddress(dll,"AddonRenderSettings"));
+    Check(panel!=nullptr && std::string(version())=="0.2.0","settings export / version");
     Check(InitializeGuarded(init,reinterpret_cast<IHost*>(uintptr_t(1)))==EXCEPTION_ACCESS_VIOLATION,
         "init fault must propagate to the manager after recording a breadcrumb");
     Host host;
+    {
+        ImGuiContext* ui=ImGui::CreateContext();
+        ImGuiMemAllocFunc allocate=nullptr;ImGuiMemFreeFunc release=nullptr;void* user=nullptr;
+        ImGui::GetAllocatorFunctions(&allocate,&release,&user);
+        init(&host,ui,reinterpret_cast<void*>(allocate),reinterpret_cast<void*>(release),user);
+        ImGuiIO& io=ImGui::GetIO();io.DisplaySize=ImVec2(1280,900);io.DeltaTime=1.0f/60;
+        unsigned char* pixels=nullptr;int w=0,h=0;io.Fonts->GetTexDataAsRGBA32(&pixels,&w,&h);
+        ImGui::NewFrame();ImGui::Begin("Addon settings");panel();ImGui::End();ImGui::Render();
+        Check(ImGui::GetDrawData()!=nullptr,"settings render did not produce draw data");
+        stop();ImGui::DestroyContext(ui);
+    }
     for(int i=0;i<3;++i) {
         init(&host,nullptr,nullptr,nullptr,nullptr);
         Check(host.subscriptions.size()==3 && host.post && host.statuses>0,"initialization failed");

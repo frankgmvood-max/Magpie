@@ -1,12 +1,12 @@
 {
   "name": "DLSS Frame Generation (experimental)",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "author": "Magpie experiments",
-  "description": "DLSS FG x2 on Lossless Scaling output. Native LSFG must be OFF. Keeps the LS window and input path.",
+  "description": "DLSS FG x2-x4, NVOF and exact Duplicate Frame Filtering on LS output. Native LSFG must be OFF. Keeps the LS window and input path.",
   "min_host_version": "1.1.0",
   "dll": "LS_DLSSFG.dll",
   "enabled_by_default": false,
-  "conflicts": ["DLSS5NR01", "DLSS4DLAA", "FSR3UPSC"],
+  "conflicts": ["DLSS5NR01", "DLSS4DLAA", "FSR3UPSC", "XESSUPSC", "VSRUPSC"],
   "dependencies": [],
   "tags": ["frame-generation", "dlss", "experimental"]
 }

@@ -2,6 +2,7 @@
 // Present1 in the function table that every window swap chain of the DXGI runtime shares. The table comes directly from LS's live output chain. No probe window or swap chain is created.
 #pragma once
 #include <dxgi1_2.h>
+#include "settings.h"
 #include <functional>
 
 namespace PresentHook {
@@ -16,7 +17,7 @@ namespace PresentHook {
     unsigned Hits();             // presents seen in the process, by anyone
     // A present of our own, from inside the callback (a frame of our own before Lossless Scaling's): the original Present, which does not
     // run the callback again.
-    HRESULT PresentOriginal(IDXGISwapChain* sc, UINT sync, UINT flags);
+    HRESULT PresentOriginal(IDXGISwapChain* sc, UINT sync, UINT flags,fg::PresentApi api=fg::PresentApi::Auto);
     bool UsesPresent1();         // entry point of the current LS present
     void DumpState(LogFn log);   // diagnostics: the hit count, and whether the patched slots are still ours
 }

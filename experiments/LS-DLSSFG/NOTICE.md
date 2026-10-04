@@ -15,3 +15,15 @@ driver DLL is bundled; only system nvapi64.dll is dynamically loaded.
 
 The addon is a separately built experiment. No Magpie source is linked into
 its DLL. The enclosing repository's license remains unchanged.
+
+0.2.0 studies Magpie Experimental 0.6.9 revision
+2fceab5e241bc9f8ded001ab3266762f1f8bc51e (GPL-3.0). Profile semantics,
+current-to-previous S10.5 motion, 1/1 MFG resets and exact RGB duplicate checking
+were used as design references. The addon has its own implementation; Magpie's
+Renderer/FrameSource/DeviceResources source is not copied or linked.
+The untouched upstream source is preserved in branch upstream-magpie-0.6.9.
+
+NVOF API header licences/provenance are in third_party/nvof/NOTICE.md.
+ImGui is pinned to the manager's exact revision
+367b2c24f399988ddafc0bb4628da0106bcc09be (MIT). Its licence is included in the
+compiled package. Only System32 nvofapi64.dll is loaded; no OF driver is bundled.
