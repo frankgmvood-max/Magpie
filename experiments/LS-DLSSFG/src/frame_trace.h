@@ -36,7 +36,7 @@ public:
         try {
             std::filesystem::create_directories(path.parent_path());
             std::ofstream file(path,std::ios::binary|std::ios::trunc);
-            if(!file)return false;
+            if(!file){failed_=true;return false;}
             file.imbue(std::locale::classic());
             file<<"sequence,base_id,swapchain,kind,index,multiplier,qpc_frequency,present_begin_qpc,present_end_qpc,input_seconds,ready_seconds,deadline_seconds,generation_ms,preprocess_cpu_ms,queue_wait_ms,sync,flags,hresult\n";
             head_=count_=0;stopping_=false;dropped_=0;failed_=false;

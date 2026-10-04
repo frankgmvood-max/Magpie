@@ -6,6 +6,7 @@
 
 void Check(bool ok,const char* text){if(!ok){std::fprintf(stderr,"%s\n",text);std::exit(1);}}
 int main(){
+    try {
     const auto folder=std::filesystem::temp_directory_path()/L"LSFrameTraceTest"/std::to_wstring(GetCurrentProcessId());
     const auto path=folder/L"trace.csv";
     fg::FrameTrace trace;
@@ -28,8 +29,13 @@ int main(){
         Check(std::stoull(line)==++count,"writer retains submission order");
     }
     Check(count==100 && disclaimer,"all rows and measurement limit are saved");
+    // Windows won't delete a file still held by an ordinary ifstream; close
+    // the reader before restarting the writer and removing the test directory.
+    file.close();
     Check(!trace.Start(folder,1) && !trace.Active(),"unwritable target fails without starting worker");
     Check(trace.Start(path,60),"restart after an output failure");trace.Stop();
     std::filesystem::remove_all(folder);
     std::puts("bounded asynchronous trace, ordered rows, timed completion, shutdown drain and failure recovery passed");
+    return 0;
+    } catch(const std::exception& error){std::fprintf(stderr,"frame trace test: %s\n",error.what());return 1;}
 }
