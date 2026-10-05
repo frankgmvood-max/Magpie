@@ -2,10 +2,15 @@
 #include "Logger.h"
 #ifdef MP_ENABLE_DLSS_FRAME_GENERATION
 #include <nvapi.h>
-#include <nvapi_interface.h>
 #endif
 
 namespace Magpie {
+namespace {
+#ifdef MP_ENABLE_DLSS_FRAME_GENERATION
+// The SDK header defines its table. Keep this copy private to the presenter
+// translation unit, independent of the table used by ReflexController.cpp.
+#include <nvapi_interface.h>
+#endif
 
 // Read only, once after warm-up. Flags are driver state, not a measurement of
 // panel scanout intervals. No DRS/profile writes or per-frame NVAPI polling.
@@ -53,4 +58,5 @@ inline void LogVrrDriverState(ID3D11Device* device, IDXGISwapChain* chain, const
 #endif
 }
 
+}
 }
