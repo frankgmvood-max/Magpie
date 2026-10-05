@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
-      - name: Pure policy and actual WARP shader/composition tests
+      - name: Pacing, bounded buffering, real GPU fences and WARP composition tests
         shell: pwsh
         run: ./tests/Run-VrrTests.ps1
       - name: NoFocusLoss real USER32 hook and threaded lifecycle tests
@@ -34,8 +34,8 @@ jobs:
         with:
           path: ~/.conan2/p
           key: Conan-VRR-x64-${{ hashFiles('src/**/conanfile.txt') }}
-      - name: Build full Magpie 0.6.9 with global NoFocusLoss, VRR and optical flow scale
-        run: python scripts/publish.py --platform=x64 --compiler=MSVC --version-major=0 --version-minor=6 --version-patch=9 --version-string=0.6.9-vrr5 --release-symbols
+      - name: Build full Magpie 0.6.9 with VRR6 presentation controls and classic NoFocusLoss
+        run: python scripts/publish.py --platform=x64 --compiler=MSVC --version-major=0 --version-minor=6 --version-patch=9 --version-string=0.6.9-vrr6 --release-symbols
       - name: Native crash IPC through the actual Magpie executable entry point
         shell: pwsh
         run: |
@@ -61,12 +61,12 @@ jobs:
         run: python scripts/Package-VrrUpdate.py
       - uses: actions/upload-artifact@v7
         with:
-          name: Magpie-0.6.9-VRR5-x64
-          path: dist/Magpie-0.6.9-VRR5-update-x64.zip
+          name: Magpie-0.6.9-VRR6-x64
+          path: dist/Magpie-0.6.9-VRR6-update-x64.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         with:
-          name: Magpie-0.6.9-VRR5-native-symbols
+          name: Magpie-0.6.9-VRR6-native-symbols
           path: |
             publish/x64/Magpie.pdb
             publish/x64/Magpie.Core.pdb

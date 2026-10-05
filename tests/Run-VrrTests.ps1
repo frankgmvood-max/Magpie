@@ -7,7 +7,7 @@ $vswhere=Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/v
 $vs=& $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath | Select-Object -First 1
 Import-Module (Join-Path $vs 'Common7/Tools/Microsoft.VisualStudio.DevShell.dll')
 Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64' | Out-Null
-foreach($test in @('VrrPolicyTests','VrrWarpTests')) {
+foreach($test in @('VrrPolicyTests','PresentationPipelineTests','VrrWarpTests','PresentationWaitTests')) {
     & cl.exe /nologo /std:c++20 /EHsc /utf-8 /MT /O2 /W4 "/I$repo/src/Magpie.Core" "$PSScriptRoot/$test.cpp" "/Fe:$output/$test.exe" "/Fo:$output/$test.obj" d3d11.lib dxgi.lib d3dcompiler.lib dcomp.lib user32.lib
     if($LASTEXITCODE) { throw "Compile failed: $test" }
     & "$output/$test.exe"

@@ -367,6 +367,23 @@ ScalingError Renderer::Initialize(HWND hwndAttach, OverlayOptions& overlayOption
 	}
 
 	_hasFrameGeneration = frameGeneration.HasFrameGeneration();
+	for (const EffectOption& effect : effects) {
+		if (!IsDLSSFrameGenerationEffect(effect.name)) continue;
+		_dlssPresentationSettings = ReadDlssPresentationSettings([&](std::string_view name) -> std::optional<float> {
+			const auto it = effect.parameters.find(std::string(name));
+			return it == effect.parameters.end() ? std::nullopt : std::optional<float>(it->second);
+		});
+		break;
+	}
+	_presentationBuffer.Configure(ScalingWindow::Get().Options().isVRREnabled ?
+		_dlssPresentationSettings.bufferFrames : 0u);
+	if (frameGeneration.first == FrameGenerationEffectKind::DLSS) {
+		Logger::Get().Info(fmt::format(
+			"DLSSFG output settings: strictPacing={} maxFrameLatency={} bufferFrames={} gpuReady={} vrr={}",
+			_dlssPresentationSettings.strictPacing, _dlssPresentationSettings.maximumFrameLatency,
+			_dlssPresentationSettings.bufferFrames, _dlssPresentationSettings.gpuReady,
+			ScalingWindow::Get().Options().isVRREnabled));
+	}
 	_frameSyncUsesSharedSlot = frameGeneration.first != FrameGenerationEffectKind::DLSS;
 	std::optional<XeSSFGVariant> xessVariant;
 	uint32_t xessFrameGenerationMultiplier = 2;
@@ -418,6 +435,16 @@ ScalingError Renderer::Initialize(HWND hwndAttach, OverlayOptions& overlayOption
 
 	const DXGI_ADAPTER_DESC1 adapterDesc =
 		LogAdapter(_frontendResources.GetGraphicsAdapter());
+	if (frameGeneration.first == FrameGenerationEffectKind::DLSS &&
+		ScalingWindow::Get().Options().isVRREnabled && _dlssPresentationSettings.gpuReady) {
+		const HRESULT hr = _presentationReadyFence.Initialize(_frontendResources.GetD3DDevice());
+		if (FAILED(hr)) {
+			Logger::Get().ComError("Create output GPU readiness fence failed", hr);
+			_backendInitContext = "Create output GPU readiness fence";
+			_backendInitSystemError = static_cast<uint32_t>(hr);
+			return ScalingError::PresentationInitFailed;
+		}
+	}
 
 	_EnsureGpuPriority(true);
 	_UpdateOverlayRefreshRate();
@@ -637,7 +664,8 @@ bool Renderer::_OpenFrontendSharedTextures() noexcept {
 	// Backend rendering may already be running. Hold all publication slots
 	// while opening (or disabling) the optional reference branch.
 	std::scoped_lock slotLocks(_sharedTextureAccessMutexes[0], _sharedTextureAccessMutexes[1],
-		_sharedTextureAccessMutexes[2], _sharedTextureAccessMutexes[3]);
+		_sharedTextureAccessMutexes[2], _sharedTextureAccessMutexes[3],
+		_sharedTextureAccessMutexes[4], _sharedTextureAccessMutexes[5]);
 	if (!_passThroughFrames.OpenFrontend(_frontendResources, _sharedTextureSlotCount)) {
 		const auto& window = ScalingWindow::Get();
 		if (const auto& report = window.Options().reportErrorDetails) {
@@ -1070,7 +1098,15 @@ bool Renderer::_FrontendRender(
 		.overlayRevision = overlayActionRevision,
 		.contentKey = _lastAccessMutexKeys[sharedTextureSlot]
 	};
-	if (paced || ScalingWindow::Get().Options().isVRREnabled) _frontendResources.GetD3DDC()->Flush();
+	if (_dlssFrameGenerator && ScalingWindow::Get().Options().isVRREnabled &&
+		_dlssPresentationSettings.gpuReady && _presenter->SupportsDeferredPresent()) {
+		const HRESULT hr = _presentationReadyFence.Mark(d3dDC);
+		_presentationReadySince = std::chrono::steady_clock::now();
+		if (FAILED(hr)) {
+			_StopOnPresentationFailure("Signal output GPU readiness fence", hr);
+			return false;
+		}
+	} else if (paced || ScalingWindow::Get().Options().isVRREnabled) d3dDC->Flush();
 	const bool submitted = _SubmitFrontendFrame();
 	if (timings) timings->endFrame = std::chrono::steady_clock::now() - endFrameStart;
 	return submitted;
@@ -1090,8 +1126,9 @@ bool Renderer::_SubmitFrontendFrame() noexcept {
 		const double rate = ResolveVrrOutputRate(vrrOptions.vrrFrameRate, refresh,
 			baseTarget, _activeFrameGenerationMultiplier.load(std::memory_order_acquire));
 		const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(1.0 / rate));
-		const auto minimum = std::chrono::duration_cast<std::chrono::nanoseconds>(
-			std::chrono::duration<double>(1.0 / std::max(rate, refresh - 2.0)));
+		const auto minimum = _dlssPresentationSettings.strictPacing ? period :
+			std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::duration<double>(1.0 / std::max(rate, refresh - 2.0)));
 		_vrrPresentationClock.Configure(period, minimum);
 		const auto due = _vrrPresentationClock.Due(submitStart);
 		if (submitStart < due) {
@@ -1108,6 +1145,19 @@ bool Renderer::_SubmitFrontendFrame() noexcept {
 		}
 	}
 	_frontendPacingDeadline.reset();
+	if (_presentationReadyFence.Pending()) {
+		const HRESULT hr = _presentationReadyFence.Poll();
+		if (hr == S_FALSE) {
+			if (submitStart - _presentationReadySince >= std::chrono::seconds(2))
+				_StopOnPresentationFailure("Output GPU readiness fence timed out", HRESULT_FROM_WIN32(WAIT_TIMEOUT));
+			else _frontendPacingDeadline = submitStart + std::chrono::milliseconds(1);
+			return false;
+		}
+		if (FAILED(hr)) {
+			_StopOnPresentationFailure("Output GPU readiness fence device failure", hr);
+			return false;
+		}
+	}
 	const auto [stableBaseOnly, contentFrame, generatedFrame, uiInIndependentLayer,
 		waitForGpu, paced, overlayActionRevision, contentKey] = frame;
 	const bool submitted = _presenter->EndFrame(waitForGpu);
@@ -1168,6 +1218,19 @@ bool Renderer::_SubmitFrontendFrame() noexcept {
 			_isPassThroughActive || _cursorDrawer.IsBackgroundDependent());
 	}
 	return submitted;
+}
+
+void Renderer::_StopOnPresentationFailure(std::string detail, HRESULT error) noexcept {
+	if (_sessionLifetime->IsStopping()) return;
+	Logger::Get().ComError(detail.c_str(), error);
+	_sessionLifetime->RequestStop();
+	ScalingWindow::Dispatcher().TryEnqueue([session = _sessionLifetime, detail = std::move(detail), error] {
+		auto& window = ScalingWindow::Get();
+		if (!session->IsCurrent(ScalingWindow::RunId()) || !window) return;
+		if (const auto report = window.Options().reportErrorDetails) report(
+			window.SrcTracker().Handle(), ScalingError::PresentationInitFailed, detail, static_cast<uint32_t>(error));
+		window.Stop();
+	});
 }
 
 bool Renderer::_FrontendOverlayRender(bool contentChanged) noexcept {
@@ -1377,8 +1440,13 @@ void Renderer::WaitForFrontendWork(std::chrono::nanoseconds maximumWait) noexcep
 	if (_frontendPacingDeadline) {
 		const auto remaining = *_frontendPacingDeadline - std::chrono::steady_clock::now();
 		if (remaining <= std::chrono::nanoseconds::zero()) return;
-		WaitForFramePacing(std::min(remaining, std::max(maximumWait,
-			std::chrono::nanoseconds(std::chrono::milliseconds(8)))), _frontendPacingTimer);
+		const auto boundedWait = std::min(remaining, std::max(maximumWait,
+			std::chrono::nanoseconds(std::chrono::milliseconds(8))));
+		if (ScalingWindow::Get().Options().isVRREnabled && _dlssPresentationSettings.strictPacing)
+			WaitForPreciseFramePacing(std::min(*_frontendPacingDeadline,
+				std::chrono::steady_clock::now() + boundedWait),
+				_frontendPacingTimer, _presentationReadyFence.Event());
+		else WaitForFramePacing(boundedWait, _frontendPacingTimer, _presentationReadyFence.Event());
 	} else {
 		const DWORD ms = static_cast<DWORD>(std::max<int64_t>(0,
 			(maximumWait.count() + 999'999) / 1'000'000));
@@ -1494,6 +1562,8 @@ DLSSFGFrameRenderResult Renderer::RenderDLSSFGFrame(
 		while (pending > 0 && !_pendingDLSSFGFrontendFrames.compare_exchange_weak(
 			pending, pending - 1, std::memory_order_acq_rel)) {
 		}
+		// Refill after an actual underflow. The GPU ring/NGX history remains intact.
+		if (pending == 1) _presentationBuffer.Reset();
 		if (_frameSyncConsumedEvent) SetEvent(_frameSyncConsumedEvent.get());
 	};
 	if (sharedTextureGeneration != _sharedTextureGeneration.load(std::memory_order_acquire)) {
@@ -1516,6 +1586,21 @@ DLSSFGFrameRenderResult Renderer::RenderDLSSFGFrame(
 	const auto pacingStart = std::chrono::steady_clock::now();
 	const std::chrono::nanoseconds presentInterval(
 		_sharedPresentIntervalNs[sharedTextureSlot].load(std::memory_order_acquire));
+	if (ScalingWindow::Get().Options().isVRREnabled && !_pendingFrontendFrame) {
+		const auto& options = ScalingWindow::Get().Options();
+		const uint32_t multiplier = _activeFrameGenerationMultiplier.load(std::memory_order_acquire);
+		const double rate = ResolveVrrOutputRate(options.vrrFrameRate,
+			_presentationRefreshRate.load(std::memory_order_acquire),
+			_frameSyncEnabled ? _FrameSyncFrameRate() : _existingBaseFrameRateLimit.load(std::memory_order_acquire), multiplier);
+		const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(1.0 / rate));
+		if (const auto deadline = _presentationBuffer.WaitUntil(pacingStart,
+			_pendingDLSSFGFrontendFrames.load(std::memory_order_acquire), period, multiplier, sharedTextureGeneration)) {
+			retry = true;
+			waitReason = PresentationJobTiming::Wait::Deadline;
+			_frontendPacingDeadline = deadline;
+			return DLSSFGFrameRenderResult::Retry;
+		}
+	}
 	const auto targetTime = _presentationClock.Due(pacingStart, presentInterval);
 	if (!ScalingWindow::Get().Options().isVRREnabled && presentInterval.count() > 0 && pacingStart < targetTime) {
 		// The scheduler will wake on either input or the next short deadline. Do
@@ -1567,6 +1652,9 @@ bool Renderer::OnResize() noexcept {
 		_overlayDrawer.OnPresentFailed();
 	}
 	_pendingFrontendFrame.reset();
+	_presentationReadyFence.Cancel();
+	_presentationBuffer.Reset();
+	_vrrPresentationClock.Reset();
 	_frontendPacingDeadline.reset();
 	_frontEdgeClock.Reset();
 	_UpdateOverlayRefreshRate();
@@ -2105,7 +2193,8 @@ void Renderer::_BuildEffectParameterRuntimeInfos() noexcept {
 				info.applyMode = EffectParameterApplyMode::Live;
 				info.restartReason = EffectParameterRestartReason::None;
 			} else if (IsDLSSFrameGenerationEffect(option.name)) {
-				info.restartReason = IsOpticalFlowParameter(parameter.name)
+				info.restartReason = IsDlssPresentationParameter(parameter.name)
+					? EffectParameterRestartReason::ResourceRecreation : IsOpticalFlowParameter(parameter.name)
 					? EffectParameterRestartReason::FrameGuidance
 					: EffectParameterRestartReason::FrameGeneration;
 			} else if (IsXeSSFrameGenerationEffect(option.name)) {
@@ -2768,7 +2857,8 @@ HANDLE Renderer::_CreateSharedTexture(ID3D11Texture2D* effectsOutput) noexcept {
 		}
 	}
 	_sharedTextureSlotCount = _dlssFrameGenerator ?
-		std::clamp(_dlssFrameGenerator->Multiplier(), 2u, MAX_SHARED_TEXTURE_SLOTS) : 1u;
+		DlssPresentationSlotCount(_dlssFrameGenerator->Multiplier(),
+			ScalingWindow::Get().Options().isVRREnabled ? _dlssPresentationSettings.bufferFrames : 0u) : 1u;
 	_sharedTextureGeneration.fetch_add(1, std::memory_order_release);
 	_pendingDLSSFGFrontendFrames.store(0, std::memory_order_release);
 	_nextBackendSharedTextureSlot = 0;

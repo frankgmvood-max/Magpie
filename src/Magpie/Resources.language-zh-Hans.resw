@@ -1806,4 +1806,23 @@
   </data>
   <data name="FrameRefresh_DuplicateDetection_Input.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>重复帧检测</value></data>
   <data name="ScalingModes_General_MoreOptions.Content" xml:space="preserve"><value>其他选项</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_Group_Frame_Presentation" xml:space="preserve"><value>帧呈现 / VRR</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationPacing_Label" xml:space="preserve"><value>帧节奏</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationPacing_Description" xml:space="preserve"><value>严格模式从实际 Present 开始计算完整输出间隔，不通过更快提交追赶延迟。仅用于 VRR；修改后重启缩放。</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationPacing_Option_0" xml:space="preserve"><value>严格（推荐）</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationPacing_Option_1" xml:space="preserve"><value>相位恢复（VRR5）</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_maximumFrameLatency_Label" xml:space="preserve"><value>最大帧延迟</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_maximumFrameLatency_Description" xml:space="preserve"><value>DXGI 呈现队列的最大深度。1 优先低延迟；2 允许 CPU/GPU 更多并行；3 增加缓冲。与就绪帧缓冲独立。修改后重启缩放。</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_maximumFrameLatency_Option_1" xml:space="preserve"><value>1（最低延迟）</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_maximumFrameLatency_Option_2" xml:space="preserve"><value>2（推荐）</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_maximumFrameLatency_Option_3" xml:space="preserve"><value>3（更多缓冲）</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationBufferFrames_Label" xml:space="preserve"><value>FG 就绪帧缓冲</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationBufferFrames_Description" xml:space="preserve"><value>FG 输出环中额外保留 0、1 或 2 个最终帧。队列空时重新填充；静态或中断捕获时等待有上限。仅用于 VRR，会增加延迟。修改后重启缩放。</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationBufferFrames_Option_0" xml:space="preserve"><value>0（最低延迟）</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationBufferFrames_Option_1" xml:space="preserve"><value>1（推荐）</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationBufferFrames_Option_2" xml:space="preserve"><value>2（更多缓冲）</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationGpuReady_Label" xml:space="preserve"><value>等待 GPU 就绪</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationGpuReady_Description" xml:space="preserve"><value>在定时 Present 前确认最终图像、界面和光标在 GPU 上完成。使用 D3D11 信号，不阻塞输入。仅用于 VRR；修改后重启缩放。</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationGpuReady_Option_0" xml:space="preserve"><value>关</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationGpuReady_Option_1" xml:space="preserve"><value>开（推荐）</value></data>
 </root>

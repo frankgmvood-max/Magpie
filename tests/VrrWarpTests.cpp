@@ -8,12 +8,15 @@
 #include "CompositionSwapChainAttachment.h"
 #include "NvidiaOpticalFlowShaders.h"
 #include "OpticalFlowResolution.h"
+#include "PresentationReadyFence.h"
+#include "include/DlssPresentationSettings.h"
 #include <array>
 #include <vector>
 #include <iostream>
 #include <stdexcept>
 #include <cmath>
 #include <cstring>
+#include <chrono>
 using Microsoft::WRL::ComPtr;
 using namespace Magpie;
 static void Check(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
@@ -95,7 +98,33 @@ static void InputTest(GPU& gpu,UINT width,UINT height,UINT percent,bool hdr) {
         Check(result[p+3]==255,"Opaque NVOF input");
     }
 }
-static void CompositionTest(GPU& gpu) {
+static void ReadyFenceTest(GPU& gpu) {
+    ComPtr<ID3D11Device5> device;ComPtr<ID3D11DeviceContext4> context;
+    HR(gpu.device.As(&device),"WARP Device5");HR(gpu.context.As(&context),"WARP Context4");
+    PresentationReadyFence ready;HR(ready.Initialize(device.Get()),"Production readiness fence");
+    auto image=gpu.Texture(16,16,DXGI_FORMAT_R8G8B8A8_UNORM,D3D11_BIND_RENDER_TARGET);
+    ComPtr<ID3D11RenderTargetView> target;HR(device->CreateRenderTargetView(image.Get(),nullptr,&target),"Fence test RTV");
+    for(int i=0;i<100;++i) {
+        const float colour[]{float(i%2),0.25f,0.5f,1};context->ClearRenderTargetView(target.Get(),colour);
+        HR(ready.Mark(context.Get()),"Mark actual final-image completion");
+        Check(ready.Mark(context.Get())==E_UNEXPECTED,"No second signal for an owned image");
+        if(i%7==0) { ready.Cancel();HR(ready.Mark(context.Get()),"Re-mark after cancellation"); }
+        auto state=ready.Poll();
+        Check(state==S_OK || state==S_FALSE,"Nonblocking readiness status");
+        const auto timeout=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(state==S_FALSE) {
+            Check(std::chrono::steady_clock::now()<timeout,"GPU readiness timeout");
+            const auto wait=WaitForSingleObject(ready.Event(),50);
+            Check(wait==WAIT_OBJECT_0 || wait==WAIT_TIMEOUT,"Actual GPU completion event");
+            state=ready.Poll(); // Cancelled old values may signal the event first.
+        }
+        HR(state,"Poll completed final image");Check(!ready.Pending() && !ready.Event(),"Completed fence does not spin event wait");
+        const auto pixels=gpu.Read(image.Get(),4);
+        Check(pixels[0]==(i%2?255:0) && std::abs(int(pixels[1])-64)<=1 && std::abs(int(pixels[2])-128)<=1,"Fence belongs to correct colour transaction");
+    }
+    std::cout<<"PASS: production D3D11 ready fence on WARP, 100 GPU images, double-signal rejection, cancellation and event reuse\n";
+}
+static void CompositionTest(GPU& gpu,UINT latency) {
     WNDCLASSW cls{};cls.lpfnWndProc=DefWindowProcW;cls.hInstance=GetModuleHandleW(nullptr);cls.lpszClassName=L"MagpieVrrTestWindow";
     Check(RegisterClassW(&cls)!=0,"Register actual test window class");
     const DWORD hostEx=WS_EX_TOPMOST|WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE|WS_EX_NOREDIRECTIONBITMAP;
@@ -107,9 +136,10 @@ static void CompositionTest(GPU& gpu) {
     const auto foreground=GetForegroundWindow();
     ComPtr<IDXGIFactory5> factory;HR(CreateDXGIFactory1(IID_PPV_ARGS(&factory)),"Create factory");BOOL tearing=FALSE;
     HR(factory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING,&tearing,sizeof(tearing)),"Tearing capability");
-    DXGI_SWAP_CHAIN_DESC1 desc{};desc.Width=240;desc.Height=180;desc.Format=DXGI_FORMAT_R8G8B8A8_UNORM;desc.SampleDesc.Count=1;desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;desc.BufferCount=3;desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;desc.Scaling=DXGI_SCALING_STRETCH;desc.AlphaMode=DXGI_ALPHA_MODE_IGNORE;desc.Flags=DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT|(tearing?DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING:0);
+    DXGI_SWAP_CHAIN_DESC1 desc{};desc.Width=240;desc.Height=180;desc.Format=DXGI_FORMAT_R8G8B8A8_UNORM;desc.SampleDesc.Count=1;desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;desc.BufferCount=DlssSwapChainBufferCount(latency);desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;desc.Scaling=DXGI_SCALING_STRETCH;desc.AlphaMode=DXGI_ALPHA_MODE_IGNORE;desc.Flags=DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT|(tearing?DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING:0);
     ComPtr<IDXGISwapChain1> chain;HR(factory->CreateSwapChainForComposition(gpu.device.Get(),&desc,nullptr,&chain),"Composition flip/waitable chain");
-    auto chain2=ComPtr<IDXGISwapChain2>{};HR(chain.As(&chain2),"Chain2");HR(chain2->SetMaximumFrameLatency(1),"Latency1");
+    auto chain2=ComPtr<IDXGISwapChain2>{};HR(chain.As(&chain2),"Chain2");HR(chain2->SetMaximumFrameLatency(latency),"Configured latency");
+    UINT actualLatency=0;HR(chain2->GetMaximumFrameLatency(&actualLatency),"Read actual latency");Check(actualLatency==latency,"Driver accepted chosen queue limit");
     HANDLE capacity=chain2->GetFrameLatencyWaitableObject();Check(capacity!=nullptr,"Waitable handle");
     {
         CompositionSwapChainAttachment attachment;HR(attachment.Initialize(host,chain.Get()),"Production DComp attachment");
@@ -118,7 +148,7 @@ static void CompositionTest(GPU& gpu) {
             HR(chain->Present(0,tearing?DXGI_PRESENT_ALLOW_TEARING:0),"Present0");
             buffer.Reset();rtv.Reset();gpu.context->ClearState();gpu.context->Flush();
             HR(chain->ResizeBuffers(0,240+UINT(pass)*8,180+UINT(pass)*8,DXGI_FORMAT_UNKNOWN,desc.Flags),"Resize preserves tearing/waitable flags");
-            DXGI_SWAP_CHAIN_DESC1 actual{};HR(chain->GetDesc1(&actual),"Description");Check(actual.Flags==desc.Flags && actual.BufferCount==3,"Immutable flags and buffer count");
+            DXGI_SWAP_CHAIN_DESC1 actual{};HR(chain->GetDesc1(&actual),"Description");Check(actual.Flags==desc.Flags && actual.BufferCount==desc.BufferCount,"Immutable flags and buffer count");
         }
         Check(GetForegroundWindow()==foreground,"No focus stealing");
         const auto hit=WindowFromPoint({50,50});
@@ -126,7 +156,7 @@ static void CompositionTest(GPU& gpu) {
         Check(hit==source,"Native mouse transparency");
     }
     CloseHandle(capacity);chain2.Reset();chain.Reset();DestroyWindow(host);DestroyWindow(source);UnregisterClassW(cls.lpszClassName,cls.hInstance);
-    std::cout<<"PASS: actual composition flip attachment, Present0, latency1, three resize cycles, native mouse transparency and unchanged focus; tearingSupported="<<tearing<<" (WARP does not verify G-SYNC)\n";
+    std::cout<<"PASS: actual composition flip attachment, Present0, latency="<<latency<<", buffers="<<desc.BufferCount<<", three resize cycles, native mouse transparency and unchanged focus; tearingSupported="<<tearing<<" (WARP does not verify G-SYNC)\n";
 }
 int main() {
     try {
@@ -136,7 +166,8 @@ int main() {
             InputTest(gpu,size[0],size[1],scale,false);InputTest(gpu,size[0],size[1],scale,true);
         }
         std::cout<<"PASS: production NVOF shaders on WARP, 32 translation/confidence/color/HDR cases, odd dimensions, 25/50/75/100%\n";
-        CompositionTest(gpu);
+        ReadyFenceTest(gpu);
+        for(UINT latency : {1u,2u,3u}) CompositionTest(gpu,latency);
         return 0;
     } catch(const std::exception& error) { std::cerr<<error.what()<<'\n';return 1; }
 }

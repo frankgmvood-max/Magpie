@@ -1082,4 +1082,23 @@
   <data name="Home_NoFocusLoss_Foreground.Content" xml:space="preserve"><value>Только активное окно</value></data>
   <data name="Home_NoFocusLoss_Compatibility.Content" xml:space="preserve"><value>Совместимость NoFocusLoss</value></data>
   <data name="Home_NoFocusLoss_Classic.Content" xml:space="preserve"><value>Классический (как внешний NoFocusLoss)</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_Group_Frame_Presentation" xml:space="preserve"><value>Вывод кадров / VRR</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationPacing_Label" xml:space="preserve"><value>Режим пейсинга</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationPacing_Description" xml:space="preserve"><value>Ровный режим выдерживает полный интервал после фактического Present и не компенсирует опоздания ускорением. Работает при VRR. Изменения применяются с перезапуском масштабирования.</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationPacing_Option_0" xml:space="preserve"><value>Ровный (рекомендуется)</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationPacing_Option_1" xml:space="preserve"><value>Восстановление фазы (VRR5)</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_maximumFrameLatency_Label" xml:space="preserve"><value>Max Frame Latency — очередь вывода</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_maximumFrameLatency_Description" xml:space="preserve"><value>Максимальная глубина очереди DXGI. 1 — минимальная задержка; 2 — больше перекрытия работы CPU/GPU; 3 — больше буферизации. Это отдельная настройка от буфера готовых кадров. Изменения применяются с перезапуском масштабирования.</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_maximumFrameLatency_Option_1" xml:space="preserve"><value>1 — минимальная задержка</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_maximumFrameLatency_Option_2" xml:space="preserve"><value>2 — рекомендуется</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_maximumFrameLatency_Option_3" xml:space="preserve"><value>3 — больше буферизации</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationBufferFrames_Label" xml:space="preserve"><value>Буфер готовых кадров FG</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationBufferFrames_Description" xml:space="preserve"><value>Дополнительный запас 0, 1 или 2 итоговых кадров в очереди FG. Пополняется после опустошения; ожидание ограничено для статичного окна и прерывания захвата. Работает при VRR и добавляет задержку. Изменения применяются с перезапуском масштабирования.</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationBufferFrames_Option_0" xml:space="preserve"><value>0 — минимальная задержка</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationBufferFrames_Option_1" xml:space="preserve"><value>1 — рекомендуется</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationBufferFrames_Option_2" xml:space="preserve"><value>2 — больше буферизации</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationGpuReady_Label" xml:space="preserve"><value>Ждать готовности кадра на GPU</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationGpuReady_Description" xml:space="preserve"><value>Перед выводом ждёт завершения обработки итогового изображения, интерфейса и курсора на GPU. Использует сигнал D3D11 и не блокирует ввод. Работает при VRR. Изменения применяются с перезапуском масштабирования.</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationGpuReady_Option_0" xml:space="preserve"><value>Выключено</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationGpuReady_Option_1" xml:space="preserve"><value>Включено (рекомендуется)</value></data>
 </root>

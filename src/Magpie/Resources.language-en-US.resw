@@ -1819,4 +1819,23 @@
   <data name="Home_NoFocusLoss_Foreground.Content" xml:space="preserve"><value>Active window only</value></data>
   <data name="Home_NoFocusLoss_Compatibility.Content" xml:space="preserve"><value>NoFocusLoss compatibility</value></data>
   <data name="Home_NoFocusLoss_Classic.Content" xml:space="preserve"><value>Classic (like external NoFocusLoss)</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_Group_Frame_Presentation" xml:space="preserve"><value>Frame Presentation / VRR</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationPacing_Label" xml:space="preserve"><value>Frame Pacing</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationPacing_Description" xml:space="preserve"><value>Strict pacing respects the full output interval after each actual Present and does not recover delays with faster submissions. Applies with VRR; scaling restarts after changes.</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationPacing_Option_0" xml:space="preserve"><value>Strict (Recommended)</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationPacing_Option_1" xml:space="preserve"><value>Phase Recovery (VRR5)</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_maximumFrameLatency_Label" xml:space="preserve"><value>Max Frame Latency</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_maximumFrameLatency_Description" xml:space="preserve"><value>Maximum DXGI presentation queue depth. 1 minimizes latency; 2 allows more CPU/GPU overlap; 3 increases buffering. Separate from the ready frame buffer. Scaling restarts after changes.</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_maximumFrameLatency_Option_1" xml:space="preserve"><value>1 (Lowest Latency)</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_maximumFrameLatency_Option_2" xml:space="preserve"><value>2 (Recommended)</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_maximumFrameLatency_Option_3" xml:space="preserve"><value>3 (More Buffering)</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationBufferFrames_Label" xml:space="preserve"><value>Ready Frame Buffer</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationBufferFrames_Description" xml:space="preserve"><value>Additional final-frame reserve in the FG output ring: 0, 1 or 2 frames. Refills after underflow, with a finite wait for static or interrupted capture. Applies with VRR and adds latency. Scaling restarts after changes.</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationBufferFrames_Option_0" xml:space="preserve"><value>0 (Lowest Latency)</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationBufferFrames_Option_1" xml:space="preserve"><value>1 (Recommended)</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationBufferFrames_Option_2" xml:space="preserve"><value>2 (More Buffering)</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationGpuReady_Label" xml:space="preserve"><value>Wait for GPU Readiness</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationGpuReady_Description" xml:space="preserve"><value>Wait for the final image, interface and cursor to finish on the GPU before paced Present. Uses a D3D11 fence without blocking input. Applies with VRR; scaling restarts after changes.</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationGpuReady_Option_0" xml:space="preserve"><value>Off</value></data>
+  <data name="EffectParam_DLSSFG_DLSS_FrameGeneration_presentationGpuReady_Option_1" xml:space="preserve"><value>On (Recommended)</value></data>
 </root>

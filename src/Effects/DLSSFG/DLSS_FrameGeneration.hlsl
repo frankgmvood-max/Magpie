@@ -54,6 +54,40 @@ int nvidiaOpticalFlowQuality;
 //!STEP 1
 int nvidiaOpticalFlowResolution;
 
+//!PARAMETER
+//!LABEL Frame Pacing
+//!GROUP Frame Presentation
+//!DEFAULT 0
+//!OPTION 0 Strict (Recommended)
+//!OPTION 1 Phase Recovery (VRR5)
+int presentationPacing;
+
+//!PARAMETER
+//!LABEL Max Frame Latency
+//!GROUP Frame Presentation
+//!DEFAULT 2
+//!OPTION 1 1 (Lowest Latency)
+//!OPTION 2 2 (Recommended)
+//!OPTION 3 3 (More Buffering)
+int maximumFrameLatency;
+
+//!PARAMETER
+//!LABEL Ready Frame Buffer
+//!GROUP Frame Presentation
+//!DEFAULT 1
+//!OPTION 0 0 (Lowest Latency)
+//!OPTION 1 1 (Recommended)
+//!OPTION 2 2 (More Buffering)
+int presentationBufferFrames;
+
+//!PARAMETER
+//!LABEL Wait for GPU Readiness
+//!GROUP Frame Presentation
+//!DEFAULT 1
+//!OPTION 0 Off
+//!OPTION 1 On (Recommended)
+int presentationGpuReady;
+
 //!TEXTURE
 Texture2D INPUT;
 

@@ -49,6 +49,21 @@ int main() {
 	assert(clock.Due(stall) == stall + 10ms);
 	clock.Reset();
 	assert(clock.Due(now) == now);
+	// Strict mode deliberately does not repay late CPU/GPU work with a short
+	// following interval. This differs observably from the retained VRR5 mode.
+	clock.Configure(period, period);
+	now = VrrPresentationClock::Time{};
+	clock.Submitted(now);
+	for (int i = 1; i <= 1'000'000; ++i) {
+		const auto due = clock.Due(now);
+		assert(due - now == period);
+		const auto next = due + (i % 17 == 0 ? 150us : 0us);
+		clock.Submitted(next);
+		assert(clock.Due(next) == next + period);
+		now = next;
+	}
+	clock.Submitted(now + 2s);
+	assert(clock.Due(now + 2s) == now + 2s + period);
 
 	CaptureFrameCadence capture;
 	VrrPresentationClock::Time delivery{};
@@ -89,5 +104,5 @@ int main() {
 	assert(resolved.Contains(low));
 	assert(FrameGuidanceRequirements::ResolveConsumer(high, resolved.PreferredMotion()).resolutionPercent == 75);
 	assert(!resolved.Contains(MotionVectorRequest::Nvidia(NvidiaOpticalFlowQuality::Quality, 100)));
-	std::cout << "PASS: VRR final limits x1-x4, million-frame phase stability, bounded spacing, stalls, capture timestamps, OF dimensions, sharing and temporal resets\n";
+	std::cout << "PASS: VRR final limits x1-x4, one million phase and one million strict submissions, bounded spacing, stalls, capture timestamps, OF dimensions, sharing and temporal resets\n";
 }

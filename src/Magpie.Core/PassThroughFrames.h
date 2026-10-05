@@ -1,5 +1,6 @@
 #pragma once
 #include "HdrColorTransform.h"
+#include "DlssPresentationSettings.h"
 #include <array>
 #include <atomic>
 #include <optional>
@@ -13,7 +14,7 @@ class DeviceResources;
 // color and motion images. Reconfiguration runs only while the frontend waits.
 class PassThroughFrames {
 public:
-	static constexpr uint32_t MAX_SLOTS = 4;
+	static constexpr uint32_t MAX_SLOTS = DLSS_PRESENTATION_MAX_SLOTS;
 	bool InitializeBackend(DeviceResources& resources, ID3D11Texture2D* input,
 		ID3D11Texture2D* output, uint32_t slotCount, bool hdrEnabled = false,
 		const HdrTransformParameters& hdrParameters = {},

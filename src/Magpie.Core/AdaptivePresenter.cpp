@@ -6,6 +6,7 @@
 #include "Logger.h"
 #include "ScalingWindow.h"
 #include "Win32Helper.h"
+#include "DlssPresentationSettings.h"
 
 namespace Magpie {
 
@@ -29,9 +30,21 @@ bool AdaptivePresenter::_Initialize(HWND hwndAttach) noexcept {
 	}
 
 	const bool vrr = ScalingWindow::Get().Options().isVRREnabled;
-	// Three allocations allow a displayed, queued and prepared image; the
-	// maximum latency below still bounds the DXGI queue to one frame.
-	const uint32_t bufferCount = vrr ? 3u : _CalcBufferCount();
+	const auto& options = ScalingWindow::Get().Options();
+	std::optional<DlssPresentationSettings> dlssPresentation;
+	for (const EffectOption& effect : options.effects) {
+		if (effect.name != "DLSSFG\\DLSS_FrameGeneration") continue;
+		dlssPresentation = ReadDlssPresentationSettings([&](std::string_view name) -> std::optional<float> {
+			const auto it = effect.parameters.find(std::string(name));
+			return it == effect.parameters.end() ? std::nullopt : std::optional<float>(it->second);
+		});
+		break;
+	}
+	// Back-buffer allocation and permitted driver queue depth are different.
+	// Keep one additional allocation even when the latency limit is three.
+	const uint32_t bufferCount = dlssPresentation
+		? DlssSwapChainBufferCount(dlssPresentation->maximumFrameLatency)
+		: vrr ? 3u : _CalcBufferCount();
 	_isCompositionSwapChain = vrr &&
 		ScalingWindow::Get().Options().vrrOutputMode == VrrOutputMode::Composition;
 	_swapChainFlags = UINT((_deviceResources->IsTearingSupported() && vrr
@@ -103,15 +116,8 @@ bool AdaptivePresenter::_Initialize(HWND hwndAttach) noexcept {
 		}
 	}
 
-	const auto& options = ScalingWindow::Get().Options();
-	uint32_t maximumFrameLatency = vrr || (options.isFrontEdgeSyncEnabled && !options.IsBenchmarkMode())
-		? 1u : bufferCount - 1;
-	for (const EffectOption& effect : ScalingWindow::Get().Options().effects) {
-		if (effect.name == "DLSSFG\\DLSS_FrameGeneration") {
-			maximumFrameLatency = 1;
-			break;
-		}
-	}
+	const uint32_t maximumFrameLatency = dlssPresentation ? dlssPresentation->maximumFrameLatency :
+		vrr || (options.isFrontEdgeSyncEnabled && !options.IsBenchmarkMode()) ? 1u : bufferCount - 1;
 	// Bound driver-side queuing when the application already paces submissions.
 	hr = _dxgiSwapChain->SetMaximumFrameLatency(maximumFrameLatency);
 	if (FAILED(hr)) {
@@ -292,11 +298,12 @@ bool AdaptivePresenter::EndFrame(bool waitForGpu) noexcept {
 		const auto tracePresent = FrameTrace::Tick();
 		const UINT flags = (_swapChainFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING)
 			? DXGI_PRESENT_ALLOW_TEARING : 0;
-		_lastSubmissionTime = std::chrono::steady_clock::now();
 		if (_reflexRendering) {
 			_reflex->FrontendRender(_reflexFrameId, _reflexPresentId, false);
 			_reflex->Present(_reflexFrameId, _reflexPresentId, _reflexGenerated, true);
 		}
+		// The pacing clock measures entry into actual DXGI, after driver markers.
+		_lastSubmissionTime = std::chrono::steady_clock::now();
 		const HRESULT presentResult = _dxgiSwapChain->Present(0, flags);
 		if (_reflexRendering) {
 			_reflex->Present(_reflexFrameId, _reflexPresentId, _reflexGenerated, false);

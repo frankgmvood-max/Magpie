@@ -28,6 +28,24 @@ inline void WaitForFramePacing(std::chrono::nanoseconds remaining,
 	}
 }
 
+// Like the LS addon, wake just before the deadline and finish a bounded tail.
+// Input and GPU-ready events return control to the outer pump immediately;
+// no nested message dispatch or resource lock is held during this wait.
+inline void WaitForPreciseFramePacing(std::chrono::steady_clock::time_point deadline,
+	wil::unique_handle& timer, HANDLE event = nullptr) noexcept {
+	constexpr auto tail = std::chrono::microseconds(100);
+	auto remaining = deadline - std::chrono::steady_clock::now();
+	if (remaining > tail) WaitForFramePacing(remaining - tail, timer, event);
+	remaining = deadline - std::chrono::steady_clock::now();
+	if (remaining > tail || remaining <= std::chrono::nanoseconds::zero()) return;
+	while (std::chrono::steady_clock::now() < deadline) {
+		HANDLE handles[]{event};
+		if (MsgWaitForMultipleObjectsEx(event ? 1 : 0, event ? handles : nullptr, 0,
+			QS_ALLINPUT, MWMO_INPUTAVAILABLE) != WAIT_TIMEOUT) return;
+		YieldProcessor();
+	}
+}
+
 // Shared by DXGI and XeSS. A message-pump wait may consume the auto-reset
 // capacity event, so BeginFrame must reuse that token instead of waiting twice.
 class FrameLatencyGate {

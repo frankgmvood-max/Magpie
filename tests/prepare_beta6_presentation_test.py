@@ -21,6 +21,9 @@ pressure = method((core / 'Renderer.h').read_text(encoding='utf-8-sig'), 'bool _
 
 prefix = r'''
 #include "FramePresentationTiming.h"
+#include "PresentationBuffer.h"
+#include "include/VrrSettings.h"
+#include "include/DlssPresentationSettings.h"
 #include <array>
 #include <atomic>
 #include <cassert>
@@ -45,7 +48,7 @@ inline int64_t Tick() { return 0; }
 inline void Record(Event,int64_t,int64_t,uint64_t,int64_t,int64_t) {}
 }
 enum class DLSSFGFrameRenderResult { Presented,Retry,Dropped };
-struct ScalingWindow { struct OptionsType { bool isVRREnabled=false; } options; static ScalingWindow& Get() { static ScalingWindow w; return w; } const auto& Options() { return options; } };
+struct ScalingWindow { struct OptionsType { bool isVRREnabled=false; float vrrFrameRate=0; } options; static ScalingWindow& Get() { static ScalingWindow w; return w; } const auto& Options() { return options; } };
 struct Presenter { auto LastSubmissionTime() { return TestClock::now(); } bool UsesFrameLatencyWaitableObject() { return true; } };
 struct Renderer {
     enum class Next { Present,Capacity,Resource,Drop } next=Next::Present;
@@ -54,12 +57,17 @@ struct Renderer {
         bool capacityBusy=false;
     };
     bool _dlssFrameGenerator=true;
+    bool _pendingFrontendFrame=false, _frameSyncEnabled=false;
+    std::atomic<uint32_t> _activeFrameGenerationMultiplier=2;
+    std::atomic<double> _presentationRefreshRate=144, _existingBaseFrameRateLimit=68;
+    double _FrameSyncFrameRate() const { return 68; }
+    PresentationBuffer _presentationBuffer;
     std::atomic<uint32_t> _sharedTextureGeneration=2, _pendingDLSSFGFrontendFrames=1;
     uint32_t _sharedTextureSlotCount=4;
     std::atomic<bool> _synchronousFramePresentationEnabled=true;
-    std::array<std::atomic<int64_t>,4> _sharedPresentIntervalNs{};
-    std::array<std::atomic<uint64_t>,4> _sharedTextureFrameIds{};
-    std::array<Event,4> _sharedTextureAvailableEvents;
+    std::array<std::atomic<int64_t>,6> _sharedPresentIntervalNs{};
+    std::array<std::atomic<uint64_t>,6> _sharedTextureFrameIds{};
+    std::array<Event,6> _sharedTextureAvailableEvents;
     Event _frameSyncConsumedEvent;
     std::optional<std::chrono::steady_clock::time_point> _frontendPacingDeadline;
     FramePresentationClock _presentationClock;
@@ -126,12 +134,12 @@ int main() {
 
     // Multipliers retain their bounded ring. Full means wait before capture;
     // freeing one slot permits a new input without claiming a resource permit.
-    for (uint32_t multiplier=2;multiplier<=4;++multiplier) {
-        Renderer pressure;pressure._sharedTextureSlotCount=multiplier;
-        pressure._pendingDLSSFGFrontendFrames=multiplier;
+    for (uint32_t multiplier=2;multiplier<=4;++multiplier) for(uint32_t reserve=0;reserve<=2;++reserve) {
+        Renderer pressure;pressure._sharedTextureSlotCount=DlssPresentationSlotCount(multiplier,reserve);
+        pressure._pendingDLSSFGFrontendFrames=pressure._sharedTextureSlotCount;
         assert(pressure._IsDLSSFGQueueFull());
         --pressure._pendingDLSSFGFrontendFrames;assert(!pressure._IsDLSSFGQueueFull());
-        pressure._pendingDLSSFGFrontendFrames=multiplier;
+        pressure._pendingDLSSFGFrontendFrames=pressure._sharedTextureSlotCount;
         pressure._synchronousFramePresentationEnabled=false;assert(!pressure._IsDLSSFGQueueFull());
         pressure._synchronousFramePresentationEnabled=true;
         pressure._dlssFrameGenerator=false;assert(!pressure._IsDLSSFGQueueFull());
@@ -151,7 +159,25 @@ int main() {
     assert(vrr.RenderDLSSFGFrame(0,2,vrrJob)==DLSSFGFrameRenderResult::Presented);
     assert(vrr.recorded.deadline==4ms && vrr.recorded.resource==0ms && vrr.recorded.cpu==2ms);
     ScalingWindow::Get().options.isVRREnabled=false;
-    std::cout<<"PASS: production FIFO retry accounting, deadline wake, capacity/resource distinction, stale generations, drops, slot release and x2/x3/x4 capture backpressure\n";
+    // The real production FIFO must retain ownership while priming, and release
+    // exactly one slot after it presents. A partial seed must drain by timeout.
+    ScalingWindow::Get().options.isVRREnabled=true;
+    Renderer buffered; buffered._presentationBuffer.Configure(1);
+    buffered._pendingDLSSFGFrontendFrames=3; PresentationJobTiming priming;
+    TestClock::Set(0ms);
+    assert(buffered.RenderDLSSFGFrame(0,2,priming)==DLSSFGFrameRenderResult::Retry);
+    assert(buffered._pendingDLSSFGFrontendFrames==3 && buffered._sharedTextureAvailableEvents[0].signals==0);
+    TestClock::Set(8ms);
+    assert(buffered.RenderDLSSFGFrame(0,2,priming)==DLSSFGFrameRenderResult::Presented);
+    assert(buffered._pendingDLSSFGFrontendFrames==2 && buffered._sharedTextureAvailableEvents[0].signals==1);
+    Renderer seed;seed._presentationBuffer.Configure(2);PresentationJobTiming seedJob;
+    TestClock::Set(0ms);
+    assert(seed.RenderDLSSFGFrame(0,2,seedJob)==DLSSFGFrameRenderResult::Retry);
+    TestClock::Set(30ms);
+    assert(seed.RenderDLSSFGFrame(0,2,seedJob)==DLSSFGFrameRenderResult::Presented);
+    assert(seed._pendingDLSSFGFrontendFrames==0);
+    ScalingWindow::Get().options.isVRREnabled=false;
+    std::cout<<"PASS: production FIFO retry accounting, deadline wake, capacity/resource distinction, stale generations, drops, bounded priming/seed release and x2-x4 with buffer0-2 capture backpressure\n";
 }
 '''
 out = Path(sys.argv[1]) / 'beta6_presentation.cpp'
