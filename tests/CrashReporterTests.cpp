@@ -22,9 +22,10 @@ __declspec(noinline) static DWORD WINAPI Fault(void* pointer) {
 	*static_cast<volatile int*>(pointer) = 1;
 	return 0;
 }
-static int Child(std::wstring_view scenario, const std::filesystem::path& directory) {
+static int Child(std::wstring_view scenario, const std::filesystem::path& directory,
+	const std::filesystem::path& helperExe) {
 	SetErrorMode(SEM_NOGPFAULTERRORBOX);
-	Require(CrashReporter::Start(Exe(), directory, "crash-test-vrr3"), "reporter startup");
+	Require(CrashReporter::Start(helperExe, directory, "crash-test-vrr3"), "reporter startup");
 	if (scenario == L"normal") return 0;
 	if (scenario == L"handled") {
 		DWORD seh = 0;
@@ -58,8 +59,8 @@ static int Child(std::wstring_view scenario, const std::filesystem::path& direct
 	return 24;
 }
 struct ChildResult { DWORD code, mainThread; };
-static ChildResult Launch(std::wstring arguments) {
-	const auto exe = Exe();
+static ChildResult Launch(std::wstring arguments, const std::filesystem::path& executable = {}) {
+	const auto exe = executable.empty() ? Exe() : executable;
 	std::wstring command = L"\"" + exe.native() + L"\" " + arguments;
 	STARTUPINFOW startup{}; startup.cb = sizeof(startup);
 	PROCESS_INFORMATION process{};
@@ -111,13 +112,16 @@ int wmain(int argc, wchar_t** argv) {
 	int helperExit = 0;
 	if (CrashReporter::TryRunHelper(helperExit)) return helperExit;
 	try {
-		if (argc == 4 && std::wstring_view(argv[1]) == L"--crash-child") return Child(argv[2], argv[3]);
+		if (argc == 5 && std::wstring_view(argv[1]) == L"--crash-child") return Child(argv[2], argv[3], argv[4]);
+		const auto helperExe = argc == 3 && std::wstring_view(argv[1]) == L"--helper-exe" ?
+			std::filesystem::path(argv[2]) : Exe();
 		const auto root = std::filesystem::temp_directory_path() /
 			(L"Magpie crash тест " + std::to_wstring(GetCurrentProcessId()));
 		std::filesystem::create_directories(root);
 		for (const wchar_t* scenario : { L"normal", L"handled", L"main", L"worker", L"terminate", L"noexcept", L"hard-exit" }) {
 			const auto directory = root / scenario;
-			const auto child = Launch(L"--crash-child " + std::wstring(scenario) + L" \"" + directory.native() + L"\"");
+			const auto child = Launch(L"--crash-child " + std::wstring(scenario) + L" \"" + directory.native() +
+				L"\" \"" + helperExe.native() + L"\"");
 			if (std::wstring_view(scenario) == L"normal" || std::wstring_view(scenario) == L"handled") {
 				Require(child.code == 0, "normal/handled fault exited with failure");
 				Require(std::filesystem::is_empty(directory), "reported a handled exception or normal exit");
@@ -143,7 +147,7 @@ int wmain(int argc, wchar_t** argv) {
 			}
 			std::wcout << L"PASS native crash scenario: " << scenario << L'\n';
 		}
-		Require(Launch(L"--magpie-crash-helper invalid 0 0 0").code == 2, "invalid helper entered application startup");
+		Require(Launch(L"--magpie-crash-helper invalid 0 0 0", helperExe).code == 2, "invalid helper entered application startup");
 		std::filesystem::remove_all(root);
 		std::cout << "PASS invalid helper arguments, Unicode/space paths, production IPC and exception streams\n";
 		return 0;

@@ -33,6 +33,13 @@ jobs:
           key: Conan-VRR-x64-${{ hashFiles('src/**/conanfile.txt') }}
       - name: Build full Magpie 0.6.9 with VRR and optical flow scale
         run: python scripts/publish.py --platform=x64 --compiler=MSVC --version-major=0 --version-minor=6 --version-patch=9 --version-string=0.6.9-vrr3 --release-symbols
+      - name: Native crash IPC through the actual Magpie executable entry point
+        shell: pwsh
+        run: |
+          $crashTest = Join-Path $env:TEMP 'Magpie-VRR-tests/CrashReporterTests.exe'
+          & $crashTest --helper-exe (Resolve-Path './publish/x64/Magpie.exe').Path
+          if ($LASTEXITCODE) { throw 'Actual Magpie crash-helper integration failed' }
+          if (Test-Path './publish/x64/magpie.log') { throw 'Crash helper entered regular logger/application startup' }
       - uses: actions/cache/save@v6
         if: always() && steps.conan-cache.outputs.cache-hit != 'true'
         with:
@@ -60,4 +67,6 @@ jobs:
           path: |
             publish/x64/Magpie.pdb
             publish/x64/Magpie.Core.pdb
+            publish/x64/Magpie.map
+            publish/x64/Magpie.Core.map
           if-no-files-found: error
