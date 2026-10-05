@@ -14,6 +14,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
@@ -24,12 +26,18 @@ jobs:
         run: python scripts/Restore-VrrDependencies.py
       - name: Setup Conan
         run: pip install conan
-      - uses: actions/cache@v6
+      - uses: actions/cache/restore@v6
+        id: conan-cache
         with:
           path: ~/.conan2/p
           key: Conan-VRR-x64-${{ hashFiles('src/**/conanfile.txt') }}
       - name: Build full Magpie 0.6.9 with VRR and optical flow scale
         run: python scripts/publish.py --platform=x64 --compiler=MSVC --version-major=0 --version-minor=6 --version-patch=9 --version-string=0.6.9-vrr1
+      - uses: actions/cache/save@v6
+        if: always() && steps.conan-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.conan2/p
+          key: Conan-VRR-x64-${{ hashFiles('src/**/conanfile.txt') }}
       - name: Regression tests
         shell: pwsh
         run: |

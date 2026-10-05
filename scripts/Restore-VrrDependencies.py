@@ -27,7 +27,7 @@ def download(url, target, digest=None):
 sdk_revisions = {
     'dlss': ('NVIDIA/DLSS', '374959484e79a640feaba44c93ac8cfb0a03f5b5', ['include', 'lib/Windows_x86_64/x64', 'LICENSE.txt']),
     'fsr2': ('optiscaler/FidelityFX-FSR2-DX11', 'f2e3f86390746eb3f0bd1b28e91ea3cbc790ee76', ['src/ffx-fsr2-api', 'LICENSE.txt']),
-    'fsr3': ('GPUOpen-LibrariesAndSDKs/FidelityFX-SDK', '60f4ea81909200d8542eca14dccb2628b763a9a3', ['Kits/FidelityFX', 'docs/license.md']),
+    'fsr3': ('GPUOpen-LibrariesAndSDKs/FidelityFX-SDK', '60f4ea81909200d8542eca14dccb2628b763a9a3', ['Kits/FidelityFX', 'docs/license.md', '3rdpartynotice.md']),
     'xess': ('intel/xess', 'de0fb9c1c510661c571164e1418ceca8101dab69', ['inc', 'lib', 'LICENSE.txt', 'third-party-programs.txt']),
     'vfx': ('NVIDIA-Maxine/Maxine-VFX-SDK', 'f12bd18929e9065cff4f24cb93ac5f4202dc1c4a', ['nvvfx', 'LICENSE']),
 }

@@ -98,7 +98,7 @@ static void InputTest(GPU& gpu,UINT width,UINT height,UINT percent,bool hdr) {
 static void CompositionTest(GPU& gpu) {
     WNDCLASSW cls{};cls.lpfnWndProc=DefWindowProcW;cls.hInstance=GetModuleHandleW(nullptr);cls.lpszClassName=L"MagpieVrrTestWindow";
     Check(RegisterClassW(&cls)!=0,"Register actual test window class");
-    const DWORD hostEx=WS_EX_TOPMOST|WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE;
+    const DWORD hostEx=WS_EX_TOPMOST|WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE|WS_EX_NOREDIRECTIONBITMAP;
     HWND source=CreateWindowExW(WS_EX_TOPMOST,cls.lpszClassName,L"VRR source",WS_POPUP,20,20,240,180,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
     HWND host=CreateWindowExW(hostEx,cls.lpszClassName,L"VRR host",WS_POPUP,20,20,240,180,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
     Check(source && host,"Create native windows");

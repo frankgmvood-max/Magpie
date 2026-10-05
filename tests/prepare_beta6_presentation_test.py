@@ -74,6 +74,7 @@ struct Renderer {
         TestClock::value+=1ms;
         timing->beginFrame=1ms;
         timing->capacityBusy=next==Next::Capacity;
+        if (ScalingWindow::Get().options.isVRREnabled && next==Next::Resource) _frontendPacingDeadline=TestClock::now()+4ms;
         *dropped=next==Next::Drop;
         return next==Next::Present;
     }
@@ -135,6 +136,21 @@ int main() {
         pressure._synchronousFramePresentationEnabled=true;
         pressure._dlssFrameGenerator=false;assert(!pressure._IsDLSSFGQueueFull());
     }
+    // VRR uses the shared final-output clock, not the old source-derived
+    // DLSS interval. Its pending deadline remains a deadline retry, not a
+    // resource wait; cursor/FIFO notifications therefore share one schedule.
+    ScalingWindow::Get().options.isVRREnabled=true;
+    Renderer vrr;PresentationJobTiming vrrJob;TestClock::Set(0ms);
+    vrr._sharedPresentIntervalNs[0]=100'000'000;
+    vrr._presentationClock.Presented(TestClock::now(),TestClock::now(),100ms);
+    vrr.next=Renderer::Next::Resource;vrr._frontendPacingDeadline=std::chrono::steady_clock::time_point(5ms);
+    assert(vrr.RenderDLSSFGFrame(0,2,vrrJob)==DLSSFGFrameRenderResult::Retry);
+    assert(TestClock::now()==std::chrono::steady_clock::time_point(1ms));
+    assert(vrrJob.waiting==PresentationJobTiming::Wait::Deadline);
+    TestClock::Set(5ms);vrr.next=Renderer::Next::Present;
+    assert(vrr.RenderDLSSFGFrame(0,2,vrrJob)==DLSSFGFrameRenderResult::Presented);
+    assert(vrr.recorded.deadline==4ms && vrr.recorded.resource==0ms && vrr.recorded.cpu==2ms);
+    ScalingWindow::Get().options.isVRREnabled=false;
     std::cout<<"PASS: production FIFO retry accounting, deadline wake, capacity/resource distinction, stale generations, drops, slot release and x2/x3/x4 capture backpressure\n";
 }
 '''
