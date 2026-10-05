@@ -96,9 +96,11 @@ static void InputTest(GPU& gpu,UINT width,UINT height,UINT percent,bool hdr) {
     }
 }
 static void CompositionTest(GPU& gpu) {
+    WNDCLASSW cls{};cls.lpfnWndProc=DefWindowProcW;cls.hInstance=GetModuleHandleW(nullptr);cls.lpszClassName=L"MagpieVrrTestWindow";
+    Check(RegisterClassW(&cls)!=0,"Register actual test window class");
     const DWORD hostEx=WS_EX_TOPMOST|WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE;
-    HWND source=CreateWindowExW(WS_EX_TOPMOST,L"STATIC",L"VRR source",WS_POPUP,20,20,240,180,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
-    HWND host=CreateWindowExW(hostEx,L"STATIC",L"VRR host",WS_POPUP,20,20,240,180,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+    HWND source=CreateWindowExW(WS_EX_TOPMOST,cls.lpszClassName,L"VRR source",WS_POPUP,20,20,240,180,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+    HWND host=CreateWindowExW(hostEx,cls.lpszClassName,L"VRR host",WS_POPUP,20,20,240,180,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
     Check(source && host,"Create native windows");
     SetLayeredWindowAttributes(host,0,255,LWA_ALPHA);ShowWindow(source,SW_SHOWNOACTIVATE);ShowWindow(host,SW_SHOWNOACTIVATE);
     SetWindowPos(host,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
@@ -119,9 +121,11 @@ static void CompositionTest(GPU& gpu) {
             DXGI_SWAP_CHAIN_DESC1 actual{};HR(chain->GetDesc1(&actual),"Description");Check(actual.Flags==desc.Flags && actual.BufferCount==3,"Immutable flags and buffer count");
         }
         Check(GetForegroundWindow()==foreground,"No focus stealing");
-        Check(WindowFromPoint({50,50})==source,"Native mouse transparency");
+        const auto hit=WindowFromPoint({50,50});
+        std::cout<<"Input check: hit="<<hit<<" source="<<source<<" host="<<host<<" visible="<<IsWindowVisible(source)<<"/"<<IsWindowVisible(host)<<" foreground="<<foreground<<"\n";
+        Check(hit==source,"Native mouse transparency");
     }
-    CloseHandle(capacity);chain2.Reset();chain.Reset();DestroyWindow(host);DestroyWindow(source);
+    CloseHandle(capacity);chain2.Reset();chain.Reset();DestroyWindow(host);DestroyWindow(source);UnregisterClassW(cls.lpszClassName,cls.hInstance);
     std::cout<<"PASS: actual composition flip attachment, Present0, latency1, three resize cycles, native mouse transparency and unchanged focus; tearingSupported="<<tearing<<" (WARP does not verify G-SYNC)\n";
 }
 int main() {
