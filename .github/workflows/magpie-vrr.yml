@@ -42,7 +42,9 @@ jobs:
         shell: pwsh
         run: |
           foreach ($test in @('Run-DlssOpticalFlowTests','Run-Beta6RegressionTests','Run-FrameSyncModesTests','Run-FrameRefreshTests','Run-CursorRefreshTests','Run-ReflexControllerTests','Run-FrontendDropTests','Run-DuplicateFrameTests','Run-DisplayOnlyAdapterTests')) {
-            & "./tests/$test.ps1"
+            # Isolate intentional failing mutants from the parent LASTEXITCODE.
+            # A terminating test error still fails the child PowerShell process.
+            & pwsh -NoProfile -File "./tests/$test.ps1"
             if ($LASTEXITCODE) { throw "$test failed" }
           }
       - name: Package update with tested application and effects

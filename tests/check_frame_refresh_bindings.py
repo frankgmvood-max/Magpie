@@ -62,7 +62,12 @@ for lang in ("en-US", "zh-Hans", "zh-Hant"):
     for name in ("Home_FrameRefresh_Summary", "Home_FrameRefresh_Edit.Content", "FrameRefresh_RestartNotice", "FrameRefresh_LegacyNotice"):
         assert resources[name], (lang, name)
 renderer = read("src/Magpie.Core/Renderer.cpp")
-assert "const bool paced = !stableBaseOnly &&" in renderer
+# The VRR output clock owns the final deadline. FrontEdge must not introduce
+# another deadline in the same path; non-VRR content keeps its old gate.
+assert re.search(
+    r"const bool paced\s*=\s*!ScalingWindow::Get\(\)\.Options\(\)\.isVRREnabled\s*&&\s*!stableBaseOnly\s*&&",
+    renderer,
+)
 assert "else if (!stableBaseOnly) {\n\t\t_frontEdgeClock.Reset();" in renderer
 assert "if (submitted && contentFrame && ActiveFrameSyncBackend() == FrameSyncBackend::FrontEdge" in renderer
 assert "_frontendPresentedBaseValid && overlayPending &&" in renderer
