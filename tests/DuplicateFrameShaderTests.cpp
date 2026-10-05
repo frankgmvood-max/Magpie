@@ -88,6 +88,40 @@ struct Harness {
 		}
 		CheckDebug();
 	}
+	void ProbeFailure(const wchar_t* path, ID3D11ShaderResourceView* a, ID3D11ShaderResourceView* b, UINT w, UINT h) {
+		const UINT zero[4]{}; dc->ClearUnorderedAccessViewUint(uav.Get(), zero);
+		dc->CopyResource(readback.Get(), result.Get());
+		D3D11_MAPPED_SUBRESOURCE mapped{}; Hr(dc->Map(readback.Get(), 0, D3D11_MAP_READ, 0, &mapped));
+		UINT cleared = 1; std::memcpy(&cleared, mapped.pData, sizeof(cleared)); dc->Unmap(readback.Get(), 0);
+		std::cerr << "Clear-only result=" << cleared << '\n';
+		std::cerr << "Production same-SRV duplicate=" << Duplicate(a, a, w, h, false) << " result=" << lastResult << '\n';
+		ComPtr<ID3DBlob> code, errors;
+		Hr(D3DCompileFromFile(path, nullptr, nullptr, "main", "cs_5_0",
+			D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_SKIP_OPTIMIZATION, 0, &code, &errors));
+		Hr(device->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, shader.ReleaseAndGetAddressOf()));
+		std::cerr << "Unoptimized production duplicate=" << Duplicate(a, b, w, h, false) << " result=" << lastResult << '\n';
+		// This probe publishes the same comparison directly, without the group reduction.
+		const char probe[] = R"(
+RWBuffer<uint> result : register(u0);
+Texture2D tex1 : register(t0);
+Texture2D tex2 : register(t1);
+SamplerState sam : register(s0);
+[numthreads(8, 8, 1)]
+void main(uint3 tid : SV_GroupThreadID, uint3 gid : SV_GroupID) {
+    uint w, h; tex1.GetDimensions(w, h);
+    float2 pos = ((gid.xy << 4) + (tid.xy << 1) + 1) / float2(w, h);
+    bool different = any(tex1.GatherRed(sam, pos) != tex2.GatherRed(sam, pos)) ||
+        any(tex1.GatherGreen(sam, pos) != tex2.GatherGreen(sam, pos)) ||
+        any(tex1.GatherBlue(sam, pos) != tex2.GatherBlue(sam, pos));
+    if (different) InterlockedOr(result[0], 1u);
+})";
+		code.Reset(); errors.Reset();
+		Hr(D3DCompile(probe, sizeof(probe) - 1, nullptr, nullptr, nullptr, "main", "cs_5_0",
+			D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors));
+		Hr(device->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, shader.ReleaseAndGetAddressOf()));
+		std::cerr << "Direct-atomic comparison duplicate=" << Duplicate(a, b, w, h, false) << " result=" << lastResult << '\n';
+		CheckDebug();
+	}
 	void CheckDebug() {
 		if (!debug) { std::cout << "D3D debug layer unavailable; message check skipped.\n"; return; }
 		for (UINT64 i=0;i<debug->GetNumStoredMessages();++i) {
@@ -123,7 +157,10 @@ int wmain(int argc, wchar_t** argv) {
 			Hr(test.device->CreateTexture2D(&td,&initial,&a)); Hr(test.device->CreateTexture2D(&td,&initial,&b));
 			Hr(test.device->CreateShaderResourceView(a.Get(),nullptr,&as)); Hr(test.device->CreateShaderResourceView(b.Get(),nullptr,&bs));
 			const bool equal = test.Duplicate(as.Get(),bs.Get(),w,h,false);
-			if (!equal) test.InspectImages(a.Get(), b.Get(), image, w * stride);
+			if (!equal) {
+				test.InspectImages(a.Get(), b.Get(), image, w * stride);
+				test.ProbeFailure(argv[1], as.Get(), bs.Get(), w, h);
+			}
 			Check(equal,"equal RGB images differed"); ++cases;
 			for (unsigned pixel=0;pixel<w*h;++pixel) {
 				// Exhaust every pixel for small odd images; cover the complete border
