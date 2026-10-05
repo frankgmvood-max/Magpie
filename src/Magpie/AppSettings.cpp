@@ -825,6 +825,10 @@ std::string AppSettings::_Serialize(const _AppSettingsData& data) {
 	writer.Double(data._vrrFrameRate);
 	writer.Key("vrrOutputMode");
 	writer.Uint(data._vrrOutputMode);
+	writer.Key("noFocusLossEnabled");
+	writer.Bool(data._isNoFocusLossEnabled);
+	writer.Key("noFocusLossMode");
+	writer.Uint(data._noFocusLossMode);
 	writer.Key("experimentalFrameRefreshVersion");
 	writer.Uint(1);
 	writer.Key("disableFP16");
@@ -1056,6 +1060,9 @@ void AppSettings::_LoadSettings(const rapidjson::GenericObject<true, rapidjson::
 	_vrrFrameRate = SanitizeVrrFrameRate(_vrrFrameRate);
 	JsonHelper::ReadUInt(root, "vrrOutputMode", _vrrOutputMode);
 	if (_vrrOutputMode > 1) _vrrOutputMode = 0;
+	JsonHelper::ReadBool(root, "noFocusLossEnabled", _isNoFocusLossEnabled);
+	JsonHelper::ReadUInt(root, "noFocusLossMode", _noFocusLossMode);
+	if (_noFocusLossMode > 1) _noFocusLossMode = 1;
 	JsonHelper::ReadBool(root, "disableFP16", _isFP16Disabled);
 
 	[[maybe_unused]] bool result = ScalingModesService::Get().Import(root, true);

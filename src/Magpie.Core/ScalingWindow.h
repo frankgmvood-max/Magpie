@@ -4,6 +4,7 @@
 #include "EffectParameterRestart.h"
 #include "FramePresentationTiming.h"
 #include "SrcTracker.h"
+#include "NoFocusLossController.h"
 #include "WindowBase.h"
 #include <deque>
 
@@ -253,6 +254,7 @@ private:
 	std::optional<bool> _pendingWindowedMode;
 	std::optional<std::pair<std::vector<EffectOption>, FrameRefreshSettings>> _pendingManualParameterRestart;
 	std::unique_ptr<class Renderer> _renderer;
+	NoFocusLossController _noFocusLoss;
 	std::unique_ptr<class CursorManager> _cursorManager;
 
 	class SrcTracker _srcTracker;

@@ -124,6 +124,7 @@ namespace ImGui { inline void FakePosition(ImGuiWindow* w, ImVec2 p) { SetWindow
 #define GetMessagePos FakeMessagePos
 #define IsWindow(hwnd) ((hwnd) != nullptr)
 namespace Magpie {
+inline HWND GetActualForegroundWindow() { return FakeForeground(); }
 struct DeviceResources {};
 struct ImGuiBackend {
     bool Initialize(DeviceResources&) { return true; }

@@ -530,6 +530,24 @@ void HomeViewModel::VrrOutputModeIndex(int32_t value) {
 	RaisePropertyChanged(L"VrrOutputModeIndex");
 }
 
+bool HomeViewModel::IsNoFocusLossEnabled() const noexcept {
+	return AppSettings::Get().IsNoFocusLossEnabled();
+}
+void HomeViewModel::IsNoFocusLossEnabled(bool value) {
+	auto& settings = AppSettings::Get();
+	if (settings.IsNoFocusLossEnabled() == value) return;
+	settings.IsNoFocusLossEnabled(value);
+	RaisePropertyChanged(L"IsNoFocusLossEnabled");
+}
+int32_t HomeViewModel::NoFocusLossModeIndex() const noexcept {
+	return int32_t(AppSettings::Get().NoFocusLossModeIndex());
+}
+void HomeViewModel::NoFocusLossModeIndex(int32_t value) {
+	if (value < 0 || value > 1) return;
+	AppSettings::Get().NoFocusLossModeIndex(uint32_t(value));
+	RaisePropertyChanged(L"NoFocusLossModeIndex");
+}
+
 hstring HomeViewModel::DefaultFrameRefreshSummary() const {
 	const auto loader = ResourceLoader::GetForViewIndependentUse(CommonSharedConstants::APP_RESOURCE_MAP_ID);
 	const auto& s = AppSettings::Get().DefaultProfile().frameRefresh;

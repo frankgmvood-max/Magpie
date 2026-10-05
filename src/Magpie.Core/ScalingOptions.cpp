@@ -124,6 +124,8 @@ void ScalingOptions::Log() const noexcept {
 		StrHelper::UTF16ToUTF8(screenshotsDir.native()),
 		LogEffects(effects)
 	));
+	Logger::Get().Info(fmt::format("NoFocusLoss settings: enabled={} mode={} scope=all-scaling",
+		noFocusLoss.enabled, uint32_t(noFocusLoss.mode)));
 }
 
 }
