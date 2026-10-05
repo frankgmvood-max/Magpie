@@ -28,6 +28,14 @@ int amdOpticalFlowMode;
 int nvidiaOpticalFlowQuality;
 
 //!PARAMETER
+//!LABEL Optical Flow Resolution (%)
+//!DEFAULT 100
+//!MIN 25
+//!MAX 100
+//!STEP 1
+int nvidiaOpticalFlowResolution;
+
+//!PARAMETER
 //!LABEL Display Gain
 //!DEFAULT 0.08
 //!MIN 0.005

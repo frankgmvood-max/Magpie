@@ -151,6 +151,13 @@
     <ClInclude Include="ReflexController.h" />
     <ClInclude Include="ZeroFrameGuidanceProvider.h" />
     <ClInclude Include="NvidiaOpticalFlowProvider.h" />
+    <ClInclude Include="CompositionSwapChainAttachment.h" />
+    <ClInclude Include="NvidiaOpticalFlowShaders.h" />
+    <ClInclude Include="OpticalFlowResolution.h" />
+    <ClInclude Include="OpticalFlowHistory.h" />
+    <ClInclude Include="VrrPresentationClock.h" />
+    <ClInclude Include="VrrDriverDiagnostics.h" />
+    <ClInclude Include="include\VrrSettings.h" />
     <ClInclude Include="AmdOpticalFlowProvider.h" />
     <ClInclude Include="FrameGuidanceDiagnostics.h" />
     <ClInclude Include="PassThroughFrames.h" />

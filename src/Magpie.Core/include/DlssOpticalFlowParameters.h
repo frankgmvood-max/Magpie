@@ -10,6 +10,7 @@ struct DlssOpticalFlowChoices {
 	int method = 0;
 	int amdQuality = 1;
 	int nvidiaQuality = 2;
+	int resolutionPercent = 100;
 };
 
 // New provider choices take precedence over legacy NVIDIA-only settings.
@@ -30,7 +31,8 @@ DlssOpticalFlowChoices ReadDlssOpticalFlowChoices(GetValue&& getValue) noexcept 
 		? choice("opticalFlowMethod", 0, 2, 0) : (legacyQuality == 0 ? 0 : 2);
 	return { method, choice("amdOpticalFlowMode", 0, 1, 1),
 		choice("nvidiaOpticalFlowQuality", 1, 5,
-			!getValue("nvidiaOpticalFlowQuality") && legacyQuality > 0 ? legacyQuality : 2) };
+			!getValue("nvidiaOpticalFlowQuality") && legacyQuality > 0 ? legacyQuality : 2),
+		choice("nvidiaOpticalFlowResolution", 25, 100, 100) };
 }
 
 template<class Effect>
@@ -52,6 +54,7 @@ bool MigrateDlssOpticalFlowParameters(Effect& effect) {
 	store(L"opticalFlowMethod", choices.method);
 	store(L"amdOpticalFlowMode", choices.amdQuality);
 	store(L"nvidiaOpticalFlowQuality", choices.nvidiaQuality);
+	store(L"nvidiaOpticalFlowResolution", choices.resolutionPercent);
 	changed |= effect.parameters.erase(L"motionVectorQuality") != 0;
 	changed |= effect.parameters.erase(L"useMotionVectors") != 0;
 	return changed;
@@ -59,7 +62,7 @@ bool MigrateDlssOpticalFlowParameters(Effect& effect) {
 
 inline bool IsOpticalFlowParameter(std::string_view name) noexcept {
 	return name == "opticalFlowMethod" || name == "amdOpticalFlowMode" ||
-		name == "nvidiaOpticalFlowQuality";
+		name == "nvidiaOpticalFlowQuality" || name == "nvidiaOpticalFlowResolution";
 }
 
 }

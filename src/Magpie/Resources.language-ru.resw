@@ -1067,4 +1067,12 @@
     <value>Сброс</value>
   </data>
   <data name="ScalingModes_General_MoreOptions.Content" xml:space="preserve"><value>Больше настроек</value></data>
+  <data name="Home_FrameSync_VRR.Header" xml:space="preserve"><value>VRR / G-SYNC</value></data>
+  <data name="Home_FrameSync_VRR.Description" xml:space="preserve"><value>Включите VRR на мониторе и в драйвере. Индикатор драйвера не подтверждает физическую частоту монитора.</value></data>
+  <data name="Home_VRR_FrameRate.Header" xml:space="preserve"><value>Лимит итогового FPS</value></data>
+  <data name="Home_VRR_FrameRate.Description" xml:space="preserve"><value>Включает сгенерированные кадры. 0 — автоматически ниже частоты монитора (136 FPS при 144 Гц). Лимит исходных кадров может снизить итоговый FPS. Применяется после перезапуска масштабирования.</value></data>
+  <data name="Home_VRR_OutputMode.Header" xml:space="preserve"><value>Режим вывода</value></data>
+  <data name="Home_VRR_OutputMode.Description" xml:space="preserve"><value>Основной — composition flip; совместимый — HWND flip. Оба сохраняют ввод игры. Применяется после перезапуска масштабирования.</value></data>
+  <data name="Home_VRR_Default.Content" xml:space="preserve"><value>Основной</value></data>
+  <data name="Home_VRR_Compatibility.Content" xml:space="preserve"><value>Совместимый</value></data>
 </root>

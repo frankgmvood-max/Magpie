@@ -8,6 +8,7 @@ on:
 
 jobs:
   build:
+    if: github.ref != 'refs/heads/magpie-vrr-0.6.9' && github.head_ref != 'magpie-vrr-0.6.9'
     runs-on: windows-2025-vs2026
     strategy:
       matrix:

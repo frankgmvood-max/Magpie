@@ -180,7 +180,9 @@ struct AdaptersService {
     bool _UpdateProfileGraphicsCardId(Profile&) noexcept;
     void _UpdateProfiles() noexcept;
 };
+struct ScalingWindow { struct OptionsType { bool isVRREnabled=false; } options; static ScalingWindow& Get() { static ScalingWindow w; return w; } const auto& Options() { return options; } };
 struct DeviceResources {
+    bool _ObtainOutputAdapterAndDevice(bool) { return false; }
     FakeFactory* _dxgiFactory = &factory;
     int selected = -2;
     std::vector<int> attempted;

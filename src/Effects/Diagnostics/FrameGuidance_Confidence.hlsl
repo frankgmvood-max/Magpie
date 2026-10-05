@@ -27,6 +27,14 @@ int amdOpticalFlowMode;
 //!OPTION 5 Highest Quality (Very High Cost)
 int nvidiaOpticalFlowQuality;
 
+//!PARAMETER
+//!LABEL Optical Flow Resolution (%)
+//!DEFAULT 100
+//!MIN 25
+//!MAX 100
+//!STEP 1
+int nvidiaOpticalFlowResolution;
+
 //!TEXTURE
 Texture2D INPUT;
 //!TEXTURE

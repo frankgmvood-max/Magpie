@@ -19,6 +19,7 @@ def function(signature):
 
 prefix = r'''
 #include "FramePacingOptions.h"
+#include "VrrSettings.h"
 #include "FramePresentationTiming.h"
 #include "ReflexController.h"
 #include <atomic>
@@ -39,6 +40,7 @@ struct EffectOption { std::string name; std::map<std::string,float> parameters; 
 bool IsFrameGenerationEffect(std::string_view name) { return name == "DLSSFG" || name == "XeSSFG"; }
 struct ScalingOptions {
     bool isFrontEdgeSyncEnabled=true;
+    bool isVRREnabled=false; float vrrFrameRate=0;
     float frontEdgeSyncFrameRate=80, minFrameRate=0;
     std::optional<float> maxFrameRate;
     bool IsBenchmarkMode() const { return false; }
@@ -82,6 +84,7 @@ struct Renderer {
     float _frameRateFilterTarget=0;
     std::atomic<double> _presentationRefreshRate=240, _existingBaseFrameRateLimit=0;
     unsigned _configuredFrameGenerationMultiplier=1;
+    std::atomic<unsigned> _activeFrameGenerationMultiplier=1;
     bool _frameSyncEnabled=true, _frameSyncUsesSharedSlot=true;
     std::unique_ptr<FG> _dlssFrameGenerator;
     std::vector<int> _effectDrawers{1};

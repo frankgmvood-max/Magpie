@@ -516,6 +516,20 @@ void HomeViewModel::IsVRREnabled(bool value) {
 	RaisePropertyChanged(L"IsVRREnabled");
 }
 
+double HomeViewModel::VrrFrameRate() const noexcept { return AppSettings::Get().VrrFrameRate(); }
+void HomeViewModel::VrrFrameRate(double value) {
+	AppSettings::Get().VrrFrameRate(static_cast<float>(value));
+	RaisePropertyChanged(L"VrrFrameRate");
+}
+int32_t HomeViewModel::VrrOutputModeIndex() const noexcept {
+	return static_cast<int32_t>(AppSettings::Get().VrrOutputModeIndex());
+}
+void HomeViewModel::VrrOutputModeIndex(int32_t value) {
+	if (value < 0 || value > 1) return;
+	AppSettings::Get().VrrOutputModeIndex(static_cast<uint32_t>(value));
+	RaisePropertyChanged(L"VrrOutputModeIndex");
+}
+
 hstring HomeViewModel::DefaultFrameRefreshSummary() const {
 	const auto loader = ResourceLoader::GetForViewIndependentUse(CommonSharedConstants::APP_RESOURCE_MAP_ID);
 	const auto& s = AppSettings::Get().DefaultProfile().frameRefresh;

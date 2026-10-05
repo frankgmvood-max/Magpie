@@ -45,7 +45,8 @@ inline int64_t Tick() { return 0; }
 inline void Record(Event,int64_t,int64_t,uint64_t,int64_t,int64_t) {}
 }
 enum class DLSSFGFrameRenderResult { Presented,Retry,Dropped };
-struct Presenter { bool UsesFrameLatencyWaitableObject() { return true; } };
+struct ScalingWindow { struct OptionsType { bool isVRREnabled=false; } options; static ScalingWindow& Get() { static ScalingWindow w; return w; } const auto& Options() { return options; } };
+struct Presenter { auto LastSubmissionTime() { return TestClock::now(); } bool UsesFrameLatencyWaitableObject() { return true; } };
 struct Renderer {
     enum class Next { Present,Capacity,Resource,Drop } next=Next::Present;
     struct FrontendRenderTimings {

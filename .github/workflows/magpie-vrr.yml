@@ -1,0 +1,46 @@
+name: Magpie VRR full x64
+on:
+  push:
+    branches: [magpie-vrr-0.6.9]
+  pull_request:
+    branches: [upstream-magpie-0.6.9]
+  workflow_dispatch:
+concurrency:
+  group: magpie-vrr-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  windows:
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Pure policy and actual WARP shader/composition tests
+        shell: pwsh
+        run: ./tests/Run-VrrTests.ps1
+      - name: Restore pinned full-feature SDKs and original runtimes
+        run: python scripts/Restore-VrrDependencies.py
+      - name: Setup Conan
+        run: pip install conan
+      - uses: actions/cache@v6
+        with:
+          path: ~/.conan2/p
+          key: Conan-VRR-x64-${{ hashFiles('src/**/conanfile.txt') }}
+      - name: Build full Magpie 0.6.9 with VRR and optical flow scale
+        run: python scripts/publish.py --platform=x64 --compiler=MSVC --version-major=0 --version-minor=6 --version-patch=9 --version-string=0.6.9-vrr1
+      - name: Regression tests
+        shell: pwsh
+        run: |
+          foreach ($test in @('Run-DlssOpticalFlowTests','Run-Beta6RegressionTests','Run-FrameSyncModesTests','Run-FrameRefreshTests','Run-CursorRefreshTests','Run-ReflexControllerTests','Run-FrontendDropTests','Run-DuplicateFrameTests','Run-DisplayOnlyAdapterTests')) {
+            & "./tests/$test.ps1"
+            if ($LASTEXITCODE) { throw "$test failed" }
+          }
+      - name: Package update with tested application and effects
+        run: python scripts/Package-VrrUpdate.py
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Magpie-0.6.9-VRR-x64
+          path: dist/Magpie-0.6.9-VRR-update-x64.zip
+          if-no-files-found: error

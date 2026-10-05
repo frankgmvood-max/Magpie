@@ -305,6 +305,23 @@
 					<local:SettingsCard.HeaderIcon><FontIcon Glyph="&#xECAD;" /></local:SettingsCard.HeaderIcon>
 					<Button x:Uid="Home_FrameRefresh_Edit" Click="{x:Bind ViewModel.EditDefaultFrameRefresh}" />
 				</local:SettingsCard>
+				<local:SettingsExpander x:Uid="Home_FrameSync_VRR" IsExpanded="False" IsWrapEnabled="True">
+					<local:SettingsExpander.Content>
+						<ToggleSwitch x:Uid="ToggleSwitch" IsOn="{x:Bind ViewModel.IsVRREnabled, Mode=TwoWay}" />
+					</local:SettingsExpander.Content>
+					<local:SettingsExpander.Items>
+						<local:SettingsCard x:Uid="Home_VRR_FrameRate" IsWrapEnabled="True" IsEnabled="{x:Bind ViewModel.IsVRREnabled, Mode=OneWay}">
+							<muxc:NumberBox Minimum="0" Maximum="360" SmallChange="1" LargeChange="10" Width="160"
+							               SpinButtonPlacementMode="Compact" Value="{x:Bind ViewModel.VrrFrameRate, Mode=TwoWay}" />
+						</local:SettingsCard>
+						<local:SettingsCard x:Uid="Home_VRR_OutputMode" IsWrapEnabled="True" IsEnabled="{x:Bind ViewModel.IsVRREnabled, Mode=OneWay}">
+							<ComboBox SelectedIndex="{x:Bind ViewModel.VrrOutputModeIndex, Mode=TwoWay}" MinWidth="180">
+								<ComboBoxItem x:Uid="Home_VRR_Default" />
+								<ComboBoxItem x:Uid="Home_VRR_Compatibility" />
+							</ComboBox>
+						</local:SettingsCard>
+					</local:SettingsExpander.Items>
+				</local:SettingsExpander>
 				<local:SettingsExpander x:Name="DeveloperModeExpander"
 				                        x:Uid="Home_Advanced_DeveloperOptions"
 				                        IsExpanded="{x:Bind ViewModel.IsDeveloperMode, Mode=OneWay}">

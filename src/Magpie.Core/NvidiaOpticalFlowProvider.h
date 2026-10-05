@@ -10,7 +10,8 @@ public:
 	struct Impl;
 
 	explicit NvidiaOpticalFlowProvider(
-		NvidiaOpticalFlowQuality quality = NvidiaOpticalFlowQuality::Balanced);
+		NvidiaOpticalFlowQuality quality = NvidiaOpticalFlowQuality::Balanced,
+		uint32_t resolutionPercent = 100);
 	NvidiaOpticalFlowProvider(const NvidiaOpticalFlowProvider&) = delete;
 	NvidiaOpticalFlowProvider& operator=(
 		const NvidiaOpticalFlowProvider&) = delete;
@@ -31,6 +32,7 @@ public:
 private:
 	// 仅在 MP_ENABLE_NVIDIA_OPTICAL_FLOW 构建中使用；无 SDK 的 CI 构建里 ClangCL -Werror 会报未使用
 	[[maybe_unused]] NvidiaOpticalFlowQuality _quality;
+	[[maybe_unused]] uint32_t _resolutionPercent;
 	std::unique_ptr<Impl> _impl;
 };
 

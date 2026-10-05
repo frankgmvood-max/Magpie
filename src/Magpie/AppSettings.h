@@ -5,6 +5,7 @@
 #include "Profile.h"
 #include "ConfigPersistence.h"
 #include "FramePacingOptions.h"
+#include "VrrSettings.h"
 #include <memory>
 #include <rapidjson/document.h>
 
@@ -60,6 +61,8 @@ struct _AppSettingsData {
 
 	bool _isStopEffectsOnTaskSwitchEnabled = false;
 	bool _isVRREnabled = false;
+	float _vrrFrameRate = 0.0f;
+	uint32_t _vrrOutputMode = 0;
 
 	ToolbarState _fullscreenInitialToolbarState = ToolbarState::AutoHide;
 	ToolbarState _windowedInitialToolbarState = ToolbarState::AutoHide;
@@ -348,6 +351,17 @@ public:
 	bool IsVRREnabled() const noexcept { return _isVRREnabled; }
 	void IsVRREnabled(bool value) noexcept {
 		_isVRREnabled = value;
+		SaveAsync();
+	}
+
+	float VrrFrameRate() const noexcept { return _vrrFrameRate; }
+	void VrrFrameRate(float value) noexcept {
+		_vrrFrameRate = SanitizeVrrFrameRate(value);
+		SaveAsync();
+	}
+	uint32_t VrrOutputModeIndex() const noexcept { return _vrrOutputMode; }
+	void VrrOutputModeIndex(uint32_t value) noexcept {
+		_vrrOutputMode = value <= 1 ? value : 0;
 		SaveAsync();
 	}
 

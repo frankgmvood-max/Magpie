@@ -1806,4 +1806,10 @@
   </data>
   <data name="FrameRefresh_DuplicateDetection_Input.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>Duplicate frame detection</value></data>
   <data name="ScalingModes_General_MoreOptions.Content" xml:space="preserve"><value>Other options</value></data>
+  <data name="Home_VRR_FrameRate.Header" xml:space="preserve"><value>Final FPS limit</value></data>
+  <data name="Home_VRR_FrameRate.Description" xml:space="preserve"><value>Includes generated frames. 0: automatic headroom below monitor refresh (136 FPS at 144 Hz). Content rate can impose a lower limit. Restart scaling to apply.</value></data>
+  <data name="Home_VRR_OutputMode.Header" xml:space="preserve"><value>Output mode</value></data>
+  <data name="Home_VRR_OutputMode.Description" xml:space="preserve"><value>Default uses a composition flip swap chain. Compatibility uses an HWND flip swap chain. Both preserve game input. Restart scaling to apply.</value></data>
+  <data name="Home_VRR_Default.Content" xml:space="preserve"><value>Default</value></data>
+  <data name="Home_VRR_Compatibility.Content" xml:space="preserve"><value>Compatibility</value></data>
 </root>

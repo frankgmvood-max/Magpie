@@ -13,6 +13,7 @@
 #include "ReflexController.h"
 #include "PresentationFrameRate.h"
 #include "FramePresentationTiming.h"
+#include "VrrPresentationClock.h"
 #include "ScalingOptions.h"
 #include "ScalingSessionLifetime.h"
 #include "StepTimer.h"
@@ -437,6 +438,8 @@ private:
 	std::chrono::nanoseconds _synchronousPresentInterval{};
 	std::array<std::atomic<int64_t>, MAX_SHARED_TEXTURE_SLOTS> _sharedPresentIntervalNs{};
 	FramePresentationClock _presentationClock;
+	VrrPresentationClock _vrrPresentationClock;
+	std::atomic<uint32_t> _activeFrameGenerationMultiplier{1};
 	FrameGuidanceFrameId _frontendCaptureFrameId = 0;
 	FrameGuidanceFrameId _lastCountedRealFrameId = 0;
 	uint32_t _dlssFgFrontendTimingFrames = 0;

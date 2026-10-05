@@ -30,7 +30,7 @@ bool IsEffectParameterVisible(std::string_view effect, std::string_view paramete
 	if (HasOpticalFlowSelection(effect)) {
 		const float method = getValue("opticalFlowMethod", effect == "XeSSFG\\XeSS_FrameGeneration" ? 1.0f : 0.0f);
 		if (parameter == "amdOpticalFlowMode") return method == 1.0f;
-		if (parameter == "nvidiaOpticalFlowQuality") return method == 2.0f;
+		if (parameter == "nvidiaOpticalFlowQuality" || parameter == "nvidiaOpticalFlowResolution") return method == 2.0f;
 	}
 	if (effect == "DLSSNR\\DLSSNR_AI_Filter") {
 		if (parameter == "residualShowAdvanced")
