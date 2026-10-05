@@ -137,7 +137,7 @@ int main() {
 	mixed.Add(nvBalanced);
 	assert(mixed.PreferredMotion() == nvBalanced);
 	assert(FrameGuidanceRequirements::ResolveConsumer({}, nvBalanced) == MotionVectorRequest{});
-	for (auto name : {"opticalFlowMethod", "amdOpticalFlowMode", "nvidiaOpticalFlowQuality"}) {
+	for (auto name : {"opticalFlowMethod", "amdOpticalFlowMode", "nvidiaOpticalFlowQuality", "nvidiaOpticalFlowResolution"}) {
 		assert(nr.GetParameterRestartReason(name) == EffectParameterRestartReason::FrameGuidance);
 		assert(diagnostic.GetParameterRestartReason(name) == EffectParameterRestartReason::FrameGuidance);
 		assert(diagnostic.GetParameterApplyMode(name) == EffectParameterApplyMode::RestartRequired);
@@ -148,6 +148,7 @@ int main() {
 			auto get = [&](auto name, float fallback) { return std::string_view(name) == "opticalFlowMethod" ? float(method) : fallback; };
 			assert(IsEffectParameterVisible(id, "amdOpticalFlowMode", get) == (method == 1));
 			assert(IsEffectParameterVisible(id, "nvidiaOpticalFlowQuality", get) == (method == 2));
+			assert(IsEffectParameterVisible(id, "nvidiaOpticalFlowResolution", get) == (method == 2));
 			assert(IsEffectParameterVisible(id, "opticalFlowMethod", get));
 		}
 	}
@@ -164,5 +165,13 @@ int main() {
 	modes[0].effects[0].parameters[L"opticalFlowMethod"] = 1;
 	assert(!ApplyOpticalFlowDefaultsMigration(modes, defaultsVersion));
 	assert(modes[0].effects[0].parameters.at(L"opticalFlowMethod") == 1);
+	for (float scale : {25.0f, 50.0f, 75.0f, 100.0f}) {
+		const auto request = ParseDlssOpticalFlowRequest({{{"opticalFlowMethod", 2.0f}, {"nvidiaOpticalFlowResolution", scale}}});
+		assert(request.resolutionPercent == static_cast<uint8_t>(scale));
+	}
+	for (float invalid : {0.0f, 24.0f, 101.0f, 50.5f, std::numeric_limits<float>::quiet_NaN()}) {
+		const auto request = ParseDlssOpticalFlowRequest({{{"opticalFlowMethod", 2.0f}, {"nvidiaOpticalFlowResolution", invalid}}});
+		assert(request.resolutionPercent == 100);
+	}
 	std::cout << "DLSS and motion diagnostic optical flow: migration, defaults, invalid values, AMD/NVIDIA/None routing, shared requests, visibility and live gain isolation passed.\n";
 }

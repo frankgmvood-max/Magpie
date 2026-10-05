@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "NoFocusLossApi.h"
 #include "SrcTracker.h"
 #include "ScalingWindow.h"
 #include "SourceWindowGeometry.h"
@@ -79,7 +80,7 @@ ScalingError SrcTracker::Set(HWND hWnd, const ScalingOptions& options, bool& isI
 		return ScalingError::SourceWindowOffscreen;
 	}
 
-	_isFocused = GetForegroundWindow() == hWnd;
+	_isFocused = ::Magpie::GetActualForegroundWindow() == hWnd;
 	_isMoving = IsWindowMoving(_hWnd);
 
 	if (!GetWindowRect(hWnd, &_windowRect)) {

@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "NoFocusLossApi.h"
 #include "OverlayDrawer.h"
 #include "ScalingWindow.h"
 #include "Renderer.h"
@@ -16,7 +17,7 @@ OverlayDrawer::~OverlayDrawer() noexcept {
 bool OverlayDrawer::_HasParameterForeground() const noexcept {
 	if (!_parameterFocusSwitchingEnabled) return false;
 	auto& scaling = ScalingWindow::Get();
-	const HWND foreground = GetForegroundWindow();
+	const HWND foreground = ::Magpie::GetActualForegroundWindow();
 	return foreground && (foreground == scaling.SrcTracker().Handle() || foreground == scaling.Handle() ||
 		foreground == _hwndParameterInput);
 }
@@ -70,10 +71,10 @@ bool OverlayDrawer::_BeginParameterInput() noexcept {
 	const RECT& rect = scaling.RendererRect();
 	SetWindowPos(_hwndParameterInput, HWND_TOPMOST, rect.left, rect.top,
 		rect.right - rect.left, rect.bottom - rect.top, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-	const HWND currentForeground = GetForegroundWindow();
+	const HWND currentForeground = ::Magpie::GetActualForegroundWindow();
 	if (currentForeground == scaling.SrcTracker().Handle() || currentForeground == scaling.Handle() ||
 		currentForeground == _hwndParameterInput) SetForegroundWindow(_hwndParameterInput);
-	const bool activated = GetForegroundWindow() == _hwndParameterInput;
+	const bool activated = ::Magpie::GetActualForegroundWindow() == _hwndParameterInput;
 	if (activated) {
 		SetFocus(_hwndParameterInput);
 		ClipCursor(nullptr);
@@ -101,14 +102,14 @@ bool OverlayDrawer::_BeginParameterInput() noexcept {
 void OverlayDrawer::_EndParameterInput(bool returnFocus) noexcept {
 	if (!_parameterFocusSwitchingEnabled) return;
 	_parameterInputTransition = true;
-	const bool ownedFocus = _hwndParameterInput && GetForegroundWindow() == _hwndParameterInput;
+	const bool ownedFocus = _hwndParameterInput && ::Magpie::GetActualForegroundWindow() == _hwndParameterInput;
 	_imguiImpl.ParameterEditing(false);
 	ClearStates();
 	if (_hwndParameterInput) {
 		KillTimer(_hwndParameterInput, 1);
 		if (GetCapture() == _hwndParameterInput) ReleaseCapture();
-		if (ownedFocus && GetForegroundWindow() == _hwndParameterInput) ClipCursor(nullptr);
-		if (ownedFocus && returnFocus && GetForegroundWindow() == _hwndParameterInput &&
+		if (ownedFocus && ::Magpie::GetActualForegroundWindow() == _hwndParameterInput) ClipCursor(nullptr);
+		if (ownedFocus && returnFocus && ::Magpie::GetActualForegroundWindow() == _hwndParameterInput &&
 			IsWindow(ScalingWindow::Get().SrcTracker().Handle())) {
 			auto& scaling = ScalingWindow::Get();
 			_parameterFocusFailed = !scaling.SrcTracker().SetFocus();
@@ -277,7 +278,7 @@ void OverlayDrawer::UpdateParameterInputHost() noexcept {
 		_SetParameterPanelState(ParameterPanelState::Closed, false);
 	_UpdateParameterPreviewHost();
 	if (!IsEditingParameters() || _parameterInputTransition) return;
-	if (GetForegroundWindow() != _hwndParameterInput) {
+	if (::Magpie::GetActualForegroundWindow() != _hwndParameterInput) {
 		SuspendParameterInput();
 		return;
 	}
@@ -362,7 +363,7 @@ std::optional<ImGuiInputResult> OverlayDrawer::_HandleParameterInputMessage(
 	if (msg == WM_KILLFOCUS || (msg == WM_ACTIVATEAPP && !wParam)) {
 		// The scaling window loses focus when its parameter host takes it.
 		// A delayed loss message must not undo that successful handoff.
-		if (fromHost && GetForegroundWindow() != _hwndParameterInput) SuspendParameterInput();
+		if (fromHost && ::Magpie::GetActualForegroundWindow() != _hwndParameterInput) SuspendParameterInput();
 		return ImGuiInputResult::Redraw;
 	}
 	if (msg == WM_TIMER && fromHost) {
@@ -399,7 +400,7 @@ std::optional<ImGuiInputResult> OverlayDrawer::_HandleParameterInputMessage(
 		msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL || msg == WM_CANCELMODE || msg == WM_CAPTURECHANGED) {
 		// An Alt-based hotkey may leave a scaling-window cancellation queued
 		// before the host takes focus. Actual host cancellation still clears input.
-		if (msg == WM_CANCELMODE && !fromHost && GetForegroundWindow() == _hwndParameterInput)
+		if (msg == WM_CANCELMODE && !fromHost && ::Magpie::GetActualForegroundWindow() == _hwndParameterInput)
 			return ImGuiInputResult::Redraw;
 		return queue();
 	}

@@ -5,6 +5,8 @@
 #include <memory>
 #include "EffectParameterPersistence.h"
 #include "FramePacingOptions.h"
+#include "VrrSettings.h"
+#include "NoFocusLossSettings.h"
 #include "FrameRefreshSettings.h"
 #include "HdrComponents.h"
 #include "OverlayWindowGeometry.h"
@@ -485,6 +487,9 @@ struct ScalingOptions {
 	bool isFrontEdgeSyncEnabled = true;
 	bool isParameterFocusSwitchingEnabled = false;
 	bool isVRREnabled = false;
+	float vrrFrameRate = 0.0f;
+	VrrOutputMode vrrOutputMode = VrrOutputMode::Composition;
+	NoFocusLossSettings noFocusLoss;
 	// 0 targets the display refresh rate, divided by FG multiplier for base FPS.
 	float frontEdgeSyncFrameRate = 60.0f;
 	FrameSyncMode frameSyncMode = FrameSyncMode::FrontEdge;

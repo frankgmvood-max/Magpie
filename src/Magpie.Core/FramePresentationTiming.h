@@ -89,12 +89,21 @@ class CaptureFrameCadence {
 public:
 	using Clock = std::chrono::steady_clock;
 	bool Observe(Clock::time_point now,
-		Clock::duration downstreamWait = Clock::duration::zero()) noexcept {
+		Clock::duration downstreamWait = Clock::duration::zero(), int64_t sourceTimestamp100ns = 0) noexcept {
 		const auto elapsed = now - _last;
 		_lastDownstreamWait = std::clamp(downstreamWait, Clock::duration::zero(),
 			std::max(elapsed, Clock::duration::zero()));
 		const bool interrupted = _started && elapsed >= std::chrono::milliseconds(500);
-		const auto sourceElapsed = elapsed - _lastDownstreamWait;
+		auto sourceElapsed = elapsed - _lastDownstreamWait;
+		// WGC/DD timestamps are supplied by capture and are independent of our
+		// sleep, GPU work and queue waits. Delivery time is only a fallback.
+		if (sourceTimestamp100ns > 0) {
+			if (_sourceTimestamp100ns > 0 && sourceTimestamp100ns > _sourceTimestamp100ns)
+				sourceElapsed = std::chrono::duration_cast<Clock::duration>(
+					std::chrono::nanoseconds(std::min(sourceTimestamp100ns - _sourceTimestamp100ns, int64_t(5'000'000)) * 100));
+			else if (_sourceTimestamp100ns > 0) sourceElapsed = Clock::duration::zero();
+			_sourceTimestamp100ns = sourceTimestamp100ns;
+		} else _sourceTimestamp100ns = 0;
 		if (_started && !interrupted && sourceElapsed > Clock::duration::zero()) {
 			const double seconds = std::chrono::duration<double>(sourceElapsed).count();
 			_seconds = _hasSequenceEstimate ? _seconds + (seconds - _seconds) * 0.2 : seconds;
@@ -120,11 +129,13 @@ public:
 		_started = false;
 		_hasSequenceEstimate = false;
 		_lastDownstreamWait = {};
+		_sourceTimestamp100ns = 0;
 	}
 private:
 	Clock::time_point _last{};
 	Clock::duration _lastDownstreamWait{};
 	double _seconds = 0;
+	int64_t _sourceTimestamp100ns = 0;
 	bool _started = false;
 	bool _hasSequenceEstimate = false;
 };

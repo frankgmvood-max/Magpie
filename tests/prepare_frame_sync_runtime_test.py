@@ -19,6 +19,7 @@ def function(signature):
 
 prefix = r'''
 #include "FramePacingOptions.h"
+#include "VrrSettings.h"
 #include "FramePresentationTiming.h"
 #include "ReflexController.h"
 #include <atomic>
@@ -39,6 +40,7 @@ struct EffectOption { std::string name; std::map<std::string,float> parameters; 
 bool IsFrameGenerationEffect(std::string_view name) { return name == "DLSSFG" || name == "XeSSFG"; }
 struct ScalingOptions {
     bool isFrontEdgeSyncEnabled=true;
+    bool isVRREnabled=false; float vrrFrameRate=0;
     float frontEdgeSyncFrameRate=80, minFrameRate=0;
     std::optional<float> maxFrameRate;
     bool IsBenchmarkMode() const { return false; }
@@ -82,6 +84,7 @@ struct Renderer {
     float _frameRateFilterTarget=0;
     std::atomic<double> _presentationRefreshRate=240, _existingBaseFrameRateLimit=0;
     unsigned _configuredFrameGenerationMultiplier=1;
+    std::atomic<unsigned> _activeFrameGenerationMultiplier=1;
     bool _frameSyncEnabled=true, _frameSyncUsesSharedSlot=true;
     std::unique_ptr<FG> _dlssFrameGenerator;
     std::vector<int> _effectDrawers{1};
@@ -207,6 +210,25 @@ int main() {
     assert(idle._stepTimer.limit==80);
     options.isFrontEdgeSyncEnabled=false; idle._UpdateFrameRateLimits();
     assert(!idle._stepTimer.limit && idle._stepTimer.minimum==30);
+    options.isVRREnabled=true;options.vrrFrameRate=136;options.frontEdgeSyncFrameRate=0;options.maxFrameRate.reset();
+    Renderer vrr;
+    vrr._presentationRefreshRate=144;
+    vrr._frameSyncBackend=FrameSyncBackend::Async;
+    for(unsigned mult=1;mult<=4;++mult) {
+        vrr._configuredFrameGenerationMultiplier=mult;vrr._activeFrameGenerationMultiplier=mult;
+        vrr._UpdateFrameRateLimits();
+        assert(std::abs(vrr._baseFrameRateLimit-136.0/mult)<0.001);
+        assert(vrr._stepTimer.limit && std::abs(*vrr._stepTimer.limit-136.0/mult)<0.001);
+    }
+    // Runtime can negotiate x2 after requesting x4, or disable FG altogether.
+    vrr._configuredFrameGenerationMultiplier=4;vrr._activeFrameGenerationMultiplier=2;
+    vrr._UpdateFrameRateLimits();assert(vrr._baseFrameRateLimit==68);
+    vrr._frameSyncEnabled=false;
+    vrr._runtimeEffectOptions.push_back({"FrameRate_Filter",{{"frameRateMode",0.0f}}});
+    vrr._UpdateFrameRateLimits();assert(vrr._baseFrameRateLimit==68 && vrr._frameRateFilterTarget==72);
+    vrr._runtimeEffectOptions.clear();vrr._frameSyncEnabled=true;
+    vrr._activeFrameGenerationMultiplier=1;
+    vrr._UpdateFrameRateLimits();assert(vrr._baseFrameRateLimit==136);
     std::cout << "PASS: production renderer single limiter ownership, lower profile cap, Reflex failure fallback, DLSS recovery, XeLL handoff, idle clamp/FG disable and unsupported-strategy targets\n";
 }
 '''

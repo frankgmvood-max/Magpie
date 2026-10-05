@@ -5,6 +5,7 @@
 #include "Profile.h"
 #include "ConfigPersistence.h"
 #include "FramePacingOptions.h"
+#include "VrrSettings.h"
 #include <memory>
 #include <rapidjson/document.h>
 
@@ -60,6 +61,10 @@ struct _AppSettingsData {
 
 	bool _isStopEffectsOnTaskSwitchEnabled = false;
 	bool _isVRREnabled = false;
+	float _vrrFrameRate = 0.0f;
+	uint32_t _vrrOutputMode = 0;
+	bool _isNoFocusLossEnabled = true;
+	uint32_t _noFocusLossMode = 2;
 
 	ToolbarState _fullscreenInitialToolbarState = ToolbarState::AutoHide;
 	ToolbarState _windowedInitialToolbarState = ToolbarState::AutoHide;
@@ -348,6 +353,27 @@ public:
 	bool IsVRREnabled() const noexcept { return _isVRREnabled; }
 	void IsVRREnabled(bool value) noexcept {
 		_isVRREnabled = value;
+		SaveAsync();
+	}
+
+	float VrrFrameRate() const noexcept { return _vrrFrameRate; }
+	void VrrFrameRate(float value) noexcept {
+		_vrrFrameRate = SanitizeVrrFrameRate(value);
+		SaveAsync();
+	}
+	uint32_t VrrOutputModeIndex() const noexcept { return _vrrOutputMode; }
+	void VrrOutputModeIndex(uint32_t value) noexcept {
+		_vrrOutputMode = value <= 1 ? value : 0;
+		SaveAsync();
+	}
+	bool IsNoFocusLossEnabled() const noexcept { return _isNoFocusLossEnabled; }
+	void IsNoFocusLossEnabled(bool value) noexcept {
+		_isNoFocusLossEnabled = value;
+		SaveAsync();
+	}
+	uint32_t NoFocusLossModeIndex() const noexcept { return _noFocusLossMode; }
+	void NoFocusLossModeIndex(uint32_t value) noexcept {
+		_noFocusLossMode = value <= 2 ? value : 2;
 		SaveAsync();
 	}
 

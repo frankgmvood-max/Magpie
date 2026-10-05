@@ -110,6 +110,10 @@
     <ClInclude Include="ScalingWindow.h" />
     <ClInclude Include="ScreenshotHelper.h" />
     <ClInclude Include="SrcTracker.h" />
+    <ClInclude Include="NoFocusLossController.h" />
+    <ClInclude Include="include\NoFocusLossApi.h" />
+    <ClInclude Include="include\NoFocusLossSettings.h" />
+    <ClInclude Include="third_party\minhook\include\MinHook.h" />
     <ClInclude Include="StepTimer.h" />
     <ClInclude Include="AdaptivePresenter.h" />
     <ClInclude Include="XeSSFGPresenter.h" />
@@ -151,6 +155,15 @@
     <ClInclude Include="ReflexController.h" />
     <ClInclude Include="ZeroFrameGuidanceProvider.h" />
     <ClInclude Include="NvidiaOpticalFlowProvider.h" />
+    <ClInclude Include="CompositionSwapChainAttachment.h" />
+    <ClInclude Include="NvidiaOpticalFlowShaders.h" />
+    <ClInclude Include="OpticalFlowResolution.h" />
+    <ClInclude Include="OpticalFlowHistory.h" />
+    <ClInclude Include="VrrPresentationClock.h" />
+    <ClInclude Include="include\DlssPresentationSettings.h" />
+    <ClInclude Include="PresentationBuffer.h" />
+    <ClInclude Include="PresentationReadyFence.h" />
+    <ClInclude Include="include\VrrSettings.h" />
     <ClInclude Include="AmdOpticalFlowProvider.h" />
     <ClInclude Include="FrameGuidanceDiagnostics.h" />
     <ClInclude Include="PassThroughFrames.h" />
@@ -230,6 +243,34 @@
     <ClCompile Include="XeSSFGPresenter.cpp" />
     <ClCompile Include="ScreenshotHelper.cpp" />
     <ClCompile Include="SrcTracker.cpp" />
+    <ClCompile Include="NoFocusLossController.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="third_party\minhook\src\buffer.c" Condition="'$(Platform)' == 'x64' Or '$(Platform)' == 'Win32'">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <CompileAs>CompileAsC</CompileAs>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="third_party\minhook\src\hook.c" Condition="'$(Platform)' == 'x64' Or '$(Platform)' == 'Win32'">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <CompileAs>CompileAsC</CompileAs>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="third_party\minhook\src\trampoline.c" Condition="'$(Platform)' == 'x64' Or '$(Platform)' == 'Win32'">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <CompileAs>CompileAsC</CompileAs>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="third_party\minhook\src\hde\hde64.c" Condition="'$(Platform)' == 'x64'">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <CompileAs>CompileAsC</CompileAs>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="third_party\minhook\src\hde\hde32.c" Condition="'$(Platform)' == 'Win32'">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <CompileAs>CompileAsC</CompileAs>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
     <ClCompile Include="StepTimer.cpp" />
     <ClCompile Include="AdaptivePresenter.cpp" />
     <ClCompile Include="TextureHelper.cpp" />

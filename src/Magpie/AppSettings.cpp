@@ -821,6 +821,14 @@ std::string AppSettings::_Serialize(const _AppSettingsData& data) {
 	writer.Bool(data._isStopEffectsOnTaskSwitchEnabled);
 	writer.Key("vrr");
 	writer.Bool(data._isVRREnabled);
+	writer.Key("vrrFrameRate");
+	writer.Double(data._vrrFrameRate);
+	writer.Key("vrrOutputMode");
+	writer.Uint(data._vrrOutputMode);
+	writer.Key("noFocusLossEnabled");
+	writer.Bool(data._isNoFocusLossEnabled);
+	writer.Key("noFocusLossMode");
+	writer.Uint(data._noFocusLossMode);
 	writer.Key("experimentalFrameRefreshVersion");
 	writer.Uint(1);
 	writer.Key("disableFP16");
@@ -1048,6 +1056,13 @@ void AppSettings::_LoadSettings(const rapidjson::GenericObject<true, rapidjson::
 	_isStopEffectsOnTaskSwitchEnabled = false;
 	JsonHelper::ReadBool(root, "stopEffectsOnTaskSwitch", _isStopEffectsOnTaskSwitchEnabled);
 	JsonHelper::ReadBool(root, "vrr", _isVRREnabled);
+	JsonHelper::ReadFloat(root, "vrrFrameRate", _vrrFrameRate);
+	_vrrFrameRate = SanitizeVrrFrameRate(_vrrFrameRate);
+	JsonHelper::ReadUInt(root, "vrrOutputMode", _vrrOutputMode);
+	if (_vrrOutputMode > 1) _vrrOutputMode = 0;
+	JsonHelper::ReadBool(root, "noFocusLossEnabled", _isNoFocusLossEnabled);
+	JsonHelper::ReadUInt(root, "noFocusLossMode", _noFocusLossMode);
+	if (_noFocusLossMode > 2) _noFocusLossMode = 2;
 	JsonHelper::ReadBool(root, "disableFP16", _isFP16Disabled);
 
 	[[maybe_unused]] bool result = ScalingModesService::Get().Import(root, true);

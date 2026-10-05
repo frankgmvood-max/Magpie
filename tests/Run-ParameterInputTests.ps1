@@ -36,6 +36,12 @@ if ($LASTEXITCODE) { throw 'Parameter focus setting failed' }
 if ($LASTEXITCODE) { throw 'Compile task-switch setting failed' }
 & "$output/task_switch_settings.exe"
 if ($LASTEXITCODE) { throw 'Task-switch setting failed' }
+& python "$PSScriptRoot/prepare_presentation_settings_test.py" $output
+if ($LASTEXITCODE) { throw 'Presentation setting metadata/extraction failed' }
+& cl.exe /nologo /std:c++20 /EHsc /utf-8 /MT /O2 "/I$repo/src/Magpie.Core" "/I$($rapid.FullName)/p/include" "$output/presentation_settings.cpp" "/Fe:$output/presentation_settings.exe" "/Fo:$output/presentation_settings.obj"
+if ($LASTEXITCODE) { throw 'Compile presentation setting persistence failed' }
+& "$output/presentation_settings.exe"
+if ($LASTEXITCODE) { throw 'Presentation setting persistence failed' }
 & python (Join-Path $repo 'scripts/tests/test_task_switch_option.py') $output
 if ($LASTEXITCODE) { throw 'Extract task-switch routing failed' }
 & cl.exe /nologo /std:c++20 /EHsc /utf-8 /MT /O2 "$output/task_switch_option.cpp" "/Fe:$output/task_switch_option.exe" "/Fo:$output/task_switch_option.obj"

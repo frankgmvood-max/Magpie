@@ -2,6 +2,7 @@
 #include "PresenterBase.h"
 #include <dcomp.h>
 #include "FramePacingWait.h"
+#include "CompositionSwapChainAttachment.h"
 
 namespace Magpie {
 
@@ -41,6 +42,9 @@ public:
 
 private:
 	bool _frameCapacityBusy = false;
+	bool _isCompositionSwapChain = false;
+	UINT _swapChainFlags = 0;
+	CompositionSwapChainAttachment _compositionAttachment;
 	ReflexController* _reflex = nullptr;
 	uint64_t _reflexFrameId = 0;
 	uint64_t _reflexPresentId = 0;

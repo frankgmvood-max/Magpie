@@ -40,6 +40,10 @@ namespace Magpie {
 		Boolean IsInlineParams;
 		Boolean IsStopEffectsOnTaskSwitchEnabled;
 		Boolean IsVRREnabled;
+		Double VrrFrameRate;
+		Int32 VrrOutputModeIndex;
+		Boolean IsNoFocusLossEnabled;
+		Int32 NoFocusLossModeIndex;
 		String DefaultFrameRefreshSummary { get; };
 		void EditDefaultFrameRefresh();
 

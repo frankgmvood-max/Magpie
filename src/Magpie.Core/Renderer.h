@@ -13,6 +13,10 @@
 #include "ReflexController.h"
 #include "PresentationFrameRate.h"
 #include "FramePresentationTiming.h"
+#include "VrrPresentationClock.h"
+#include "DlssPresentationSettings.h"
+#include "PresentationBuffer.h"
+#include "PresentationReadyFence.h"
 #include "ScalingOptions.h"
 #include "ScalingSessionLifetime.h"
 #include "StepTimer.h"
@@ -157,6 +161,7 @@ private:
 	uint32_t _configuredFrameGenerationMultiplier = 1;
 	std::atomic<double> _presentationRefreshRate = 60.0;
 	std::atomic<double> _existingBaseFrameRateLimit = 0.0;
+	void _InitializeReflex() noexcept;
 	double _FrameSyncFrameRate() const noexcept;
 	FrontEdgeSyncClock _frontEdgeClock;
 	std::optional<std::chrono::steady_clock::time_point> _frontendPacingDeadline;
@@ -182,6 +187,11 @@ private:
 		uint64_t contentKey = 0;
 	};
 	std::optional<PendingFrontendFrame> _pendingFrontendFrame;
+	DlssPresentationSettings _dlssPresentationSettings;
+	PresentationBuffer _presentationBuffer;
+	PresentationReadyFence _presentationReadyFence;
+	std::chrono::steady_clock::time_point _presentationReadySince{};
+	void _StopOnPresentationFailure(std::string detail, HRESULT error) noexcept;
 	bool _SubmitFrontendFrame() noexcept;
 	OverlayPresentationClock _overlayPresentationClock;
 	HMONITOR _overlayMonitor = nullptr;
@@ -297,7 +307,7 @@ private:
 	PassThroughFrames _passThroughFrames;
 	bool _isPassThroughActive = false;
 
-	static constexpr uint32_t MAX_SHARED_TEXTURE_SLOTS = 4;
+	static constexpr uint32_t MAX_SHARED_TEXTURE_SLOTS = DLSS_PRESENTATION_MAX_SLOTS;
 	std::array<winrt::com_ptr<ID3D11Texture2D>, MAX_SHARED_TEXTURE_SLOTS>
 		_frontendSharedTextures;
 	std::array<winrt::com_ptr<IDXGIKeyedMutex>, MAX_SHARED_TEXTURE_SLOTS>
@@ -437,6 +447,8 @@ private:
 	std::chrono::nanoseconds _synchronousPresentInterval{};
 	std::array<std::atomic<int64_t>, MAX_SHARED_TEXTURE_SLOTS> _sharedPresentIntervalNs{};
 	FramePresentationClock _presentationClock;
+	VrrPresentationClock _vrrPresentationClock;
+	std::atomic<uint32_t> _activeFrameGenerationMultiplier{1};
 	FrameGuidanceFrameId _frontendCaptureFrameId = 0;
 	FrameGuidanceFrameId _lastCountedRealFrameId = 0;
 	uint32_t _dlssFgFrontendTimingFrames = 0;

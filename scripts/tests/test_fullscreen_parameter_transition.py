@@ -64,6 +64,7 @@ static bool IsTopmostWindow(HWND) { return false; }
 namespace FrameTrace { enum class Event { FrontendPrepare }; struct Scope { Scope(Event) {} }; }
 namespace fmt { template<class... T> const char* format(const char* message,T&&...) { return message; } }
 namespace Magpie {
+inline HWND GetActualForegroundWindow() { return FakeForeground(); }
 struct Logger {
     static Logger& Get() { static Logger x; return x; }
     void Info(const char*) { ++stateLogs; }

@@ -19,7 +19,8 @@ inline MotionVectorRequest ParseOpticalFlowRequest(const EffectOption& effect,
 	if (method == 1) return MotionVectorRequest::Amd(static_cast<AmdOpticalFlowMode>(
 		choice("amdOpticalFlowMode", 0, 1, 1)));
 	if (method == 2) return MotionVectorRequest::Nvidia(static_cast<NvidiaOpticalFlowQuality>(
-		choice("nvidiaOpticalFlowQuality", 1, NVIDIA_OPTICAL_FLOW_MAX_QUALITY, 2)));
+		choice("nvidiaOpticalFlowQuality", 1, NVIDIA_OPTICAL_FLOW_MAX_QUALITY, 2)),
+		static_cast<uint8_t>(choice("nvidiaOpticalFlowResolution", 25, 100, 100)));
 	return {};
 }
 
@@ -31,7 +32,8 @@ inline MotionVectorRequest ParseDlssOpticalFlowRequest(const EffectOption& effec
 	if (choices.method == 1) return MotionVectorRequest::Amd(
 		static_cast<AmdOpticalFlowMode>(choices.amdQuality));
 	if (choices.method == 2) return MotionVectorRequest::Nvidia(
-		static_cast<NvidiaOpticalFlowQuality>(choices.nvidiaQuality));
+		static_cast<NvidiaOpticalFlowQuality>(choices.nvidiaQuality),
+		static_cast<uint8_t>(choices.resolutionPercent));
 	return {};
 }
 

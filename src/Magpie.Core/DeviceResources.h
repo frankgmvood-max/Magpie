@@ -23,6 +23,7 @@ public:
 	ID3D11SamplerState* GetSampler(D3D11_FILTER filterMode, D3D11_TEXTURE_ADDRESS_MODE addressMode) noexcept;
 
 private:
+	bool _ObtainOutputAdapterAndDevice(bool isForeground) noexcept;
 	bool _ObtainAdapterAndDevice(GraphicsCardId graphicsCardId, bool isForeground) noexcept;
 	bool _TryCreateD3DDevice(const winrt::com_ptr<IDXGIAdapter1>& adapter, bool isForeground) noexcept;
 

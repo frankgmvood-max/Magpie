@@ -124,6 +124,9 @@ bool DeviceResources::_ObtainAdapterAndDevice(GraphicsCardId graphicsCardId, boo
 		}
 	}
 
+	if (graphicsCardId.idx < 0 && ScalingWindow::Get().Options().isVRREnabled &&
+		_ObtainOutputAdapterAndDevice(isForeground)) return true;
+
 	// 枚举查找第一个支持 FL11 的显卡
 	for (UINT adapterIdx = 0;
 		SUCCEEDED(_dxgiFactory->EnumAdapters1(adapterIdx, adapter.put()));
@@ -160,6 +163,29 @@ bool DeviceResources::_ObtainAdapterAndDevice(GraphicsCardId graphicsCardId, boo
 	}
 
 	return true;
+}
+
+bool DeviceResources::_ObtainOutputAdapterAndDevice(bool isForeground) noexcept {
+	winrt::com_ptr<IDXGIAdapter1> adapter;
+	const auto& rect = ScalingWindow::Get().RendererRect();
+	const HMONITOR target = MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST);
+	for (UINT idx = 0; SUCCEEDED(_dxgiFactory->EnumAdapters1(idx, adapter.put())); ++idx) {
+		DXGI_ADAPTER_DESC1 desc{};
+		if (FAILED(adapter->GetDesc1(&desc)) || DirectXHelper::IsWARP(desc) ||
+			DirectXHelper::IsDisplayOnlyAdapter(adapter.get())) continue;
+		winrt::com_ptr<IDXGIOutput> output;
+		for (UINT out = 0; SUCCEEDED(adapter->EnumOutputs(out, output.put())); ++out) {
+			DXGI_OUTPUT_DESC display{};
+			if (SUCCEEDED(output->GetDesc(&display)) && display.Monitor == target && display.AttachedToDesktop &&
+				_TryCreateD3DDevice(adapter, isForeground)) {
+				Logger::Get().Info(fmt::format("VRR automatic adapter: index={} luid={:08x}:{:08x} ownsOutput=true foreground={}",
+					idx, uint32_t(desc.AdapterLuid.HighPart), desc.AdapterLuid.LowPart, isForeground));
+				return true;
+			}
+		}
+	}
+	Logger::Get().Warn("VRR output adapter unavailable; falling back to normal adapter selection");
+	return false;
 }
 
 bool DeviceResources::_TryCreateD3DDevice(const winrt::com_ptr<IDXGIAdapter1>& adapter, bool isForeground) noexcept {

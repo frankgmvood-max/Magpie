@@ -15,6 +15,7 @@ using HANDLE = int;
 using UINT = unsigned;
 constexpr DWORD WAIT_OBJECT_0 = 0, WAIT_TIMEOUT = 258, WAIT_FAILED = 0xffffffff;
 constexpr int S_OK = 0, D3D11_USAGE_DEFAULT = 0, DXGI_PRESENT_ALLOW_TEARING = 1;
+constexpr UINT DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING = 0x800;
 static void Require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
 static std::vector<std::string> events;
 static DWORD capacity = WAIT_OBJECT_0;
@@ -22,6 +23,7 @@ static int capacityQueries = 0, acquireResult = S_OK, fakeReleaseResult = S_OK, 
 static bool renderOpen = false;
 static bool coverageViolation = false;
 static std::vector<std::pair<uint64_t, uint64_t>> renderIds;
+static std::vector<std::pair<int, UINT>> submissions;
 DWORD WaitForSingleObject(HANDLE, DWORD) { ++capacityQueries; return capacity; }
 DWORD MsgWaitForMultipleObjectsEx(DWORD, HANDLE*, DWORD, DWORD, DWORD) { return capacity; }
 constexpr DWORD QS_ALLINPUT = 1, MWMO_INPUTAVAILABLE = 1;
@@ -127,11 +129,19 @@ struct Metadata { uint64_t frameId = 40, captureSequence = 2, resourceGeneration
 /* GATE */
 #define IID_PPV_ARGS(p) 0, p
 struct Surface { HRESULT BeginDraw(void*, int, winrt::com_ptr<ID3D11Texture2D>*, POINT*) { return -1; } };
-struct SwapChain { HRESULT Present(int, UINT) { Require(!renderOpen, "render must end before Present"); events.push_back("present"); return S_OK; } };
+struct SwapChain {
+    HRESULT Present(int interval, UINT flags) {
+        Require(!renderOpen, "render must end before Present");
+        submissions.emplace_back(interval, flags);
+        events.push_back("present");
+        return S_OK;
+    }
+};
 struct AdaptivePresenter {
     ReflexController* _reflex = nullptr;
     uint64_t _reflexFrameId = 0, _reflexPresentId = 0;
     bool _reflexRendering = false, _reflexGenerated = false, _frameCapacityBusy = false, _isDCompPresenting = false;
+    UINT _swapChainFlags = 0;
     FrameLatencyGate _frameLatencyGate;
     Handle _frameLatencyWaitableObject;
     SwapChain swap; SwapChain* _dxgiSwapChain = &swap; Surface* _dcompSurface = nullptr;
@@ -189,14 +199,15 @@ struct Renderer {
 };
 /* UPDATE */
 static void Reset() {
-    events.clear(); renderIds.clear(); renderOpen = coverageViolation = false; capacityQueries = 0;
+    events.clear(); renderIds.clear(); submissions.clear(); renderOpen = coverageViolation = false; capacityQueries = 0;
     capacity = WAIT_OBJECT_0; acquireResult = fakeReleaseResult = createResult = S_OK;
 }
 int main() {
     try {
         ReflexController reflex; reflex.Initialize(std::make_unique<Driver>());
-        for (bool generated : {false, true}) {
+        for (bool tearing : {false, true}) for (bool generated : {false, true}) {
             Reset(); AdaptivePresenter presenter; Renderer renderer; renderer._presenter = &presenter;
+            presenter._swapChainFlags = tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
             presenter._reflex = &reflex; presenter._deviceResources = &renderer._frontendResources;
             renderer._sharedFrameMetadata[0].generated = generated;
             Require(renderer.Render(0), "ready content must present");
@@ -205,6 +216,8 @@ int main() {
                 "one render interval must cover base, reference, motion and draw work before Present");
             Require(renderIds == std::vector<std::pair<uint64_t,uint64_t>>{{40,90}} && capacityQueries == 1,
                 "immutable slot IDs and the capacity token must survive BeginFrame without a second marker/wait");
+            Require(submissions == std::vector<std::pair<int,UINT>>{{0, tearing ? UINT(DXGI_PRESENT_ALLOW_TEARING) : 0u}},
+                "Present(0) must use tearing only when the swap chain was created with that flag");
         }
         for (int failure = 0; failure < 5; ++failure) {
             Reset(); AdaptivePresenter presenter; Renderer renderer; renderer._presenter = &presenter;
@@ -234,7 +247,7 @@ int main() {
         presenter._isDCompPresenting = true;
         presenter.SetReflexFrame(41,91,false); presenter.BeginReflexRender();
         Require(events.size() == 2, "DComp must not start a DXGI Reflex render interval");
-        std::cout << "PASS: production frontend capacity-before-copy, immutable IDs, base/reference/motion/draw coverage, retry cleanup and DComp/overlay cancellation\n";
+        std::cout << "PASS: production frontend capacity-before-copy, immutable IDs, base/reference/motion/draw coverage, retry cleanup, creation/Present tearing flags and DComp/overlay cancellation\n";
         return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 42; }
 }

@@ -6,104 +6,18 @@
 #include "DirectXHelper.h"
 #include "Logger.h"
 #include "ScalingWindow.h"
+#include "OpticalFlowResolution.h"
+#include "OpticalFlowHistory.h"
+#include "NvidiaOpticalFlowShaders.h"
 
 #ifdef MP_ENABLE_NVIDIA_OPTICAL_FLOW
+#include <d3dcompiler.h>
 #include <nvOpticalFlowD3D11.h>
 
 namespace Magpie {
 
 namespace {
 
-constexpr char DENSIFY_FLOW_HLSL[] = R"(
-Texture2D<int2> ForwardFlow : register(t0);
-Texture2D<int2> BackwardFlow : register(t1);
-Texture2D<uint> ForwardCost : register(t2);
-Texture2D<uint> BackwardCost : register(t3);
-RWTexture2D<float2> DenseMotion : register(u0);
-RWTexture2D<float> DenseConfidence : register(u1);
-
-cbuffer Params : register(b0) {
-    uint2 SourceExtent;
-    uint2 FlowExtent;
-    uint GridSize;
-    uint HasForwardCost;
-    uint HasBackward;
-    uint HasBackwardCost;
-};
-
-float2 LoadFlow(Texture2D<int2> field, int2 p) {
-    p = clamp(p, int2(0, 0), int2(FlowExtent) - 1);
-    return float2(field.Load(int3(p, 0))) / 32.0;
-}
-
-float2 SampleFlow(Texture2D<int2> field, float2 sourcePixel) {
-    float2 gridPos = sourcePixel / float(GridSize) - 0.5;
-    int2 p0 = int2(floor(gridPos));
-    float2 f = frac(gridPos);
-    return lerp(
-        lerp(LoadFlow(field, p0), LoadFlow(field, p0 + int2(1, 0)), f.x),
-        lerp(LoadFlow(field, p0 + int2(0, 1)),
-             LoadFlow(field, p0 + int2(1, 1)), f.x),
-        f.y);
-}
-
-float LoadCost(Texture2D<uint> field, int2 p) {
-    p = clamp(p, int2(0, 0), int2(FlowExtent) - 1);
-    return float(field.Load(int3(p, 0))) / 255.0;
-}
-
-float SampleCost(Texture2D<uint> field, float2 sourcePixel) {
-    float2 gridPos = sourcePixel / float(GridSize) - 0.5;
-    int2 p0 = int2(floor(gridPos));
-    float2 f = frac(gridPos);
-    return lerp(
-        lerp(LoadCost(field, p0), LoadCost(field, p0 + int2(1, 0)), f.x),
-        lerp(LoadCost(field, p0 + int2(0, 1)),
-             LoadCost(field, p0 + int2(1, 1)), f.x),
-        f.y);
-}
-
-[numthreads(8, 8, 1)]
-void Densify(uint3 tid : SV_DispatchThreadID) {
-    if (any(tid.xy >= SourceExtent)) return;
-
-    float2 p = float2(tid.xy) + 0.5;
-    float2 forward = SampleFlow(ForwardFlow, p);
-    // Turing has no hardware cost output. A conservative non-zero baseline
-    // still lets downstream consumers use coherent motion while reset frames
-    // remain explicitly zero-confidence.
-    float confidence = HasForwardCost != 0 ?
-        1.0 - SampleCost(ForwardCost, p) : 0.65;
-
-    if (HasBackward != 0) {
-        float2 referencePixel = p + forward;
-        bool inside = all(referencePixel >= 0.0) &&
-            all(referencePixel < float2(SourceExtent));
-        float2 backward = SampleFlow(BackwardFlow, referencePixel);
-        float fbError = length(forward + backward);
-        float threshold = 0.75 + 0.05 * length(forward);
-        confidence *= inside ? saturate(1.0 - fbError / threshold) : 0.0;
-        if (HasBackwardCost != 0) {
-            confidence *= 1.0 - SampleCost(BackwardCost, referencePixel);
-        }
-    }
-
-    DenseMotion[tid.xy] = forward;
-    DenseConfidence[tid.xy] = saturate(confidence);
-}
-)";
-
-constexpr char HDR_TO_NVOF_HLSL[] = R"(
-Texture2D<float4> Source : register(t0);
-RWTexture2D<float4> Target : register(u0);
-[numthreads(8, 8, 1)]
-void Convert(uint3 tid : SV_DispatchThreadID) {
-    uint width, height; Target.GetDimensions(width, height);
-    if (tid.x >= width || tid.y >= height) return;
-    float4 value = Source.Load(int3(tid.xy, 0));
-    Target[tid.xy] = float4(saturate(max(value.rgb, 0.0) / 4.5), saturate(value.a));
-}
-)";
 
 template <typename T>
 T GetExport(HMODULE module, const char* name) noexcept {
@@ -240,6 +154,7 @@ struct NvidiaOpticalFlowProvider::Impl {
 		}
 
 		for (auto& texture : input) texture = nullptr;
+		for (auto& rtv : inputRtv) rtv = nullptr;
 		for (auto& texture : flow) texture = nullptr;
 		for (auto& texture : cost) texture = nullptr;
 		for (auto& srv : flowSrv) srv = nullptr;
@@ -250,7 +165,9 @@ struct NvidiaOpticalFlowProvider::Impl {
 		confidenceUav = nullptr;
 		densifyShader = nullptr;
 		paramsBuffer = nullptr;
-		hdrToNvofShader = nullptr;
+		inputVertexShader = nullptr;
+		inputPixelShader = nullptr;
+		inputParamsBuffer = nullptr;
 		hdrSourceSrv = nullptr;
 		hdrSourceTexture = nullptr;
 		for (GpuQuerySlot& slot : gpuQuerySlots) {
@@ -275,6 +192,7 @@ struct NvidiaOpticalFlowProvider::Impl {
 		device = nullptr;
 		context = nullptr;
 		extent = {};
+		analysisExtent = {};
 	}
 
 	bool CreateGpuTimingQueries() noexcept {
@@ -366,6 +284,7 @@ struct NvidiaOpticalFlowProvider::Impl {
 		if (api.nvOFGetCaps(session, cap, values.data(), &count) != NV_OF_SUCCESS) {
 			return {};
 		}
+		if (count > values.size()) return {};
 		values.resize(count);
 		return values;
 	}
@@ -377,17 +296,17 @@ struct NvidiaOpticalFlowProvider::Impl {
 	}
 
 	bool CreateTextures() noexcept {
-		const UINT sourceBind = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+		const UINT sourceBind = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
 		for (auto& texture : input) {
 			texture = DirectXHelper::CreateTexture2D(
-				device, inputDxgiFormat, extent.width, extent.height,
+				device, inputDxgiFormat, analysisExtent.width, analysisExtent.height,
 				sourceBind);
-			if (!texture || FAILED(device->CreateUnorderedAccessView(texture.get(), nullptr,
-				inputUav[&texture - &input[0]].put()))) return false;
+			if (!texture || FAILED(device->CreateRenderTargetView(texture.get(), nullptr,
+				inputRtv[&texture - &input[0]].put()))) return false;
 		}
 
-		const uint32_t flowWidth = (extent.width + gridSize - 1) / gridSize;
-		const uint32_t flowHeight = (extent.height + gridSize - 1) / gridSize;
+		const uint32_t flowWidth = (analysisExtent.width + gridSize - 1) / gridSize;
+		const uint32_t flowHeight = (analysisExtent.height + gridSize - 1) / gridSize;
 		for (size_t i = 0; i < flow.size(); ++i) {
 			flow[i] = DirectXHelper::CreateTexture2D(
 				device, DXGI_FORMAT_R16G16_SINT, flowWidth, flowHeight,
@@ -440,12 +359,21 @@ struct NvidiaOpticalFlowProvider::Impl {
 	}
 
 	bool CreatePostProcess() noexcept {
-		winrt::com_ptr<ID3DBlob> hdrBlob;
-		if (!DirectXHelper::CompileComputeShader(
-			HDR_TO_NVOF_HLSL, "Convert", hdrBlob.put(),
-			"FrameGuidance/NVOF_HdrToInput.hlsl") ||
-			FAILED(device->CreateComputeShader(hdrBlob->GetBufferPointer(),
-				hdrBlob->GetBufferSize(), nullptr, hdrToNvofShader.put()))) return false;
+		winrt::com_ptr<ID3DBlob> vs, ps, errors;
+		HRESULT hr = D3DCompile(NVOF_INPUT_HLSL, sizeof(NVOF_INPUT_HLSL) - 1,
+			"NVOF/Input", nullptr, nullptr, "InputVS", "vs_5_0",
+			D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, vs.put(), errors.put());
+		if (FAILED(hr)) return false;
+		errors = nullptr;
+		hr = D3DCompile(NVOF_INPUT_HLSL, sizeof(NVOF_INPUT_HLSL) - 1,
+			"NVOF/Input", nullptr, nullptr, "InputPS", "ps_5_0",
+			D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, ps.put(), errors.put());
+		if (FAILED(hr) || FAILED(device->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(),
+			nullptr, inputVertexShader.put())) || FAILED(device->CreatePixelShader(ps->GetBufferPointer(),
+			ps->GetBufferSize(), nullptr, inputPixelShader.put()))) return false;
+		D3D11_BUFFER_DESC inputDesc{ .ByteWidth = 16, .Usage = D3D11_USAGE_DYNAMIC,
+			.BindFlags = D3D11_BIND_CONSTANT_BUFFER, .CPUAccessFlags = D3D11_CPU_ACCESS_WRITE };
+		if (FAILED(device->CreateBuffer(&inputDesc, nullptr, inputParamsBuffer.put()))) return false;
 		winrt::com_ptr<ID3DBlob> shaderBlob;
 		if (!DirectXHelper::CompileComputeShader(
 			DENSIFY_FLOW_HLSL, "Densify", shaderBlob.put(),
@@ -458,7 +386,7 @@ struct NvidiaOpticalFlowProvider::Impl {
 			return false;
 		}
 		const D3D11_BUFFER_DESC desc{
-			.ByteWidth = 32,
+			.ByteWidth = 48,
 			.Usage = D3D11_USAGE_DYNAMIC,
 			.BindFlags = D3D11_BIND_CONSTANT_BUFFER,
 			.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE
@@ -469,7 +397,7 @@ struct NvidiaOpticalFlowProvider::Impl {
 	bool CreateSession(
 		DeviceResources& deviceResources,
 		FrameGuidanceExtent newExtent,
-		NvidiaOpticalFlowQuality requestedQuality
+		NvidiaOpticalFlowQuality requestedQuality, uint32_t resolutionPercent
 	) noexcept {
 		DestroySession();
 		initializationError = OpticalFlowInitializationError::ProviderUnavailable;
@@ -537,34 +465,33 @@ struct NvidiaOpticalFlowProvider::Impl {
 			Logger::Get().Warn("NVOF required S10.5 output format unavailable");
 			return false;
 		}
-		const bool hdrEnabled = ScalingWindow::Get().Options().IsHdrCompatibilityEnabled();
-		if (!hdrEnabled) {
-			if (!HasFormat(inputFormats, DXGI_FORMAT_B8G8R8A8_UNORM)) {
-				Logger::Get().Warn("NVOF required ABGR8 input format unavailable");
-				return false;
-			}
+		if (HasFormat(inputFormats, DXGI_FORMAT_B8G8R8A8_UNORM)) {
 			inputDxgiFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
-			inputBufferFormat = NV_OF_BUFFER_FORMAT_ABGR8;
-		} else if (HasFormat(inputFormats, DXGI_FORMAT_B8G8R8A8_UNORM)) {
-			inputDxgiFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
-			inputBufferFormat = NV_OF_BUFFER_FORMAT_ABGR8;
 		} else if (HasFormat(inputFormats, DXGI_FORMAT_R8G8B8A8_UNORM)) {
 			inputDxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-			inputBufferFormat = NV_OF_BUFFER_FORMAT_ABGR8;
-		} else if (HasFormat(inputFormats, DXGI_FORMAT_R8_UNORM)) {
-			inputDxgiFormat = DXGI_FORMAT_R8_UNORM;
-			inputBufferFormat = NV_OF_BUFFER_FORMAT_GRAYSCALE8;
-		} else if (HasFormat(inputFormats, DXGI_FORMAT_NV12)) {
-			inputDxgiFormat = DXGI_FORMAT_NV12;
-			inputBufferFormat = NV_OF_BUFFER_FORMAT_NV12;
 		} else {
-			Logger::Get().Warn("NVOF input formats unavailable (ABGR8/GRAYSCALE8/NV12)");
+			Logger::Get().Warn("NVOF renderable ABGR8 input format unavailable");
 			return false;
 		}
+		inputBufferFormat = NV_OF_BUFFER_FORMAT_ABGR8;
+		auto minimum = [&](NV_OF_CAPS cap) -> uint32_t {
+			const auto values = QueryCaps(cap);
+			return values.size() == 1 ? std::max(values[0], 1u) : 1u;
+		};
+		analysisExtent = {
+			OpticalFlowAnalysisDimension(extent.width, resolutionPercent, minimum(NV_OF_CAPS_WIDTH_MIN)),
+			OpticalFlowAnalysisDimension(extent.height, resolutionPercent, minimum(NV_OF_CAPS_HEIGHT_MIN))
+		};
 
 		const std::vector<uint32_t> grids = QueryCaps(
 			NV_OF_CAPS_SUPPORTED_OUTPUT_GRID_SIZES);
-		const NvofProfile profile = ResolveProfile(requestedQuality);
+		NvofProfile profile = ResolveProfile(requestedQuality);
+		if (profile.gridSize == 2 && std::find(grids.begin(), grids.end(), 2u) == grids.end() &&
+			std::find(grids.begin(), grids.end(), 4u) != grids.end()) {
+			Logger::Get().Warn(fmt::format("NVOF 2x2 grid unavailable: requested={} using 4x4 at the same performance level", profile.label));
+			profile.gridSize = 4;
+			profile.label = requestedQuality == NvidiaOpticalFlowQuality::HighestQuality ? "4S-fallback" : "4M-fallback";
+		}
 		if (std::find(grids.begin(), grids.end(), profile.gridSize) == grids.end()) {
 			initializationError = OpticalFlowInitializationError::QualityUnsupported;
 			Logger::Get().Warn(fmt::format(
@@ -578,8 +505,8 @@ struct NvidiaOpticalFlowProvider::Impl {
 		initializationError = OpticalFlowInitializationError::InteropFailed;
 
 		NV_OF_INIT_PARAMS init{
-			.width = extent.width,
-			.height = extent.height,
+			.width = analysisExtent.width,
+			.height = analysisExtent.height,
 			.outGridSize = static_cast<NV_OF_OUTPUT_VECTOR_GRID_SIZE>(gridSize),
 			.hintGridSize = NV_OF_HINT_VECTOR_GRID_SIZE_UNDEFINED,
 			.mode = NV_OF_MODE_OPTICALFLOW,
@@ -626,18 +553,19 @@ struct NvidiaOpticalFlowProvider::Impl {
 		}
 
 		resetReason = FrameGuidanceResetReason::Initialize;
+		temporalHistory.Reset();
 		historyValid = false;
 		previousSlot = 0;
 		Logger::Get().Info(fmt::format(
 			"Frame Guidance NVOF initialized: profile={} grid={}x{} perf={} "
-			"driverApi={}.{} cost={} bidirectional={} input={}x{} output={}x{} "
+			"driverApi={}.{} cost={} bidirectional={} source={}x{} analysis={}x{} ({}%) output={}x{} "
 			"convention=current-to-previous/source-pixels/S10.5-self-test-passed",
 			profile.label, gridSize, gridSize, profile.perfLabel,
 			driverVersion >> 4, driverVersion & 0xf,
 			costEnabled ? "R8_UINT" : "none", bidirectional,
-			extent.width, extent.height,
-			(extent.width + gridSize - 1) / gridSize,
-			(extent.height + gridSize - 1) / gridSize));
+			extent.width, extent.height, analysisExtent.width, analysisExtent.height, resolutionPercent,
+			(analysisExtent.width + gridSize - 1) / gridSize,
+			(analysisExtent.height + gridSize - 1) / gridSize));
 		initializationError = OpticalFlowInitializationError::None;
 		initialized = true;
 		return true;
@@ -653,12 +581,15 @@ struct NvidiaOpticalFlowProvider::Impl {
 		struct alignas(16) Params {
 			uint32_t sourceWidth;
 			uint32_t sourceHeight;
+			uint32_t analysisWidth;
+			uint32_t analysisHeight;
 			uint32_t flowWidth;
 			uint32_t flowHeight;
 			uint32_t gridSize;
 			uint32_t hasForwardCost;
 			uint32_t hasBackward;
 			uint32_t hasBackwardCost;
+			uint32_t reserved[2];
 		};
 		D3D11_MAPPED_SUBRESOURCE mapped{};
 		if (FAILED(context->Map(
@@ -666,12 +597,12 @@ struct NvidiaOpticalFlowProvider::Impl {
 			return false;
 		}
 		*static_cast<Params*>(mapped.pData) = {
-			extent.width, extent.height,
-			(extent.width + gridSize - 1) / gridSize,
-			(extent.height + gridSize - 1) / gridSize,
+			extent.width, extent.height, analysisExtent.width, analysisExtent.height,
+			(analysisExtent.width + gridSize - 1) / gridSize,
+			(analysisExtent.height + gridSize - 1) / gridSize,
 			gridSize, costEnabled ? 1u : 0u,
 			bidirectional ? 1u : 0u,
-			bidirectional && costEnabled ? 1u : 0u
+			bidirectional && costEnabled ? 1u : 0u, { 0, 0 }
 		};
 		context->Unmap(paramsBuffer.get(), 0);
 
@@ -715,7 +646,7 @@ struct NvidiaOpticalFlowProvider::Impl {
 	winrt::com_ptr<ID3D11Buffer> paramsBuffer;
 	std::array<GpuQuerySlot, GPU_QUERY_SLOT_COUNT> gpuQuerySlots;
 	NvofTimingWindow gpuTimingWindow;
-	FrameGuidanceExtent extent{};
+	FrameGuidanceExtent extent{}, analysisExtent{};
 	FrameGuidanceResetReason resetReason = FrameGuidanceResetReason::Initialize;
 	uint32_t nextGpuQuerySlot = 0;
 	uint32_t gridSize = 0;
@@ -723,12 +654,15 @@ struct NvidiaOpticalFlowProvider::Impl {
 	uint64_t gpuTimingSampleCount = 0;
 	std::string_view profileLabel;
 	bool bidirectional = false;
-	std::array<winrt::com_ptr<ID3D11UnorderedAccessView>, 2> inputUav;
+	std::array<winrt::com_ptr<ID3D11RenderTargetView>, 2> inputRtv;
 	winrt::com_ptr<ID3D11ShaderResourceView> hdrSourceSrv;
 	ID3D11Texture2D* hdrSourceTexture = nullptr;
-	winrt::com_ptr<ID3D11ComputeShader> hdrToNvofShader;
+	winrt::com_ptr<ID3D11VertexShader> inputVertexShader;
+	winrt::com_ptr<ID3D11PixelShader> inputPixelShader;
+	winrt::com_ptr<ID3D11Buffer> inputParamsBuffer;
 	bool costEnabled = false;
 	bool gpuTimingAvailable = false;
+	OpticalFlowHistory temporalHistory;
 	bool historyValid = false;
 	OpticalFlowInitializationError initializationError =
 		OpticalFlowInitializationError::ProviderUnavailable;
@@ -737,8 +671,8 @@ struct NvidiaOpticalFlowProvider::Impl {
 };
 
 NvidiaOpticalFlowProvider::NvidiaOpticalFlowProvider(
-	NvidiaOpticalFlowQuality quality
-) : _quality(quality), _impl(std::make_unique<Impl>()) {}
+	NvidiaOpticalFlowQuality quality, uint32_t resolutionPercent
+) : _quality(quality), _resolutionPercent(std::clamp(resolutionPercent, 25u, 100u)), _impl(std::make_unique<Impl>()) {}
 
 NvidiaOpticalFlowProvider::~NvidiaOpticalFlowProvider() = default;
 
@@ -746,7 +680,7 @@ bool NvidiaOpticalFlowProvider::Initialize(
 	DeviceResources& resources,
 	FrameGuidanceExtent sourceExtent
 ) noexcept {
-	return _impl->CreateSession(resources, sourceExtent, _quality);
+	return _impl->CreateSession(resources, sourceExtent, _quality, _resolutionPercent);
 }
 
 bool NvidiaOpticalFlowProvider::BeginFrame(
@@ -761,41 +695,40 @@ bool NvidiaOpticalFlowProvider::BeginFrame(
 	D3D11_TEXTURE2D_DESC frameDesc{};
 	frame.color->GetDesc(&frameDesc);
 	if (frameDesc.Width != impl.extent.width || frameDesc.Height != impl.extent.height ||
-		(frameDesc.Format != impl.inputDxgiFormat &&
-			!(ScalingWindow::Get().Options().IsHdrCompatibilityEnabled() &&
-			 frameDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT))) {
-		Logger::Get().Warn(fmt::format(
-			"NVOF input format mismatch: frame={}x{} dxgi={}, session dxgi={}; "
-			"supported contracts are ABGR8/GRAYSCALE8/NV12",
-			frameDesc.Width, frameDesc.Height,
-			static_cast<uint32_t>(frameDesc.Format),
-			static_cast<uint32_t>(impl.inputDxgiFormat)));
-		return false;
-	}
-
+		(frameDesc.Format != DXGI_FORMAT_B8G8R8A8_UNORM && frameDesc.Format != DXGI_FORMAT_R8G8B8A8_UNORM &&
+		 frameDesc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT)) return false;
 	const uint32_t currentSlot = impl.historyValid ? 1u - impl.previousSlot : 0u;
-	if (frameDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
-		if (impl.hdrSourceTexture != frame.color) {
-			impl.hdrSourceSrv = nullptr;
-			if (FAILED(impl.device->CreateShaderResourceView(
-				frame.color, nullptr, impl.hdrSourceSrv.put()))) return false;
-			impl.hdrSourceTexture = frame.color;
-		}
-		ID3D11ShaderResourceView* srv = impl.hdrSourceSrv.get();
-		ID3D11UnorderedAccessView* uav = impl.inputUav[currentSlot].get();
-		impl.context->CSSetShader(impl.hdrToNvofShader.get(), nullptr, 0);
-		impl.context->CSSetShaderResources(0, 1, &srv);
-		impl.context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
-		impl.context->Dispatch((impl.extent.width + 7) / 8,
-			(impl.extent.height + 7) / 8, 1);
-		ID3D11ShaderResourceView* nullSrv = nullptr;
-		ID3D11UnorderedAccessView* nullUav = nullptr;
-		impl.context->CSSetShaderResources(0, 1, &nullSrv);
-		impl.context->CSSetUnorderedAccessViews(0, 1, &nullUav, nullptr);
-		impl.context->CSSetShader(nullptr, nullptr, 0);
-	} else {
-		impl.context->CopyResource(impl.input[currentSlot].get(), frame.color);
+	if (impl.hdrSourceTexture != frame.color) {
+		impl.hdrSourceSrv = nullptr;
+		if (FAILED(impl.device->CreateShaderResourceView(frame.color, nullptr, impl.hdrSourceSrv.put()))) return false;
+		impl.hdrSourceTexture = frame.color;
 	}
+	D3D11_MAPPED_SUBRESOURCE mapped{};
+	if (FAILED(impl.context->Map(impl.inputParamsBuffer.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return false;
+	const uint32_t conversionParams[]{ impl.analysisExtent.width, impl.analysisExtent.height,
+		frameDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ? 1u : 0u, 0u };
+	memcpy(mapped.pData, conversionParams, sizeof(conversionParams));
+	impl.context->Unmap(impl.inputParamsBuffer.get(), 0);
+	// A render target supports BGRA on D3D11 devices that lack typed BGRA UAVs.
+	// The renderer clears state again before running its effect chain.
+	impl.context->ClearState();
+	ID3D11ShaderResourceView* srv = impl.hdrSourceSrv.get();
+	ID3D11RenderTargetView* rtv = impl.inputRtv[currentSlot].get();
+	ID3D11Buffer* cb = impl.inputParamsBuffer.get();
+	ID3D11SamplerState* sampler = impl.resources->GetSampler(D3D11_FILTER_MIN_MAG_MIP_LINEAR, D3D11_TEXTURE_ADDRESS_CLAMP);
+	if (!sampler) return false;
+	impl.context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	impl.context->VSSetShader(impl.inputVertexShader.get(), nullptr, 0);
+	impl.context->PSSetShader(impl.inputPixelShader.get(), nullptr, 0);
+	impl.context->PSSetShaderResources(0, 1, &srv);
+	impl.context->PSSetSamplers(0, 1, &sampler);
+	impl.context->PSSetConstantBuffers(0, 1, &cb);
+	impl.context->OMSetRenderTargets(1, &rtv, nullptr);
+	const D3D11_VIEWPORT viewport{ 0, 0, float(impl.analysisExtent.width), float(impl.analysisExtent.height), 0, 1 };
+	impl.context->RSSetViewports(1, &viewport);
+	impl.context->Draw(3, 0);
+	impl.context->ClearState();
+
 	if (!impl.historyValid) {
 		impl.ClearDenseOutput();
 		impl.previousSlot = currentSlot;
@@ -804,7 +737,7 @@ bool NvidiaOpticalFlowProvider::BeginFrame(
 		NV_OF_EXECUTE_INPUT_PARAMS inputParams{
 			.inputFrame = impl.registered[currentSlot],
 			.referenceFrame = impl.registered[impl.previousSlot],
-			.disableTemporalHints = impl.resetReason == FrameGuidanceResetReason::None ?
+			.disableTemporalHints = !impl.temporalHistory.DisableTemporalHints() ?
 				NV_OF_FALSE : NV_OF_TRUE
 		};
 		NV_OF_EXECUTE_OUTPUT_PARAMS outputParams{
@@ -823,11 +756,13 @@ bool NvidiaOpticalFlowProvider::BeginFrame(
 		if (!succeeded) {
 			impl.historyValid = false;
 			impl.resetReason = FrameGuidanceResetReason::ProviderFailure;
+			impl.temporalHistory.Reset();
 			Logger::Get().Warn(fmt::format(
 				"Frame Guidance NVOF failed at frameId={}", frame.frameId));
 			return false;
 		}
 		impl.previousSlot = currentSlot;
+		impl.temporalHistory.Executed();
 		const auto elapsed = NativeBackendTiming::ElapsedMilliseconds(begin);
 		if constexpr (NativeBackendTiming::Enabled) {
 			if (frame.frameId <= 2) {
@@ -859,6 +794,7 @@ void NvidiaOpticalFlowProvider::Reset(
 	FrameGuidanceResetReason reason
 ) noexcept {
 	_impl->historyValid = false;
+	_impl->temporalHistory.Reset();
 	_impl->resetReason = reason;
 }
 
@@ -867,7 +803,7 @@ bool NvidiaOpticalFlowProvider::Resize(
 ) noexcept {
 	if (!_impl->resources) return false;
 	const bool result = _impl->CreateSession(
-		*_impl->resources, sourceExtent, _quality);
+		*_impl->resources, sourceExtent, _quality, _resolutionPercent);
 	if (result) _impl->resetReason = FrameGuidanceResetReason::Resize;
 	return result;
 }
@@ -889,8 +825,8 @@ struct NvidiaOpticalFlowProvider::Impl {
 };
 
 NvidiaOpticalFlowProvider::NvidiaOpticalFlowProvider(
-	NvidiaOpticalFlowQuality quality
-) : _quality(quality), _impl(std::make_unique<Impl>()) {}
+	NvidiaOpticalFlowQuality quality, uint32_t resolutionPercent
+) : _quality(quality), _resolutionPercent(std::clamp(resolutionPercent, 25u, 100u)), _impl(std::make_unique<Impl>()) {}
 NvidiaOpticalFlowProvider::~NvidiaOpticalFlowProvider() = default;
 bool NvidiaOpticalFlowProvider::Initialize(
 	DeviceResources&, FrameGuidanceExtent) noexcept { return false; }

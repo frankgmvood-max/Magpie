@@ -87,6 +87,14 @@ struct HomeViewModel : HomeViewModelT<HomeViewModel>, wil::notify_property_chang
 	void IsStopEffectsOnTaskSwitchEnabled(bool value);
 	bool IsVRREnabled() const noexcept;
 	void IsVRREnabled(bool value);
+	double VrrFrameRate() const noexcept;
+	void VrrFrameRate(double value);
+	int32_t VrrOutputModeIndex() const noexcept;
+	void VrrOutputModeIndex(int32_t value);
+	bool IsNoFocusLossEnabled() const noexcept;
+	void IsNoFocusLossEnabled(bool value);
+	int32_t NoFocusLossModeIndex() const noexcept;
+	void NoFocusLossModeIndex(int32_t value);
 
 	hstring DefaultFrameRefreshSummary() const;
 	void EditDefaultFrameRefresh();

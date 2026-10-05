@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "NoFocusLossApi.h"
 #include "FrameTrace.h"
 #include "ScalingWindow.h"
 #include "CommonSharedConstants.h"
@@ -462,6 +463,10 @@ void ScalingWindow::Stop() noexcept {
 
 void ScalingWindow::Destroy() noexcept {
 	if (_isDestroying) return;
+	if (_noFocusLoss.IsArmed()) {
+		_noFocusLoss.Stop();
+		Logger::Get().Info("NoFocusLoss stopped before output window destruction");
+	}
 	// Publish cancellation before DestroyWindow can synchronously dispatch input
 	// or owner/focus messages. WM_DESTROY also handles destruction by the OS.
 	if (_cursorManager) _cursorManager->BeginShutdown();
@@ -524,7 +529,7 @@ bool ScalingWindow::_PrepareFrontendRender() noexcept {
 			"Source transition requested: reason={} reposition={} foreground={:#x} inputHost={:#x} "
 			"editing={} focusSettling={} visible={} iconic={} rectValid={} "
 			"before=({},{},{},{}) current=({},{},{},{})",
-			_sourceStateChangeReason, isSrcRepositioning, uintptr_t(GetForegroundWindow()),
+			_sourceStateChangeReason, isSrcRepositioning, uintptr_t(::Magpie::GetActualForegroundWindow()),
 			uintptr_t(_renderer->ParameterInputHandle()), _renderer->IsEditingParameters(),
 			_renderer->IsParameterFocusSettling(), IsWindowVisible(source), IsIconic(source), rectValid,
 			_sourceRectBeforeCheck.left, _sourceRectBeforeCheck.top,
@@ -558,10 +563,32 @@ void ScalingWindow::_CompleteFrontendRender(
 		_isFirstFrame = false;
 		// 第一帧渲染完成后显示缩放窗口
 		_Show();
+		if (_options.noFocusLoss.enabled) {
+			if (_noFocusLoss.Start(Handle(), _srcTracker.Handle(), _options.noFocusLoss)) {
+				_nextNoFocusLossReport = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+				Logger::Get().Info(fmt::format("NoFocusLoss armed after first output frame: mode={} output={:#x} source={:#x} scope={} cursorHook=false internalForeground=real",
+					uint32_t(_options.noFocusLoss.mode), uintptr_t(Handle()), uintptr_t(_srcTracker.Handle()),
+					_noFocusLoss.IsSpoofing() ? "active" : "suspended"));
+			} else {
+				Logger::Get().Warn(fmt::format("NoFocusLoss could not start: status={}; scaling continues without focus spoofing", _noFocusLoss.LastError()));
+			}
+		}
 		// 缩放已开始，给用户一个确认；失败路径已有错误提示
 		ShowToast(GetLocalizedString(L"Message_ScalingStarted"));
 		const auto& notice = _renderer->MotionConfigurationNotice();
 		if (!notice.empty()) ShowToast(notice);
+	}
+	if (_noFocusLoss.IsArmed()) {
+		const auto now = std::chrono::steady_clock::now();
+		if (now >= _nextNoFocusLossReport) {
+			_nextNoFocusLossReport = now + std::chrono::seconds(1);
+			const auto state = _noFocusLoss.Observe();
+			Logger::Get().Info(fmt::format(
+				"NoFocusLoss status: mode={} expectedSpoof={} actual={:#x} APIsees={:#x} output={:#x} callsIncludingProbe={} spoofed={} suppressedMessages={} subclassRegistered={} telemetry=USER32-only",
+				uint32_t(_options.noFocusLoss.mode), state.shouldSpoof, uintptr_t(state.actual),
+				uintptr_t(state.perceived), uintptr_t(state.output), state.calls, state.spoofed,
+				state.suppressedMessages, state.subclassRegistered));
+		}
 	}
 }
 
@@ -780,6 +807,10 @@ winrt::hstring ScalingWindow::GetLocalizedString(std::wstring_view resName) cons
 
 LRESULT ScalingWindow::_MessageHandler(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
 	if (msg == WM_DESTROY) {
+		if (_noFocusLoss.IsArmed()) {
+			_noFocusLoss.Stop();
+			Logger::Get().Info("NoFocusLoss stopped by output WM_DESTROY");
+		}
 		if (_isDestroying) return 0;
 		_isDestroying = true;
 		_stopRequested = false;
@@ -789,6 +820,7 @@ LRESULT ScalingWindow::_MessageHandler(UINT msg, WPARAM wParam, LPARAM lParam) n
 		if (_renderer) _renderer->ReleaseParameterInput();
 		if (_renderer) _renderer->BeginShutdown();
 	}
+	if (_noFocusLoss.SuppressMessage(msg, wParam)) return 0;
 	if (_renderer && !_isDestroying) {
 		_renderer->MessageHandler(msg, wParam, lParam);
 	}
@@ -969,7 +1001,7 @@ LRESULT ScalingWindow::_MessageHandler(UINT msg, WPARAM wParam, LPARAM lParam) n
 		// 1、未捕获光标且缩放后的位置未被遮挡而缩放前的位置被遮挡
 		// 2、光标位于叠加层或黑边上
 		// 这时鼠标点击将激活源窗口
-		const HWND hwndForground = GetForegroundWindow();
+		const HWND hwndForground = ::Magpie::GetActualForegroundWindow();
 		if (_renderer && _renderer->IsEditingParameters()) return 0;
 		if (hwndForground != _srcTracker.Handle()) {
 			if (!_srcTracker.SetFocus()) {
@@ -1719,16 +1751,16 @@ bool ScalingWindow::_UpdateSrcState(
 ) noexcept {
 	_sourceStateCheckDeferred = false;
 	_sourceRectBeforeCheck = _srcTracker.WindowRect();
-	HWND hwndFore = GetForegroundWindow();
+	HWND hwndFore = ::Magpie::GetActualForegroundWindow();
 	if (_renderer) _renderer->UpdateParameterInputHost();
-	hwndFore = GetForegroundWindow();
+	hwndFore = ::Magpie::GetActualForegroundWindow();
 
 	if (hwndFore == Handle() && (!_renderer || _renderer->AllowAutomaticSourceFocus())) {
 		// 缩放窗口不应该得到焦点，我们通过 WS_EX_NOACTIVATE 样式和处理 WM_MOUSEACTIVATE
 		// 等消息来做到这一点。但如果由于某种我们尚未了解的机制这些手段都失败了，这里
 		// 进行纠正。
 		_srcTracker.SetFocus();
-		hwndFore = GetForegroundWindow();
+		hwndFore = ::Magpie::GetActualForegroundWindow();
 	}
 
 	// 在 3D 游戏模式下需检测前台窗口变化
@@ -2376,12 +2408,12 @@ winrt::fire_and_forget ScalingWindow::_UpdateFocusStateAsync() const noexcept {
 				const uint32_t runId = ScalingWindow::RunId();
 				bool isInBackground = false;
 
-				HWND hwndFore = GetForegroundWindow();
+				HWND hwndFore = ::Magpie::GetActualForegroundWindow();
 				if (!hwndFore) {
 					// 切换窗口时有一个瞬间无前台窗口，这里等待切换完成
 					co_await winrt::resume_after(1ms);
 					isInBackground = true;
-					hwndFore = GetForegroundWindow();
+					hwndFore = ::Magpie::GetActualForegroundWindow();
 				}
 
 				bool isForeMovable = true;
@@ -2439,7 +2471,7 @@ winrt::fire_and_forget ScalingWindow::_UpdateFocusStateAsync() const noexcept {
 					}
 				}
 
-				if (isForeMovable && hwndFore && GetForegroundWindow() == hwndFore) {
+				if (isForeMovable && hwndFore && ::Magpie::GetActualForegroundWindow() == hwndFore) {
 					SetWindowPos(hwndFore, HWND_TOP, 0, 0, 0, 0, SWP_NO_ACTIVATE_MOVE_SIZE);
 				}
 			}

@@ -9,6 +9,7 @@
 #include <iostream>
 #include <limits>
 #include <vector>
+#include "DuplicateFrameCS.h"
 using Microsoft::WRL::ComPtr;
 static void Check(bool value, const char* message) {
 	if (!value) { std::cerr << message << '\n'; std::exit(1); }
@@ -22,17 +23,16 @@ struct Harness {
 	ComPtr<ID3D11Buffer> result, readback, constants;
 	ComPtr<ID3D11UnorderedAccessView> uav;
 	ComPtr<ID3D11SamplerState> sampler;
-	Harness(const wchar_t* path) {
+	UINT lastResult = 0;
+	Harness() {
 		HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_DEBUG,
 			nullptr, 0, D3D11_SDK_VERSION, &device, nullptr, &dc);
 		if (hr == DXGI_ERROR_SDK_COMPONENT_MISSING) hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP,
 			nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &device, nullptr, &dc);
 		Hr(hr); device.As(&debug);
-		ComPtr<ID3DBlob> code, errors;
-		hr = D3DCompileFromFile(path, nullptr, nullptr, "main", "cs_5_0",
-			D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_WARNINGS_ARE_ERRORS | D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors);
-		if (errors) std::cerr << static_cast<const char*>(errors->GetBufferPointer());
-		Hr(hr); Hr(device->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &shader));
+		// Execute the SDK FXC bytecode embedded into Magpie, not a separately
+		// optimized shader recompiled by the machine's system D3DCompiler DLL.
+		Hr(device->CreateComputeShader(DuplicateFrameCS, sizeof(DuplicateFrameCS), nullptr, &shader));
 		D3D11_BUFFER_DESC bd{};
 		bd.ByteWidth = bd.StructureByteStride = 4; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
 		Hr(device->CreateBuffer(&bd, nullptr, &result));
@@ -62,7 +62,66 @@ struct Harness {
 		dc->CopyResource(readback.Get(), result.Get());
 		D3D11_MAPPED_SUBRESOURCE mapped{}; Hr(dc->Map(readback.Get(),0,D3D11_MAP_READ,0,&mapped));
 		UINT value=1; std::memcpy(&value,mapped.pData,sizeof(value)); dc->Unmap(readback.Get(),0);
+		lastResult = value;
 		return value==0;
+	}
+	void InspectImages(ID3D11Texture2D* a, ID3D11Texture2D* b,
+		const std::vector<unsigned char>& expected, UINT pitch) {
+		D3D11_TEXTURE2D_DESC td{}; a->GetDesc(&td);
+		std::cerr << "Equal-image failure: format=" << static_cast<unsigned>(td.Format)
+			<< " extent=" << td.Width << 'x' << td.Height << " result=" << lastResult
+			<< " featureLevel=" << static_cast<unsigned>(device->GetFeatureLevel()) << '\n';
+		td.Usage = D3D11_USAGE_STAGING; td.BindFlags = 0; td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		for (auto* texture : {a, b}) {
+			ComPtr<ID3D11Texture2D> staging; Hr(device->CreateTexture2D(&td, nullptr, &staging));
+			dc->CopyResource(staging.Get(), texture);
+			D3D11_MAPPED_SUBRESOURCE mapped{}; Hr(dc->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped));
+			UINT differentRows = 0;
+			for (UINT row = 0; row < td.Height; ++row) {
+				const auto* data = static_cast<const unsigned char*>(mapped.pData) + static_cast<size_t>(row) * mapped.RowPitch;
+				if (std::memcmp(data, expected.data() + static_cast<size_t>(row) * pitch, pitch) != 0) ++differentRows;
+			}
+			dc->Unmap(staging.Get(), 0);
+			std::cerr << "Texture " << (texture == a ? 'A' : 'B') << ": " << differentRows
+				<< " rows differ from CPU fixture\n";
+		}
+		CheckDebug();
+	}
+	void ProbeFailure(const wchar_t* path, ID3D11ShaderResourceView* a, ID3D11ShaderResourceView* b, UINT w, UINT h, bool alpha) {
+		const UINT zero[4]{}; dc->ClearUnorderedAccessViewUint(uav.Get(), zero);
+		dc->CopyResource(readback.Get(), result.Get());
+		D3D11_MAPPED_SUBRESOURCE mapped{}; Hr(dc->Map(readback.Get(), 0, D3D11_MAP_READ, 0, &mapped));
+		UINT cleared = 1; std::memcpy(&cleared, mapped.pData, sizeof(cleared)); dc->Unmap(readback.Get(), 0);
+		std::cerr << "Clear-only result=" << cleared << '\n';
+		std::cerr << "Production same-SRV duplicate=" << Duplicate(a, a, w, h, alpha) << " result=" << lastResult << '\n';
+		ComPtr<ID3DBlob> code, errors;
+		Hr(D3DCompileFromFile(path, nullptr, nullptr, "main", "cs_5_0",
+			D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_SKIP_OPTIMIZATION, 0, &code, &errors));
+		Hr(device->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, shader.ReleaseAndGetAddressOf()));
+		std::cerr << "Unoptimized production duplicate=" << Duplicate(a, b, w, h, alpha) << " result=" << lastResult << '\n';
+		// This probe publishes the same comparison directly, without the group reduction.
+		const char probe[] = R"(
+RWBuffer<uint> result : register(u0);
+cbuffer CompareOptions : register(b0) { uint compareAlpha; };
+Texture2D tex1 : register(t0);
+Texture2D tex2 : register(t1);
+SamplerState sam : register(s0);
+[numthreads(8, 8, 1)]
+void main(uint3 tid : SV_GroupThreadID, uint3 gid : SV_GroupID) {
+    uint w, h; tex1.GetDimensions(w, h);
+    float2 pos = ((gid.xy << 4) + (tid.xy << 1) + 1) / float2(w, h);
+    bool different = any(tex1.GatherRed(sam, pos) != tex2.GatherRed(sam, pos)) ||
+        any(tex1.GatherGreen(sam, pos) != tex2.GatherGreen(sam, pos)) ||
+        any(tex1.GatherBlue(sam, pos) != tex2.GatherBlue(sam, pos));
+    if (compareAlpha != 0) different = different || any(tex1.GatherAlpha(sam, pos) != tex2.GatherAlpha(sam, pos));
+    if (different) InterlockedOr(result[0], 1u);
+})";
+		code.Reset(); errors.Reset();
+		Hr(D3DCompile(probe, sizeof(probe) - 1, nullptr, nullptr, nullptr, "main", "cs_5_0",
+			D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors));
+		Hr(device->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, shader.ReleaseAndGetAddressOf()));
+		std::cerr << "Direct-atomic comparison duplicate=" << Duplicate(a, b, w, h, alpha) << " result=" << lastResult << '\n';
+		CheckDebug();
 	}
 	void CheckDebug() {
 		if (!debug) { std::cout << "D3D debug layer unavailable; message check skipped.\n"; return; }
@@ -78,7 +137,7 @@ struct Harness {
 };
 int wmain(int argc, wchar_t** argv) {
 	Check(argc==2,"Pass the production DuplicateFrameCS.hlsl path");
-	Harness test(argv[1]); unsigned cases=0;
+	Harness test; unsigned cases=0;
 	for (DXGI_FORMAT format : {DXGI_FORMAT_R8G8B8A8_UNORM,DXGI_FORMAT_B8G8R8A8_UNORM,
 		DXGI_FORMAT_R16G16B16A16_FLOAT,DXGI_FORMAT_R32G32B32A32_FLOAT}) {
 		const unsigned component = format==DXGI_FORMAT_R16G16B16A16_FLOAT ? 2u : format==DXGI_FORMAT_R32G32B32A32_FLOAT ? 4u : 1u;
@@ -98,7 +157,12 @@ int wmain(int argc, wchar_t** argv) {
 			ComPtr<ID3D11Texture2D> a,b; ComPtr<ID3D11ShaderResourceView> as,bs;
 			Hr(test.device->CreateTexture2D(&td,&initial,&a)); Hr(test.device->CreateTexture2D(&td,&initial,&b));
 			Hr(test.device->CreateShaderResourceView(a.Get(),nullptr,&as)); Hr(test.device->CreateShaderResourceView(b.Get(),nullptr,&bs));
-			Check(test.Duplicate(as.Get(),bs.Get(),w,h,false),"equal RGB images differed"); ++cases;
+			const bool equal = test.Duplicate(as.Get(),bs.Get(),w,h,false);
+			if (!equal) {
+				test.InspectImages(a.Get(), b.Get(), image, w * stride);
+				test.ProbeFailure(argv[1], as.Get(), bs.Get(), w, h, false);
+			}
+			Check(equal,"equal RGB images differed"); ++cases;
 			for (unsigned pixel=0;pixel<w*h;++pixel) {
 				// Exhaust every pixel for small odd images; cover the complete border
 				// and the central pixel across multi-group images as well.
@@ -106,7 +170,15 @@ int wmain(int argc, wchar_t** argv) {
 				for (unsigned channel=0;channel<4;++channel) {
 					auto changed=image; changed[static_cast<size_t>(pixel)*stride+channel*component] ^= 1;
 					test.dc->UpdateSubresource(b.Get(),0,nullptr,changed.data(),w*stride,0);
-					Check(!test.Duplicate(as.Get(),bs.Get(),w,h,channel==3),"single-pixel/channel/edge change was filtered"); ++cases;
+					const bool duplicate = test.Duplicate(as.Get(),bs.Get(),w,h,channel==3);
+					if (duplicate) {
+						std::cerr << "Changed-image failure: format=" << static_cast<unsigned>(format)
+							<< " extent=" << w << 'x' << h << " pixel=" << pixel << " channel=" << channel
+							<< " alpha=" << (channel == 3) << " cases=" << cases << " result=" << test.lastResult << '\n';
+						test.InspectImages(a.Get(), b.Get(), changed, w * stride);
+						test.ProbeFailure(argv[1], as.Get(), bs.Get(), w, h, channel == 3);
+					}
+					Check(!duplicate,"single-pixel/channel/edge change was filtered"); ++cases;
 					if (channel==3) { Check(test.Duplicate(as.Get(),bs.Get(),w,h,false),"SDR RGB-only compatibility changed"); ++cases; }
 				}
 			}

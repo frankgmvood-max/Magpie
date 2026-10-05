@@ -29,7 +29,7 @@ def block(source, signature):
 helper = block(read("src/Magpie.Core/DirectXHelper.cpp"),
                "bool DirectXHelper::IsDisplayOnlyAdapter(")
 device = block(read("src/Magpie.Core/DeviceResources.cpp"),
-               "bool DeviceResources::_ObtainAdapterAndDevice(")
+               "bool DeviceResources::_ObtainAdapterAndDevice(") + "\n\n" + block(read("src/Magpie.Core/DeviceResources.cpp"), "bool DeviceResources::_ObtainOutputAdapterAndDevice(")
 service = read("src/Magpie/AdaptersService.cpp")
 methods = "\n\n".join(block(service, signature) for signature in (
     "bool AdaptersService::Initialize(",

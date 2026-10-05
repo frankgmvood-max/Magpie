@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "NoFocusLossApi.h"
 #include "FrameTrace.h"
 #include "GraphicsCaptureFrameSource.h"
 #include "CommonSharedConstants.h"
@@ -399,7 +400,7 @@ bool GraphicsCaptureFrameSource::_CaptureWindow(IGraphicsCaptureItemInterop* int
 				_taskbarList->AddTab(hwndSrc);
 
 				// 修正 Alt+Tab 切换顺序
-				if (GetForegroundWindow() == hwndSrc) {
+				if (::Magpie::GetActualForegroundWindow() == hwndSrc) {
 					SetForegroundWindow(GetDesktopWindow());
 					SetForegroundWindow(hwndSrc);
 				}
@@ -604,7 +605,7 @@ GraphicsCaptureFrameSource::~GraphicsCaptureFrameSource() {
 		_taskbarList->AddTab(GetWindowOwner(hwndSrc));
 
 		// 修正任务栏焦点窗口和 Alt+Tab 切换顺序
-		if (GetForegroundWindow() == hwndSrc) {
+		if (::Magpie::GetActualForegroundWindow() == hwndSrc) {
 			SetForegroundWindow(GetDesktopWindow());
 			SetForegroundWindow(hwndSrc);
 		}

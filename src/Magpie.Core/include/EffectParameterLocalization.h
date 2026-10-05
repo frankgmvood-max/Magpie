@@ -70,7 +70,14 @@ struct EffectParameterLocalization {
 			const auto language = Core::ResourceContext::GetForViewIndependentUse()
 				.QualifierValues().Lookup(L"Language");
 			const std::wstring_view tag(language);
-			if (!tag.starts_with(L"zh") && !tag.starts_with(L"ZH")) return;
+			const bool russian = tag.starts_with(L"ru") || tag.starts_with(L"RU");
+			if (russian) {
+				for (auto& parameter : parameters) {
+					if (parameter.name == "nvidiaOpticalFlowResolution")
+						parameter.label = "Разрешение Optical Flow (%)";
+				}
+			}
+			if (!russian && !tag.starts_with(L"zh") && !tag.starts_with(L"ZH")) return;
 			const auto loader = ResourceLoader::GetForViewIndependentUse(
 				CommonSharedConstants::APP_RESOURCE_MAP_ID);
 			const std::wstring prefix = L"EffectParam_" + KeyPart(effect) + L"_";

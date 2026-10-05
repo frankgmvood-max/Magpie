@@ -367,6 +367,23 @@ ScalingError Renderer::Initialize(HWND hwndAttach, OverlayOptions& overlayOption
 	}
 
 	_hasFrameGeneration = frameGeneration.HasFrameGeneration();
+	for (const EffectOption& effect : effects) {
+		if (!IsDLSSFrameGenerationEffect(effect.name)) continue;
+		_dlssPresentationSettings = ReadDlssPresentationSettings([&](std::string_view name) -> std::optional<float> {
+			const auto it = effect.parameters.find(std::string(name));
+			return it == effect.parameters.end() ? std::nullopt : std::optional<float>(it->second);
+		});
+		break;
+	}
+	_presentationBuffer.Configure(ScalingWindow::Get().Options().isVRREnabled ?
+		_dlssPresentationSettings.bufferFrames : 0u);
+	if (frameGeneration.first == FrameGenerationEffectKind::DLSS) {
+		Logger::Get().Info(fmt::format(
+			"DLSSFG output settings: strictPacing={} maxFrameLatency={} bufferFrames={} gpuReady={} vrr={}",
+			_dlssPresentationSettings.strictPacing, _dlssPresentationSettings.maximumFrameLatency,
+			_dlssPresentationSettings.bufferFrames, _dlssPresentationSettings.gpuReady,
+			ScalingWindow::Get().Options().isVRREnabled));
+	}
 	_frameSyncUsesSharedSlot = frameGeneration.first != FrameGenerationEffectKind::DLSS;
 	std::optional<XeSSFGVariant> xessVariant;
 	uint32_t xessFrameGenerationMultiplier = 2;
@@ -401,9 +418,11 @@ ScalingError Renderer::Initialize(HWND hwndAttach, OverlayOptions& overlayOption
 			const int quality = ReadIntegralEffectParameter(
 				effect, "nvidiaOpticalFlowQuality", 1, NVIDIA_OPTICAL_FLOW_MAX_QUALITY, 2);
 			_xessMotionRequest = MotionVectorRequest::Nvidia(
-				static_cast<NvidiaOpticalFlowQuality>(quality));
+				static_cast<NvidiaOpticalFlowQuality>(quality),
+				static_cast<uint8_t>(ReadIntegralEffectParameter(effect, "nvidiaOpticalFlowResolution", 25, 100, 100)));
 		}
 	}
+	_activeFrameGenerationMultiplier.store(_configuredFrameGenerationMultiplier, std::memory_order_release);
 	_isXeSSFrameGenerationActive = xessVariant.has_value();
 
 	Logger::DiagnosticCapture frontendDiagnostic;
@@ -416,6 +435,16 @@ ScalingError Renderer::Initialize(HWND hwndAttach, OverlayOptions& overlayOption
 
 	const DXGI_ADAPTER_DESC1 adapterDesc =
 		LogAdapter(_frontendResources.GetGraphicsAdapter());
+	if (frameGeneration.first == FrameGenerationEffectKind::DLSS &&
+		ScalingWindow::Get().Options().isVRREnabled && _dlssPresentationSettings.gpuReady) {
+		const HRESULT hr = _presentationReadyFence.Initialize(_frontendResources.GetD3DDevice());
+		if (FAILED(hr)) {
+			Logger::Get().ComError("Create output GPU readiness fence failed", hr);
+			_backendInitContext = "Create output GPU readiness fence";
+			_backendInitSystemError = static_cast<uint32_t>(hr);
+			return ScalingError::PresentationInitFailed;
+		}
+	}
 
 	_EnsureGpuPriority(true);
 	_UpdateOverlayRefreshRate();
@@ -459,16 +488,6 @@ ScalingError Renderer::Initialize(HWND hwndAttach, OverlayOptions& overlayOption
 	}
 
 	const auto& pacingOptions = ScalingWindow::Get().Options();
-	const bool ordinaryReflex = !frameGeneration.HasFrameGeneration() &&
-		pacingOptions.isFrontEdgeSyncEnabled && pacingOptions.frameSyncMode == FrameSyncMode::Reflex &&
-		!pacingOptions.IsBenchmarkMode();
-	if ((frameGeneration.first == FrameGenerationEffectKind::DLSS || ordinaryReflex) &&
-		_presenter->UsesFrameLatencyWaitableObject()) {
-		_reflex.Initialize(CreateNvReflexDriver(_frontendResources.GetD3DDevice()));
-		_presenter->SetReflexController(&_reflex);
-	} else if (frameGeneration.first == FrameGenerationEffectKind::DLSS) {
-		Logger::Get().Info("DLSSFG Reflex: DXGI presentation required; enable DirectFlip to use Reflex");
-	}
 	bool frontEdgeSupported = true;
 #ifdef MP_USE_COMPSWAPCHAIN
 	frontEdgeSupported = false;
@@ -480,6 +499,7 @@ ScalingError Renderer::Initialize(HWND hwndAttach, OverlayOptions& overlayOption
 		frameGeneration.first == FrameGenerationEffectKind::DLSS, _isXeSSFrameGenerationActive,
 		frontEdgeSupported, pacingOptions.IsBenchmarkMode());
 	_frameSyncEnabled = _frameSyncBackend != FrameSyncBackend::None;
+	_InitializeReflex();
 	if (_frameSyncEnabled || frameGeneration.first == FrameGenerationEffectKind::DLSS) {
 		_frameSyncConsumedEvent.reset(CreateEventW(nullptr, FALSE, FALSE, nullptr));
 		if (!_frameSyncConsumedEvent) {
@@ -532,6 +552,8 @@ ScalingError Renderer::Initialize(HWND hwndAttach, OverlayOptions& overlayOption
 	}
 
 	_hasFrameGeneration = _dlssFrameGenerator != nullptr || _isXeSSFrameGenerationActive;
+	_activeFrameGenerationMultiplier.store(_dlssFrameGenerator ? _dlssFrameGenerator->Multiplier() :
+		_configuredFrameGenerationMultiplier, std::memory_order_release);
 
 	_UpdateDestRect();
 
@@ -552,6 +574,7 @@ ScalingError Renderer::Initialize(HWND hwndAttach, OverlayOptions& overlayOption
 
 	_ResetDLSSFGSlotEvents();
 	_presentationClock.Reset();
+	_vrrPresentationClock.Reset();
 	_synchronousFramePresentationEnabled.store(true, std::memory_order_release);
 
 	const ScalingOptions& options = ScalingWindow::Get().Options();
@@ -641,7 +664,8 @@ bool Renderer::_OpenFrontendSharedTextures() noexcept {
 	// Backend rendering may already be running. Hold all publication slots
 	// while opening (or disabling) the optional reference branch.
 	std::scoped_lock slotLocks(_sharedTextureAccessMutexes[0], _sharedTextureAccessMutexes[1],
-		_sharedTextureAccessMutexes[2], _sharedTextureAccessMutexes[3]);
+		_sharedTextureAccessMutexes[2], _sharedTextureAccessMutexes[3],
+		_sharedTextureAccessMutexes[4], _sharedTextureAccessMutexes[5]);
 	if (!_passThroughFrames.OpenFrontend(_frontendResources, _sharedTextureSlotCount)) {
 		const auto& window = ScalingWindow::Get();
 		if (const auto& report = window.Options().reportErrorDetails) {
@@ -928,7 +952,7 @@ bool Renderer::_FrontendRender(
 	if (droppedFrame) *droppedFrame = false;
 	if (_pendingFrontendFrame) return _SubmitFrontendFrame();
 	_frontendPacingDeadline.reset();
-	const bool paced = !stableBaseOnly && ActiveFrameSyncBackend() == FrameSyncBackend::FrontEdge && !_hasFrameGeneration &&
+	const bool paced = !ScalingWindow::Get().Options().isVRREnabled && !stableBaseOnly && ActiveFrameSyncBackend() == FrameSyncBackend::FrontEdge && !_hasFrameGeneration &&
 		!waitForGpu && _presenter->SupportsDeferredPresent() &&
 		!ScalingWindow::Get().IsResizingOrMoving();
 	if (paced) {
@@ -1074,7 +1098,15 @@ bool Renderer::_FrontendRender(
 		.overlayRevision = overlayActionRevision,
 		.contentKey = _lastAccessMutexKeys[sharedTextureSlot]
 	};
-	if (paced) _frontendResources.GetD3DDC()->Flush();
+	if (_dlssFrameGenerator && ScalingWindow::Get().Options().isVRREnabled &&
+		_dlssPresentationSettings.gpuReady && _presenter->SupportsDeferredPresent()) {
+		const HRESULT hr = _presentationReadyFence.Mark(d3dDC);
+		_presentationReadySince = std::chrono::steady_clock::now();
+		if (FAILED(hr)) {
+			_StopOnPresentationFailure("Signal output GPU readiness fence", hr);
+			return false;
+		}
+	} else if (paced || ScalingWindow::Get().Options().isVRREnabled) d3dDC->Flush();
 	const bool submitted = _SubmitFrontendFrame();
 	if (timings) timings->endFrame = std::chrono::steady_clock::now() - endFrameStart;
 	return submitted;
@@ -1084,6 +1116,26 @@ bool Renderer::_SubmitFrontendFrame() noexcept {
 	assert(_pendingFrontendFrame);
 	const auto frame = *_pendingFrontendFrame;
 	const auto submitStart = std::chrono::steady_clock::now();
+	const auto& vrrOptions = ScalingWindow::Get().Options();
+	const bool vrrPaced = vrrOptions.isVRREnabled && _presenter->SupportsDeferredPresent() &&
+		!ScalingWindow::Get().IsResizingOrMoving();
+	if (vrrPaced) {
+		const double refresh = _presentationRefreshRate.load(std::memory_order_acquire);
+		const double baseTarget = _frameSyncEnabled ? _FrameSyncFrameRate() :
+			_existingBaseFrameRateLimit.load(std::memory_order_acquire);
+		const double rate = ResolveVrrOutputRate(vrrOptions.vrrFrameRate, refresh,
+			baseTarget, _activeFrameGenerationMultiplier.load(std::memory_order_acquire));
+		const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(1.0 / rate));
+		const auto minimum = _dlssPresentationSettings.strictPacing ? period :
+			std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::duration<double>(1.0 / std::max(rate, refresh - 2.0)));
+		_vrrPresentationClock.Configure(period, minimum);
+		const auto due = _vrrPresentationClock.Due(submitStart);
+		if (submitStart < due) {
+			_frontendPacingDeadline = due;
+			return false;
+		}
+	}
 	if (frame.paced && _presenter->SupportsDeferredPresent() &&
 		!ScalingWindow::Get().IsResizingOrMoving()) {
 		const auto due = _frontEdgeClock.Due(submitStart);
@@ -1093,9 +1145,24 @@ bool Renderer::_SubmitFrontendFrame() noexcept {
 		}
 	}
 	_frontendPacingDeadline.reset();
+	if (_presentationReadyFence.Pending()) {
+		const HRESULT hr = _presentationReadyFence.Poll();
+		if (hr == S_FALSE) {
+			if (submitStart - _presentationReadySince >= std::chrono::seconds(2))
+				_StopOnPresentationFailure("Output GPU readiness fence timed out", HRESULT_FROM_WIN32(WAIT_TIMEOUT));
+			else _frontendPacingDeadline = submitStart + std::chrono::milliseconds(1);
+			return false;
+		}
+		if (FAILED(hr)) {
+			_StopOnPresentationFailure("Output GPU readiness fence device failure", hr);
+			return false;
+		}
+	}
 	const auto [stableBaseOnly, contentFrame, generatedFrame, uiInIndependentLayer,
 		waitForGpu, paced, overlayActionRevision, contentKey] = frame;
 	const bool submitted = _presenter->EndFrame(waitForGpu);
+	if (vrrPaced && submitted && _presenter->LastPresentedFrameCount().value_or(0) > 0)
+		_vrrPresentationClock.Submitted(_presenter->LastSubmissionTime());
 	_pendingFrontendFrame.reset();
 	if (submitted && contentFrame && ActiveFrameSyncBackend() == FrameSyncBackend::FrontEdge && !_hasFrameGeneration &&
 		_presenter->SupportsDeferredPresent() && !ScalingWindow::Get().IsResizingOrMoving()) {
@@ -1151,6 +1218,19 @@ bool Renderer::_SubmitFrontendFrame() noexcept {
 			_isPassThroughActive || _cursorDrawer.IsBackgroundDependent());
 	}
 	return submitted;
+}
+
+void Renderer::_StopOnPresentationFailure(std::string detail, HRESULT error) noexcept {
+	if (_sessionLifetime->IsStopping()) return;
+	Logger::Get().ComError(detail.c_str(), error);
+	_sessionLifetime->RequestStop();
+	ScalingWindow::Dispatcher().TryEnqueue([session = _sessionLifetime, detail = std::move(detail), error] {
+		auto& window = ScalingWindow::Get();
+		if (!session->IsCurrent(ScalingWindow::RunId()) || !window) return;
+		if (const auto report = window.Options().reportErrorDetails) report(
+			window.SrcTracker().Handle(), ScalingError::PresentationInitFailed, detail, static_cast<uint32_t>(error));
+		window.Stop();
+	});
 }
 
 bool Renderer::_FrontendOverlayRender(bool contentChanged) noexcept {
@@ -1246,6 +1326,9 @@ bool Renderer::Render(bool force, bool waitForGpu) noexcept {
 bool Renderer::RenderOverlay() noexcept {
 	// For regular/XeSS rendering, consume available content first. An input
 	// message must not insert a replay of the old image ahead of the new one.
+	if (ScalingWindow::Get().Options().isVRREnabled && _hasFrameGeneration &&
+		!_HasPendingOverlayAction() && !_overlayDrawer.HasCriticalInput() &&
+		!_vrrPresentationClock.IsIdle(std::chrono::steady_clock::now())) return false;
 	if (!_dlssFrameGenerator ||
 		!_synchronousFramePresentationEnabled.load(std::memory_order_acquire)) {
 		return Render();
@@ -1310,9 +1393,10 @@ bool Renderer::_CanRenderOverlay() noexcept {
 void Renderer::_UpdateOverlayRefreshRate() noexcept {
 	const HWND window = ScalingWindow::Get().Handle();
 	const HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
-	if (monitor == _overlayMonitor && _overlayMonitor) return;
-	_overlayMonitor = monitor;
 	const double refreshRate = GetDisplayRefreshRate(window);
+	if (monitor == _overlayMonitor && _overlayMonitor &&
+		std::abs(refreshRate - _presentationRefreshRate.load(std::memory_order_acquire)) < 0.001) return;
+	_overlayMonitor = monitor;
 	_presentationRefreshRate.store(refreshRate, std::memory_order_release);
 	_overlayPresentationClock.SetRefreshRate(refreshRate);
 	_cursorDrawer.SetDisplayRate(refreshRate);
@@ -1326,18 +1410,43 @@ void Renderer::_UpdateOverlayRefreshRate() noexcept {
 }
 
 
+void Renderer::_InitializeReflex() noexcept {
+	// DLSS FG does not opt into a separate driver pacing/marker API. Honor the
+	// explicit frame-sync selection, including disabled sync and benchmark mode.
+	if (_frameSyncBackend != FrameSyncBackend::Reflex) {
+		Logger::Get().Info("Reflex disabled: frame sync did not request Reflex; DLSS FG and VRR pacing remain independent");
+		return;
+	}
+	if (!_presenter->UsesFrameLatencyWaitableObject()) {
+		Logger::Get().Info("Reflex unavailable: DXGI presentation required; using Async base pacing");
+		return;
+	}
+	_reflex.Initialize(CreateNvReflexDriver(_frontendResources.GetD3DDevice()));
+	_presenter->SetReflexController(&_reflex);
+}
+
 double Renderer::_FrameSyncFrameRate() const noexcept {
-	return ResolvePresentationFrameRate(ScalingWindow::Get().Options().frontEdgeSyncFrameRate,
-		_existingBaseFrameRateLimit.load(std::memory_order_acquire),
-		_presentationRefreshRate.load(std::memory_order_acquire), _configuredFrameGenerationMultiplier);
+	const auto& options = ScalingWindow::Get().Options();
+	const double refresh = _presentationRefreshRate.load(std::memory_order_acquire);
+	const uint32_t multiplier = options.isVRREnabled ?
+		_activeFrameGenerationMultiplier.load(std::memory_order_acquire) : _configuredFrameGenerationMultiplier;
+	const double target = ResolvePresentationFrameRate(options.frontEdgeSyncFrameRate,
+		_existingBaseFrameRateLimit.load(std::memory_order_acquire), refresh, multiplier);
+	return options.isVRREnabled ? std::min(target, ResolveVrrCeiling(options.vrrFrameRate, refresh) /
+		std::max(multiplier, 1u)) : target;
 }
 
 void Renderer::WaitForFrontendWork(std::chrono::nanoseconds maximumWait) noexcept {
 	if (_frontendPacingDeadline) {
 		const auto remaining = *_frontendPacingDeadline - std::chrono::steady_clock::now();
 		if (remaining <= std::chrono::nanoseconds::zero()) return;
-		WaitForFramePacing(std::min(remaining, std::max(maximumWait,
-			std::chrono::nanoseconds(std::chrono::milliseconds(8)))), _frontendPacingTimer);
+		const auto boundedWait = std::min(remaining, std::max(maximumWait,
+			std::chrono::nanoseconds(std::chrono::milliseconds(8))));
+		if (ScalingWindow::Get().Options().isVRREnabled && _dlssPresentationSettings.strictPacing)
+			WaitForPreciseFramePacing(std::min(*_frontendPacingDeadline,
+				std::chrono::steady_clock::now() + boundedWait),
+				_frontendPacingTimer, _presentationReadyFence.Event());
+		else WaitForFramePacing(boundedWait, _frontendPacingTimer, _presentationReadyFence.Event());
 	} else {
 		const DWORD ms = static_cast<DWORD>(std::max<int64_t>(0,
 			(maximumWait.count() + 999'999) / 1'000'000));
@@ -1453,6 +1562,8 @@ DLSSFGFrameRenderResult Renderer::RenderDLSSFGFrame(
 		while (pending > 0 && !_pendingDLSSFGFrontendFrames.compare_exchange_weak(
 			pending, pending - 1, std::memory_order_acq_rel)) {
 		}
+		// Refill after an actual underflow. The GPU ring/NGX history remains intact.
+		if (pending == 1) _presentationBuffer.Reset();
 		if (_frameSyncConsumedEvent) SetEvent(_frameSyncConsumedEvent.get());
 	};
 	if (sharedTextureGeneration != _sharedTextureGeneration.load(std::memory_order_acquire)) {
@@ -1475,8 +1586,23 @@ DLSSFGFrameRenderResult Renderer::RenderDLSSFGFrame(
 	const auto pacingStart = std::chrono::steady_clock::now();
 	const std::chrono::nanoseconds presentInterval(
 		_sharedPresentIntervalNs[sharedTextureSlot].load(std::memory_order_acquire));
+	if (ScalingWindow::Get().Options().isVRREnabled && !_pendingFrontendFrame) {
+		const auto& options = ScalingWindow::Get().Options();
+		const uint32_t multiplier = _activeFrameGenerationMultiplier.load(std::memory_order_acquire);
+		const double rate = ResolveVrrOutputRate(options.vrrFrameRate,
+			_presentationRefreshRate.load(std::memory_order_acquire),
+			_frameSyncEnabled ? _FrameSyncFrameRate() : _existingBaseFrameRateLimit.load(std::memory_order_acquire), multiplier);
+		const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(1.0 / rate));
+		if (const auto deadline = _presentationBuffer.WaitUntil(pacingStart,
+			_pendingDLSSFGFrontendFrames.load(std::memory_order_acquire), period, multiplier, sharedTextureGeneration)) {
+			retry = true;
+			waitReason = PresentationJobTiming::Wait::Deadline;
+			_frontendPacingDeadline = deadline;
+			return DLSSFGFrameRenderResult::Retry;
+		}
+	}
 	const auto targetTime = _presentationClock.Due(pacingStart, presentInterval);
-	if (presentInterval.count() > 0 && pacingStart < targetTime) {
+	if (!ScalingWindow::Get().Options().isVRREnabled && presentInterval.count() > 0 && pacingStart < targetTime) {
 		// The scheduler will wake on either input or the next short deadline. Do
 		// not sleep in a FIFO job and make already queued input wait behind it.
 		retry = true;
@@ -1501,11 +1627,12 @@ DLSSFGFrameRenderResult Renderer::RenderDLSSFGFrame(
 	}
 	if (!presented) {
 		retry = true;
-		waitReason = timings.capacityBusy ? PresentationJobTiming::Wait::Capacity : PresentationJobTiming::Wait::Resource;
+		waitReason = _frontendPacingDeadline ? PresentationJobTiming::Wait::Deadline :
+			timings.capacityBusy ? PresentationJobTiming::Wait::Capacity : PresentationJobTiming::Wait::Resource;
 		return DLSSFGFrameRenderResult::Retry;
 	}
-	const auto presentEnd = std::chrono::steady_clock::now();
-	_presentationClock.Presented(presentEnd, targetTime, presentInterval);
+	const auto submission = _presenter->LastSubmissionTime();
+	_presentationClock.Presented(submission, targetTime, presentInterval);
 	consumePendingFrame();
 	if (_sharedTextureAvailableEvents[sharedTextureSlot]) {
 		SetEvent(_sharedTextureAvailableEvents[sharedTextureSlot].get());
@@ -1525,6 +1652,9 @@ bool Renderer::OnResize() noexcept {
 		_overlayDrawer.OnPresentFailed();
 	}
 	_pendingFrontendFrame.reset();
+	_presentationReadyFence.Cancel();
+	_presentationBuffer.Reset();
+	_vrrPresentationClock.Reset();
 	_frontendPacingDeadline.reset();
 	_frontEdgeClock.Reset();
 	_UpdateOverlayRefreshRate();
@@ -1579,6 +1709,7 @@ bool Renderer::OnResize() noexcept {
 	}
 	_ResetDLSSFGSlotEvents();
 	_presentationClock.Reset();
+	_vrrPresentationClock.Reset();
 	_synchronousFramePresentationEnabled.store(true, std::memory_order_release);
 
 	_UpdateDestRect();
@@ -2062,7 +2193,8 @@ void Renderer::_BuildEffectParameterRuntimeInfos() noexcept {
 				info.applyMode = EffectParameterApplyMode::Live;
 				info.restartReason = EffectParameterRestartReason::None;
 			} else if (IsDLSSFrameGenerationEffect(option.name)) {
-				info.restartReason = IsOpticalFlowParameter(parameter.name)
+				info.restartReason = IsDlssPresentationParameter(parameter.name)
+					? EffectParameterRestartReason::ResourceRecreation : IsOpticalFlowParameter(parameter.name)
 					? EffectParameterRestartReason::FrameGuidance
 					: EffectParameterRestartReason::FrameGeneration;
 			} else if (IsXeSSFrameGenerationEffect(option.name)) {
@@ -2560,6 +2692,8 @@ bool Renderer::_InitializeDLSSFrameGenerator(
 	_dlssFgRealPublishSuccess = 0;
 	_dlssFgRealPublishFailure = 0;
 	_dlssFrameGenerator = std::move(frameGenerator);
+	_activeFrameGenerationMultiplier.store(_dlssFrameGenerator->Multiplier(), std::memory_order_release);
+	_UpdateFrameRateLimits();
 	_dlssFrameGenerator->SetReflexController(&_reflex);
 	return true;
 }
@@ -2598,6 +2732,8 @@ void Renderer::_DisableDLSSFrameGenerationForSession() noexcept {
 		Logger::Get().Warn("Drain DLSSFG queue before disabling failed");
 	}
 	_dlssFrameGenerator.reset();
+	_activeFrameGenerationMultiplier.store(1, std::memory_order_release);
+	_UpdateFrameRateLimits();
 	_synchronousPresentInterval = {};
 	if (_frameSyncEnabled) {
 		// A failed FG session no longer reaches the FG input gate.
@@ -2721,7 +2857,8 @@ HANDLE Renderer::_CreateSharedTexture(ID3D11Texture2D* effectsOutput) noexcept {
 		}
 	}
 	_sharedTextureSlotCount = _dlssFrameGenerator ?
-		std::clamp(_dlssFrameGenerator->Multiplier(), 2u, MAX_SHARED_TEXTURE_SLOTS) : 1u;
+		DlssPresentationSlotCount(_dlssFrameGenerator->Multiplier(),
+			ScalingWindow::Get().Options().isVRREnabled ? _dlssPresentationSettings.bufferFrames : 0u) : 1u;
 	_sharedTextureGeneration.fetch_add(1, std::memory_order_release);
 	_pendingDLSSFGFrontendFrames.store(0, std::memory_order_release);
 	_nextBackendSharedTextureSlot = 0;
@@ -3090,6 +3227,8 @@ void Renderer::_BackendThreadProc() noexcept {
 
 void Renderer::_UpdateFrameRateLimits() noexcept {
 	const ScalingOptions& options = ScalingWindow::Get().Options();
+	const uint32_t multiplier = options.isVRREnabled ?
+		_activeFrameGenerationMultiplier.load(std::memory_order_acquire) : _configuredFrameGenerationMultiplier;
 	std::optional<float> maxFrameRate = _captureMaxFrameRate;
 
 	_frameRateFilterTarget = 0.0f;
@@ -3104,7 +3243,7 @@ void Renderer::_UpdateFrameRateLimits() noexcept {
 			options.isFrontEdgeSyncEnabled, modeValue,
 			custom == effect.parameters.end() ? 60.0f : custom->second,
 			options.frontEdgeSyncFrameRate, _presentationRefreshRate.load(std::memory_order_acquire),
-			_configuredFrameGenerationMultiplier);
+			multiplier);
 		// Active frame synchronization already owns this target. Do not feed a resolved
 		// auto target back as an independent cap, which would stick on monitor changes.
 		if (!_frameSyncEnabled && (!maxFrameRate || targetFrameRate < *maxFrameRate)) {
@@ -3128,11 +3267,20 @@ void Renderer::_UpdateFrameRateLimits() noexcept {
 	if (options.isFrontEdgeSyncEnabled && !_frameSyncEnabled && !options.IsBenchmarkMode()) {
 		maxFrameRate = float(ResolvePresentationFrameRate(options.frontEdgeSyncFrameRate,
 			maxFrameRate.value_or(0.0f), _presentationRefreshRate.load(std::memory_order_acquire),
-			_configuredFrameGenerationMultiplier));
+			multiplier));
 	}
 	const bool useFrameGeneration = std::ranges::any_of(
 		_runtimeEffectOptions,
 		[](const EffectOption& effect) { return IsFrameGenerationEffect(effect.name); });
+	if (options.isVRREnabled && !options.IsBenchmarkMode()) {
+		const double ceiling = ResolveVrrCeiling(options.vrrFrameRate,
+			_presentationRefreshRate.load(std::memory_order_acquire));
+		const float baseCeiling = float(ceiling / std::max(
+			multiplier, 1u));
+		maxFrameRate = maxFrameRate ? std::min(*maxFrameRate, baseCeiling) : baseCeiling;
+		Logger::Get().Info(fmt::format("VRR pacing: finalCeiling={:.3f} FPS baseCeiling={:.3f} FPS multiplier={}x phaseClock=frontend",
+			ceiling, baseCeiling, multiplier));
+	}
 	_existingBaseFrameRateLimit.store(maxFrameRate.value_or(0.0f), std::memory_order_release);
 	const float minFrameRate = useFrameGeneration ? 0.0f :
 		(options.IsBenchmarkMode() ? std::numeric_limits<float>::max() :
@@ -3260,7 +3408,7 @@ HANDLE Renderer::_InitBackend() noexcept {
 #ifdef MP_ENABLE_NVIDIA_OPTICAL_FLOW
 			if (request.method == OpticalFlowMethod::Nvidia)
 				_frameGuidanceService.SetMotionVectorProvider(request,
-					std::make_unique<NvidiaOpticalFlowProvider>(static_cast<NvidiaOpticalFlowQuality>(request.quality)));
+					std::make_unique<NvidiaOpticalFlowProvider>(static_cast<NvidiaOpticalFlowQuality>(request.quality), request.resolutionPercent));
 #endif
 #ifdef MP_ENABLE_AMD_OPTICAL_FLOW
 			if (request.method == OpticalFlowMethod::Amd)
@@ -3383,7 +3531,7 @@ void Renderer::_BackendRender(
 		++_captureEffectFrameCount;
 		const auto downstreamWait = std::exchange(_captureCadenceQueueWait,
 			std::chrono::steady_clock::duration::zero());
-		if (_captureCadence.Observe(captureTime, downstreamWait)) {
+		if (_captureCadence.Observe(captureTime, downstreamWait, _frameSource->CaptureTimestamp100ns())) {
 			// A delayed WGC notification is a delivery-time observation, not a
 			// capture interruption. Resetting DLSSFG history here drops the first
 			// generated frame after an otherwise valid static-window gap and causes
@@ -3977,7 +4125,19 @@ bool Renderer::_PublishBackendTexture(
 		return false;
 	}
 	d3dDC->Flush();
-	_fenceEvent.wait();
+	// A lost device must not leave shutdown waiting forever on this fence.
+	const auto fenceDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (WaitForSingleObject(_fenceEvent.get(), 50) != WAIT_OBJECT_0) {
+		if (_sessionLifetime->IsStopping()) return false;
+		if (std::chrono::steady_clock::now() >= fenceDeadline ||
+			FAILED(_backendResources.GetD3DDevice()->GetDeviceRemovedReason())) {
+			Logger::Get().Error("Publication GPU fence timed out or device was removed; stopping the scaling session");
+			const auto runId = ScalingWindow::RunId();
+			_sessionLifetime->RequestStop();
+			ScalingWindow::Dispatcher().TryEnqueue([runId] { ScalingWindow::Get().RequestStop(runId); });
+			return false;
+		}
+	}
 	traceFence.End();
 	const double transactionMs = std::chrono::duration<double, std::milli>(
 		transactionEnd - transactionStart).count();

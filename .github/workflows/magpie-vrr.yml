@@ -1,0 +1,81 @@
+name: Magpie VRR full x64
+on:
+  push:
+    branches: [magpie-vrr-0.6.9]
+  pull_request:
+    branches: [upstream-magpie-0.6.9]
+  workflow_dispatch:
+concurrency:
+  group: magpie-vrr-windows-2025-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  windows:
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Pacing, bounded buffering, real GPU fences and WARP composition tests
+        shell: pwsh
+        run: ./tests/Run-VrrTests.ps1
+      - name: NoFocusLoss real USER32 hook and threaded lifecycle tests
+        shell: pwsh
+        run: ./tests/Run-NoFocusLossTests.ps1
+      - name: Capture duplicate filter and production shader on WARP
+        shell: pwsh
+        run: ./tests/Run-DuplicateFrameTests.ps1
+      - name: Restore pinned full-feature SDKs and original runtimes
+        run: python scripts/Restore-VrrDependencies.py
+      - name: Setup Conan
+        run: pip install conan
+      - uses: actions/cache/restore@v6
+        id: conan-cache
+        with:
+          path: ~/.conan2/p
+          key: Conan-VRR-x64-${{ hashFiles('src/**/conanfile.txt') }}
+      - name: Build full Magpie 0.6.9 with VRR6 presentation controls and classic NoFocusLoss
+        run: python scripts/publish.py --platform=x64 --compiler=MSVC --version-major=0 --version-minor=6 --version-patch=9 --version-string=0.6.9-vrr6 --release-symbols
+      - name: Native crash IPC through the actual Magpie executable entry point
+        shell: pwsh
+        run: |
+          $crashTest = Join-Path $env:TEMP 'Magpie-VRR-tests/CrashReporterTests.exe'
+          & $crashTest --helper-exe (Resolve-Path './publish/x64/Magpie.exe').Path
+          if ($LASTEXITCODE) { throw 'Actual Magpie crash-helper integration failed' }
+          if (Test-Path './publish/x64/magpie.log') { throw 'Crash helper entered regular logger/application startup' }
+      - name: Actual embedded duplicate-filter bytecode on WARP
+        shell: pwsh
+        run: ./tests/Run-DuplicateFrameTests.ps1 -ShaderOnly -ShaderHeader './obj/x64/Release/Magpie.Core/Generated Files/shaders/DuplicateFrameCS.h'
+      - uses: actions/cache/save@v6
+        if: always() && steps.conan-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.conan2/p
+          key: Conan-VRR-x64-${{ hashFiles('src/**/conanfile.txt') }}
+      - name: Regression tests
+        shell: pwsh
+        run: |
+          foreach ($test in @('Run-DlssOpticalFlowTests','Run-Beta6RegressionTests','Run-ParameterInputTests','Run-FrameSyncModesTests','Run-FrameRefreshTests','Run-CursorRefreshTests','Run-ReflexControllerTests','Run-FrontendDropTests','Run-DisplayOnlyAdapterTests')) {
+            # Isolate intentional failing mutants from the parent LASTEXITCODE.
+            # A terminating test error still fails the child PowerShell process.
+            & pwsh -NoProfile -File "./tests/$test.ps1"
+            if ($LASTEXITCODE) { throw "$test failed" }
+          }
+      - name: Package update with tested application and effects
+        run: python scripts/Package-VrrUpdate.py
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Magpie-0.6.9-VRR6-x64
+          path: dist/Magpie-0.6.9-VRR6-update-x64.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Magpie-0.6.9-VRR6-native-symbols
+          path: |
+            publish/x64/Magpie.pdb
+            publish/x64/Magpie.Core.pdb
+            publish/x64/Magpie.map
+            publish/x64/Magpie.Core.map
+          if-no-files-found: error
