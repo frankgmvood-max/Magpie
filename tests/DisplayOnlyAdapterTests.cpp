@@ -18,11 +18,21 @@
 #include <utility>
 #include <vector>
 
+struct FakeOutput {
+    HMONITOR monitor = nullptr;
+    bool attached = true;
+    HRESULT GetDesc(DXGI_OUTPUT_DESC* desc) noexcept { *desc={};desc->Monitor=monitor;desc->AttachedToDesktop=attached;return S_OK; }
+};
 struct FakeAdapter {
     UINT idx = 0, vendor = 0x10de, device = 0x1234;
     HRESULT descStatus = S_OK;
     NTSTATUS openStatus = 0, queryStatus = 0, closeStatus = 0;
     bool indirect = false, render = true, creatable = true;
+    std::vector<FakeOutput> outputs;
+    HRESULT EnumOutputs(UINT index, FakeOutput** output) noexcept {
+        if(index>=outputs.size())return DXGI_ERROR_NOT_FOUND;
+        *output=&outputs[index];return S_OK;
+    }
     HRESULT GetDesc1(DXGI_ADAPTER_DESC1* desc) noexcept {
         *desc = {};
         desc->VendorId = vendor;
@@ -63,6 +73,7 @@ NTSTATUS MockSkippedClose(const D3DKMT_CLOSEADAPTER* args) {
 }
 struct Logger {
     static Logger& Get() { static Logger logger; return logger; }
+    void Info(std::string_view) {}
     void Warn(std::string_view msg) { warnings.emplace_back(msg); }
     void ComWarn(std::string_view msg, HRESULT hr) {
         warnings.push_back(fmt::format("{} HRESULT=0x{:08X}", msg, static_cast<uint32_t>(hr)));
@@ -180,9 +191,9 @@ struct AdaptersService {
     bool _UpdateProfileGraphicsCardId(Profile&) noexcept;
     void _UpdateProfiles() noexcept;
 };
-struct ScalingWindow { struct OptionsType { bool isVRREnabled=false; } options; static ScalingWindow& Get() { static ScalingWindow w; return w; } const auto& Options() { return options; } };
+struct ScalingWindow { struct OptionsType { bool isVRREnabled=false; } options; static ScalingWindow& Get() { static ScalingWindow w; return w; } auto& Options() { return options; } const RECT& RendererRect() { static RECT r{0,0,100,100}; return r; } };
 struct DeviceResources {
-    bool _ObtainOutputAdapterAndDevice(bool) { return false; }
+    bool _ObtainOutputAdapterAndDevice(bool) noexcept;
     FakeFactory* _dxgiFactory = &factory;
     int selected = -2;
     std::vector<int> attempted;
@@ -194,6 +205,7 @@ struct DeviceResources {
         return true;
     }
 };
+#define IDXGIOutput FakeOutput
 #define IDXGIAdapter1 FakeAdapter
 #define IDXGIFactory7 FakeFactory
 #define D3DKMTOpenAdapterFromLuid MockOpen
@@ -339,5 +351,21 @@ int main() {
     factory.warp.creatable = false;
     DeviceResources failedWarp;
     Check(!failedWarp._ObtainAdapterAndDevice({},false), "WARP device creation failure propagates");
+    // Real output-owner function body: two identical RTX cards, only the
+    // second drives the requested monitor. Explicit saved selection wins.
+    const auto target=MonitorFromRect(&ScalingWindow::Get().RendererRect(),MONITOR_DEFAULTTONEAREST);
+    ScalingWindow::Get().Options().isVRREnabled=true;
+    Reset({FakeAdapter{},FakeAdapter{}});
+    inventory[1].outputs.push_back({target,true});
+    DeviceResources outputOwner;
+    Check(outputOwner._ObtainAdapterAndDevice({},true) && outputOwner.selected==1 && outputOwner.attempted==std::vector<int>{1},"VRR automatic chooses display-owning second identical RTX");
+    DeviceResources explicitCard;
+    Check(explicitCard._ObtainAdapterAndDevice({0,0x10de,0x1234},true) && explicitCard.selected==0,"VRR preserves explicit non-output GPU selection");
+    Reset({FakeAdapter{.indirect=true,.render=false},FakeAdapter{}});
+    inventory[0].outputs.push_back({target,true});
+    inventory[1].outputs.push_back({target,false});
+    DeviceResources disconnected;
+    Check(disconnected._ObtainAdapterAndDevice({},true) && disconnected.selected==1,"VRR skips virtual/disconnected outputs before normal fallback");
+    ScalingWindow::Get().Options().isVRREnabled=false;
     std::printf("PASS: %u adapter filtering/selection/migration/JSON/lifecycle checks against current production code.\n", cases);
 }

@@ -11,6 +11,7 @@
 #include "NvidiaOpticalFlowShaders.h"
 
 #ifdef MP_ENABLE_NVIDIA_OPTICAL_FLOW
+#include <d3dcompiler.h>
 #include <nvOpticalFlowD3D11.h>
 
 namespace Magpie {

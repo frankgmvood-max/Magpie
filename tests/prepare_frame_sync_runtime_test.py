@@ -210,6 +210,21 @@ int main() {
     assert(idle._stepTimer.limit==80);
     options.isFrontEdgeSyncEnabled=false; idle._UpdateFrameRateLimits();
     assert(!idle._stepTimer.limit && idle._stepTimer.minimum==30);
+    options.isVRREnabled=true;options.vrrFrameRate=136;options.frontEdgeSyncFrameRate=0;options.maxFrameRate.reset();
+    Renderer vrr;
+    vrr._presentationRefreshRate=144;
+    vrr._frameSyncBackend=FrameSyncBackend::Async;
+    for(unsigned mult=1;mult<=4;++mult) {
+        vrr._configuredFrameGenerationMultiplier=mult;vrr._activeFrameGenerationMultiplier=mult;
+        vrr._UpdateFrameRateLimits();
+        assert(std::abs(vrr._baseFrameRateLimit-136.0/mult)<0.001);
+        assert(vrr._stepTimer.limit && std::abs(*vrr._stepTimer.limit-136.0/mult)<0.001);
+    }
+    // Runtime can negotiate x2 after requesting x4, or disable FG altogether.
+    vrr._configuredFrameGenerationMultiplier=4;vrr._activeFrameGenerationMultiplier=2;
+    vrr._UpdateFrameRateLimits();assert(vrr._baseFrameRateLimit==68);
+    vrr._activeFrameGenerationMultiplier=1;
+    vrr._UpdateFrameRateLimits();assert(vrr._baseFrameRateLimit==136);
     std::cout << "PASS: production renderer single limiter ownership, lower profile cap, Reflex failure fallback, DLSS recovery, XeLL handoff, idle clamp/FG disable and unsupported-strategy targets\n";
 }
 '''
