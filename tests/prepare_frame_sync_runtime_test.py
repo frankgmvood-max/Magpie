@@ -223,6 +223,10 @@ int main() {
     // Runtime can negotiate x2 after requesting x4, or disable FG altogether.
     vrr._configuredFrameGenerationMultiplier=4;vrr._activeFrameGenerationMultiplier=2;
     vrr._UpdateFrameRateLimits();assert(vrr._baseFrameRateLimit==68);
+    vrr._frameSyncEnabled=false;
+    vrr._runtimeEffectOptions.push_back({"FrameRate_Filter",{{"frameRateMode",0.0f}}});
+    vrr._UpdateFrameRateLimits();assert(vrr._baseFrameRateLimit==68 && vrr._frameRateFilterTarget==72);
+    vrr._runtimeEffectOptions.clear();vrr._frameSyncEnabled=true;
     vrr._activeFrameGenerationMultiplier=1;
     vrr._UpdateFrameRateLimits();assert(vrr._baseFrameRateLimit==136);
     std::cout << "PASS: production renderer single limiter ownership, lower profile cap, Reflex failure fallback, DLSS recovery, XeLL handoff, idle clamp/FG disable and unsupported-strategy targets\n";

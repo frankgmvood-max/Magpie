@@ -705,9 +705,9 @@ bool NvidiaOpticalFlowProvider::BeginFrame(
 	}
 	D3D11_MAPPED_SUBRESOURCE mapped{};
 	if (FAILED(impl.context->Map(impl.inputParamsBuffer.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return false;
-	const uint32_t inputParams[]{ impl.analysisExtent.width, impl.analysisExtent.height,
+	const uint32_t conversionParams[]{ impl.analysisExtent.width, impl.analysisExtent.height,
 		frameDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ? 1u : 0u, 0u };
-	memcpy(mapped.pData, inputParams, sizeof(inputParams));
+	memcpy(mapped.pData, conversionParams, sizeof(conversionParams));
 	impl.context->Unmap(impl.inputParamsBuffer.get(), 0);
 	// A render target supports BGRA on D3D11 devices that lack typed BGRA UAVs.
 	// The renderer clears state again before running its effect chain.

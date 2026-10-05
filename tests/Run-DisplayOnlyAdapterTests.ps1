@@ -33,7 +33,7 @@ $adapterRapid = Find-AdapterTestInclude $RapidJsonIncludeDirectory 'rapid*' 'rap
 & python "$PSScriptRoot/prepare_display_only_adapter_test.py" $adapterOutput
 if ($LASTEXITCODE) { throw 'Production extraction failed.' }
 $adapterFlags = @('/nologo', '/std:c++20', '/EHsc', '/utf-8', '/MT', '/W4', '/WX', '/DNOMINMAX',
-    '/DFMT_HEADER_ONLY', "/I$adapterFmt", "/I$adapterRapid")
+    'user32.lib', '/DFMT_HEADER_ONLY', "/I$adapterFmt", "/I$adapterRapid")
 & cl.exe @adapterFlags "/I$adapterOutput" "$PSScriptRoot/DisplayOnlyAdapterTests.cpp" "/Fe:$adapterOutput/DisplayOnlyAdapterTests.exe" "/Fo:$adapterOutput/DisplayOnlyAdapterTests.obj"
 if ($LASTEXITCODE) { throw 'Adapter regression compilation failed.' }
 & "$adapterOutput/DisplayOnlyAdapterTests.exe"

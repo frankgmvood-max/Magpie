@@ -3131,6 +3131,8 @@ void Renderer::_BackendThreadProc() noexcept {
 
 void Renderer::_UpdateFrameRateLimits() noexcept {
 	const ScalingOptions& options = ScalingWindow::Get().Options();
+	const uint32_t multiplier = options.isVRREnabled ?
+		_activeFrameGenerationMultiplier.load(std::memory_order_acquire) : _configuredFrameGenerationMultiplier;
 	std::optional<float> maxFrameRate = _captureMaxFrameRate;
 
 	_frameRateFilterTarget = 0.0f;
@@ -3145,7 +3147,7 @@ void Renderer::_UpdateFrameRateLimits() noexcept {
 			options.isFrontEdgeSyncEnabled, modeValue,
 			custom == effect.parameters.end() ? 60.0f : custom->second,
 			options.frontEdgeSyncFrameRate, _presentationRefreshRate.load(std::memory_order_acquire),
-			_configuredFrameGenerationMultiplier);
+			multiplier);
 		// Active frame synchronization already owns this target. Do not feed a resolved
 		// auto target back as an independent cap, which would stick on monitor changes.
 		if (!_frameSyncEnabled && (!maxFrameRate || targetFrameRate < *maxFrameRate)) {
@@ -3169,7 +3171,7 @@ void Renderer::_UpdateFrameRateLimits() noexcept {
 	if (options.isFrontEdgeSyncEnabled && !_frameSyncEnabled && !options.IsBenchmarkMode()) {
 		maxFrameRate = float(ResolvePresentationFrameRate(options.frontEdgeSyncFrameRate,
 			maxFrameRate.value_or(0.0f), _presentationRefreshRate.load(std::memory_order_acquire),
-			_configuredFrameGenerationMultiplier));
+			multiplier));
 	}
 	const bool useFrameGeneration = std::ranges::any_of(
 		_runtimeEffectOptions,
@@ -3178,10 +3180,10 @@ void Renderer::_UpdateFrameRateLimits() noexcept {
 		const double ceiling = ResolveVrrCeiling(options.vrrFrameRate,
 			_presentationRefreshRate.load(std::memory_order_acquire));
 		const float baseCeiling = float(ceiling / std::max(
-			_activeFrameGenerationMultiplier.load(std::memory_order_acquire), 1u));
+			multiplier, 1u));
 		maxFrameRate = maxFrameRate ? std::min(*maxFrameRate, baseCeiling) : baseCeiling;
 		Logger::Get().Info(fmt::format("VRR pacing: finalCeiling={:.3f} FPS baseCeiling={:.3f} FPS multiplier={}x phaseClock=frontend",
-			ceiling, baseCeiling, _activeFrameGenerationMultiplier.load(std::memory_order_acquire)));
+			ceiling, baseCeiling, multiplier));
 	}
 	_existingBaseFrameRateLimit.store(maxFrameRate.value_or(0.0f), std::memory_order_release);
 	const float minFrameRate = useFrameGeneration ? 0.0f :
