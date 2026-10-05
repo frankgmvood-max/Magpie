@@ -156,7 +156,6 @@
     <ClInclude Include="OpticalFlowResolution.h" />
     <ClInclude Include="OpticalFlowHistory.h" />
     <ClInclude Include="VrrPresentationClock.h" />
-    <ClInclude Include="VrrDriverDiagnostics.h" />
     <ClInclude Include="include\VrrSettings.h" />
     <ClInclude Include="AmdOpticalFlowProvider.h" />
     <ClInclude Include="FrameGuidanceDiagnostics.h" />

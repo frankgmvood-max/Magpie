@@ -6,7 +6,6 @@
 #include "Logger.h"
 #include "ScalingWindow.h"
 #include "Win32Helper.h"
-#include "VrrDriverDiagnostics.h"
 
 namespace Magpie {
 
@@ -306,8 +305,6 @@ bool AdaptivePresenter::EndFrame(bool waitForGpu) noexcept {
 		FrameTrace::Presentation(tracePresent, FrameTrace::Tick(), presentResult,
 			reinterpret_cast<uintptr_t>(_dxgiSwapChain.get()));
 		_lastPresentedFrameCount = presentResult == S_OK ? 1u : 0u;
-		if (presentResult == S_OK && ScalingWindow::Get().Options().isVRREnabled && ++_vrrSuccessfulPresents == 120)
-			LogVrrDriverState(_deviceResources->GetD3DDevice(), _dxgiSwapChain.get(), ScalingWindow::Get().RendererRect());
 		if (presentResult == DXGI_STATUS_OCCLUDED) {
 			++_presentOccludedCount;
 			if (ShouldLogPresentationDiagnostic(_presentOccludedCount)) {

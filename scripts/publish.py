@@ -21,6 +21,7 @@ argParser.add_argument("--version-major", type=int, default=0)
 argParser.add_argument("--version-minor", type=int, default=0)
 argParser.add_argument("--version-patch", type=int, default=0)
 argParser.add_argument("--version-string", default="")
+argParser.add_argument("--release-symbols", action="store_true", help="Keep optimized release PDBs for native crash analysis")
 argParser.add_argument("--pfx-path", default="")
 argParser.add_argument("--pfx-password", default="")
 args = argParser.parse_args()
@@ -61,7 +62,7 @@ versionStrProp = "" if args.version_string == "" else f";VersionString={args.ver
 
 msbuildProperties = (
     f"-p:RestorePackagesConfig=true;Configuration=Release;Platform={args.platform};"
-    f"DisablePDB=true;UseClangCL={args.compiler == 'ClangCL'};"
+    f"DisablePDB={not args.release_symbols};GenerateReleaseSymbols={args.release_symbols};UseClangCL={args.compiler == 'ClangCL'};"
     f"UseNativeMicroArch={args.use_native_march};"
     f"OutDir={os.getcwd()}\\publish\\{args.platform}\\;"
     f"CommitId={commitId}{versionNumProps}{versionStrProp}"

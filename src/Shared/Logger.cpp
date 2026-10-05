@@ -25,11 +25,9 @@ bool Logger::Initialize(spdlog::level::level_enum logLevel, std::wstring logFile
 		_logger->set_level(logLevel);
 		_logger->set_pattern("%Y-%m-%d %H:%M:%S.%e|%l|%s:%#|%!|%v");
 		_logger->flush_on(spdlog::level::warn);
-#ifdef _DEBUG
-		spdlog::flush_every(5s);
-#else
-		spdlog::flush_every(30s);
-#endif
+		// Keep startup evidence across a native runtime crash. The background
+		// flush is once per second, not an extra disk write on every frame.
+		spdlog::flush_every(1s);
 	} catch (const spdlog::spdlog_ex&) {
 		return false;
 	}

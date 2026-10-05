@@ -13,3 +13,7 @@ foreach($test in @('VrrPolicyTests','VrrWarpTests')) {
     & "$output/$test.exe"
     if($LASTEXITCODE) { throw "Test failed: $test" }
 }
+& cl.exe /nologo /std:c++20 /EHsc /utf-8 /MT /O2 /W4 /WX "$PSScriptRoot/CrashReporterTests.cpp" "/Fe:$output/CrashReporterTests.exe" "/Fo:$output/CrashReporterTests.obj" shell32.lib dbghelp.lib
+if ($LASTEXITCODE) { throw 'Compile failed: native crash reporter' }
+& "$output/CrashReporterTests.exe"
+if ($LASTEXITCODE) { throw 'Test failed: native crash reporter' }

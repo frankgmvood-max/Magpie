@@ -44,7 +44,6 @@ private:
 	bool _frameCapacityBusy = false;
 	bool _isCompositionSwapChain = false;
 	UINT _swapChainFlags = 0;
-	uint64_t _vrrSuccessfulPresents = 0;
 	CompositionSwapChainAttachment _compositionAttachment;
 	ReflexController* _reflex = nullptr;
 	uint64_t _reflexFrameId = 0;

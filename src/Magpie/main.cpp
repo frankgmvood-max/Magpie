@@ -20,6 +20,7 @@
 #include "TouchHelper.h"
 #include "CommonSharedConstants.h"
 #include "Logger.h"
+#include "CrashReporter.h"
 #include <shellapi.h>
 
 using namespace Magpie;
@@ -86,6 +87,8 @@ int APIENTRY wWinMain(
 	_In_ wchar_t* /*lpCmdLine*/,
 	_In_ int /*nCmdShow*/
 ) {
+	int crashHelperExit = 0;
+	if (CrashReporter::TryRunHelper(crashHelperExit)) return crashHelperExit;
 #ifdef _DEBUG
 	SetThreadDescription(GetCurrentThread(), L"Magpie-主线程");
 #endif
@@ -114,6 +117,21 @@ int APIENTRY wWinMain(
 	InitializeLogger(mode == Normal ?
 		CommonSharedConstants::LOG_PATH :
 		CommonSharedConstants::REGISTER_TOUCH_HELPER_LOG_PATH);
+	if (mode == Normal) {
+		const auto exe = Win32Helper::GetExePath();
+		const auto crashDirectory = exe.parent_path() / L"crashes";
+		if (CrashReporter::Start(exe, crashDirectory,
+#ifdef MP_VERSION_STRING
+			STRINGIFY(MP_VERSION_STRING)
+#else
+			"dev"
+#endif
+		)) {
+			Logger::Get().Info("Native crash reporter ready: local crashes folder, separate dump process");
+		} else {
+			Logger::Get().Win32Warn("Native crash reporter could not start; Windows crash reporting remains available");
+		}
+	}
 
 	Logger::Get().Info(fmt::format("程序启动\n\t版本: {}\n\tOS 版本: {}\n\t管理员: {}",
 #ifdef MP_VERSION_STRING
@@ -126,6 +144,7 @@ int APIENTRY wWinMain(
 		Win32Helper::GetOSVersion().ToString<char>(),
 		Win32Helper::IsProcessElevated() ? "是" : "否"
 	));
+	Logger::Get().Flush();
 
 	if (mode == RegisterTouchHelper) {
 		// 使 TouchHelper 获得 UIAccess 权限
@@ -142,6 +161,7 @@ int APIENTRY wWinMain(
 	if (!app.Initialize(arguments)) {
 		return 0;
 	}
+	CrashReporter::ReinstallFilter();
 
 	return app.Run();
 }

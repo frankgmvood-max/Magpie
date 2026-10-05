@@ -116,6 +116,7 @@
       <SubType>Code</SubType>
     </ClInclude>
     <ClInclude Include="AdaptersService.h" />
+    <ClInclude Include="..\Shared\CrashReporter.h" />
     <ClInclude Include="AppSettings.h" />
     <ClInclude Include="ErrorService.h" />
     <ClInclude Include="ErrorGuidance.h" />
