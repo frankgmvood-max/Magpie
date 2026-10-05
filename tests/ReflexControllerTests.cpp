@@ -135,7 +135,7 @@ static void TestPauseAndFailure() {
 	absent.Initialize(nullptr);
 	Require(absent.BeginCapture() == 0 && !absent.Available(), "unsupported path must stay inactive");
 	for (const auto* failure : { "on", "query", "sleep", "sim-start", "sim-end", "render-start", "render-end",
-		"queue", "fg-start", "fg-end", "front-start", "front-end", "generated-start", "real-end" }) {
+	}) {
 		ReflexController reflex;
 		auto fake = std::make_unique<FakeDriver>();
 		auto* driver = fake.get();
@@ -177,6 +177,47 @@ static void TestPauseAndFailure() {
 	reflex.CompleteCapture();
 	Require(driver->Count("sleep") == 2 && driver->Count("on") == 2 && driver->Count("off") == 1,
 		"pause/resume must configure once without repeated polling sleeps");
+}
+
+static void TestOptionalAsyncFailures() {
+	for (const auto* failure : { "queue", "fg-start", "fg-end", "front-start", "front-end",
+		"generated-start", "generated-end", "real-start", "real-end" }) {
+		ReflexController reflex;
+		auto fake = std::make_unique<FakeDriver>();
+		auto* driver = fake.get();
+		driver->failure = failure;
+		reflex.Initialize(std::move(fake), { .minimumIntervalUs = 14706 });
+		reflex.RegisterGenerationQueue(nullptr);
+		const auto frame = reflex.BeginCapture(10);
+		reflex.BeginCaptureRender();
+		const auto present = reflex.NextPresentId();
+		reflex.Generation(nullptr, frame, present, true);
+		reflex.Generation(nullptr, frame, present, false);
+		Present(reflex, frame, present, true);
+		Present(reflex, frame, present, false);
+		reflex.CompleteCapture();
+		Require(!reflex.AsyncMarkersAvailable() && reflex.Available() && reflex.PacingAvailable(),
+			"optional async failure must preserve ordinary Reflex and its accepted cap");
+		Require(driver->Count("failure") == 1 && driver->Count("off") == 0 && driver->settings.size() == 1,
+			"optional failure must log once without re-entering SetSleepMode during FG");
+		const auto beforeAsync = driver->events.size();
+		for (int retry = 0; retry < 100; ++retry) {
+			reflex.RegisterGenerationQueue(nullptr);
+			reflex.Generation(nullptr, frame, present, true);
+			Present(reflex, frame, present, false);
+		}
+		Require(driver->events.size() == beforeAsync, "failed async tracking must never be probed again");
+		Require(reflex.BeginCapture(11) == 11 && driver->Count("sleep") == 2,
+			"generation failure must not lose the next base capture or normal markers");
+		reflex.CompleteCapture();
+		reflex.SetPresentationAvailable(false);
+		reflex.SetPresentationAvailable(true);
+		Require(!reflex.AsyncMarkersAvailable() && reflex.PacingAvailable(),
+			"resize/resume must restore ordinary pacing without retrying broken async tracking");
+		reflex.Stop();
+		Require(driver->Count("off") == 2 && reflex.CanUseAsync(),
+			"actual pause and stop must still clear the driver cap normally");
+	}
 }
 
 static void TestSleepDoesNotBlockPresentOrStop() {
@@ -297,12 +338,21 @@ static void TestDriverOffIsNotFailure() {
 			"Off query must not synthesize a failure or repeatedly force driver activation");
 		Require(driver->settings.back().minimumIntervalUs == interval && reflex.PacingAvailable() == (interval != 0),
 			"driver Off query must preserve independent accepted interval");
+		const auto frame = reflex.CaptureFrameId();
+		const auto present = reflex.NextPresentId();
+		reflex.RegisterGenerationQueue(nullptr);
+		reflex.Generation(nullptr, frame, present, true);
+		Present(reflex, frame, present, false);
+		Require(!reflex.AsyncMarkersAvailable() && driver->Count("queue") == 0 &&
+			driver->Count("fg-start") == 0 && driver->Count("real-start") == 0,
+			"driver Off must skip optional async APIs while preserving accepted Sleep/cap");
 		reflex.SetPresentationAvailable(false);
 		Require(reflex.State() == ReflexState::Paused, "presentation pause must differ from driver Off");
 		driver->actualOn = true;
 		reflex.SetPresentationAvailable(true);
 		Require(reflex.State() == ReflexState::Active && driver->settings.back().minimumIntervalUs == interval,
 			"presentation recovery can re-query and restore the requested limit");
+		Require(reflex.AsyncMarkersAvailable(), "successful activation can enable previously unattempted async tracking");
 		reflex.Stop();
 		Require(reflex.State() == ReflexState::Stopped, "explicit stop must differ from driver failure");
 	}
@@ -399,6 +449,7 @@ int main() {
 	try {
 		TestFrameLifecycle();
 		TestPauseAndFailure();
+		TestOptionalAsyncFailures();
 		TestSleepDoesNotBlockPresentOrStop();
 		TestOrdinaryFrameLimit();
 		TestCaptureRenderBoundaries();
@@ -408,7 +459,7 @@ int main() {
 		TestCandidateAcrossPause();
 		TestPauseDuringSleepAndClearQueryFailure();
 		TestUnsupportedZeroCapCanFallback();
-		std::cout << "PASS: Reflex 2x/3x/4x IDs, capture retries, capture GPU boundaries, rejected/staged input, skipped interpolation, FIFO IDs, 14 driver failure points, concurrent Sleep/Present/Stop; ordinary frame limits, same-target deduplication, Off-query distinction and pause/resume\n";
+		std::cout << "PASS: Reflex 2x/3x/4x IDs, capture retries, capture GPU boundaries, rejected/staged input, FIFO IDs, 7 core and 9 optional async failure points, concurrent Sleep/Present/Stop; preserved caps, no async retries, Off-query gating and pause/resume\n";
 		return 0;
 	} catch (const std::exception& error) {
 		std::cerr << error.what() << '\n';

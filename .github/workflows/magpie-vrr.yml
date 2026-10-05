@@ -32,7 +32,7 @@ jobs:
           path: ~/.conan2/p
           key: Conan-VRR-x64-${{ hashFiles('src/**/conanfile.txt') }}
       - name: Build full Magpie 0.6.9 with VRR and optical flow scale
-        run: python scripts/publish.py --platform=x64 --compiler=MSVC --version-major=0 --version-minor=6 --version-patch=9 --version-string=0.6.9-vrr1
+        run: python scripts/publish.py --platform=x64 --compiler=MSVC --version-major=0 --version-minor=6 --version-patch=9 --version-string=0.6.9-vrr2
       - uses: actions/cache/save@v6
         if: always() && steps.conan-cache.outputs.cache-hit != 'true'
         with:
@@ -51,6 +51,6 @@ jobs:
         run: python scripts/Package-VrrUpdate.py
       - uses: actions/upload-artifact@v7
         with:
-          name: Magpie-0.6.9-VRR-x64
-          path: dist/Magpie-0.6.9-VRR-update-x64.zip
+          name: Magpie-0.6.9-VRR2-x64
+          path: dist/Magpie-0.6.9-VRR2-update-x64.zip
           if-no-files-found: error

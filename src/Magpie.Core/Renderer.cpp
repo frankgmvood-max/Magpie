@@ -461,16 +461,6 @@ ScalingError Renderer::Initialize(HWND hwndAttach, OverlayOptions& overlayOption
 	}
 
 	const auto& pacingOptions = ScalingWindow::Get().Options();
-	const bool ordinaryReflex = !frameGeneration.HasFrameGeneration() &&
-		pacingOptions.isFrontEdgeSyncEnabled && pacingOptions.frameSyncMode == FrameSyncMode::Reflex &&
-		!pacingOptions.IsBenchmarkMode();
-	if ((frameGeneration.first == FrameGenerationEffectKind::DLSS || ordinaryReflex) &&
-		_presenter->UsesFrameLatencyWaitableObject()) {
-		_reflex.Initialize(CreateNvReflexDriver(_frontendResources.GetD3DDevice()));
-		_presenter->SetReflexController(&_reflex);
-	} else if (frameGeneration.first == FrameGenerationEffectKind::DLSS) {
-		Logger::Get().Info("DLSSFG Reflex: DXGI presentation required; enable DirectFlip to use Reflex");
-	}
 	bool frontEdgeSupported = true;
 #ifdef MP_USE_COMPSWAPCHAIN
 	frontEdgeSupported = false;
@@ -482,6 +472,7 @@ ScalingError Renderer::Initialize(HWND hwndAttach, OverlayOptions& overlayOption
 		frameGeneration.first == FrameGenerationEffectKind::DLSS, _isXeSSFrameGenerationActive,
 		frontEdgeSupported, pacingOptions.IsBenchmarkMode());
 	_frameSyncEnabled = _frameSyncBackend != FrameSyncBackend::None;
+	_InitializeReflex();
 	if (_frameSyncEnabled || frameGeneration.first == FrameGenerationEffectKind::DLSS) {
 		_frameSyncConsumedEvent.reset(CreateEventW(nullptr, FALSE, FALSE, nullptr));
 		if (!_frameSyncConsumedEvent) {
@@ -1355,6 +1346,21 @@ void Renderer::_UpdateOverlayRefreshRate() noexcept {
 		std::chrono::duration<double, std::milli>(_overlayPresentationClock.Interval()).count()));
 }
 
+
+void Renderer::_InitializeReflex() noexcept {
+	// DLSS FG does not opt into a separate driver pacing/marker API. Honor the
+	// explicit frame-sync selection, including disabled sync and benchmark mode.
+	if (_frameSyncBackend != FrameSyncBackend::Reflex) {
+		Logger::Get().Info("Reflex disabled: frame sync did not request Reflex; DLSS FG and VRR pacing remain independent");
+		return;
+	}
+	if (!_presenter->UsesFrameLatencyWaitableObject()) {
+		Logger::Get().Info("Reflex unavailable: DXGI presentation required; using Async base pacing");
+		return;
+	}
+	_reflex.Initialize(CreateNvReflexDriver(_frontendResources.GetD3DDevice()));
+	_presenter->SetReflexController(&_reflex);
+}
 
 double Renderer::_FrameSyncFrameRate() const noexcept {
 	const auto& options = ScalingWindow::Get().Options();

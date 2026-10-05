@@ -158,6 +158,7 @@ private:
 	uint32_t _configuredFrameGenerationMultiplier = 1;
 	std::atomic<double> _presentationRefreshRate = 60.0;
 	std::atomic<double> _existingBaseFrameRateLimit = 0.0;
+	void _InitializeReflex() noexcept;
 	double _FrameSyncFrameRate() const noexcept;
 	FrontEdgeSyncClock _frontEdgeClock;
 	std::optional<std::chrono::steady_clock::time_point> _frontendPacingDeadline;

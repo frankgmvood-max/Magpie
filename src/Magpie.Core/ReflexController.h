@@ -89,6 +89,9 @@ public:
 		return state == ReflexPacingState::Configuring || state == ReflexPacingState::CleanupFailed;
 	}
 	bool CanResume() const noexcept { return _driver && !_stopped.load(); }
+	bool AsyncMarkersAvailable() const noexcept {
+		return _Usable() && Available() && !_asyncMarkersDisabled.load();
+	}
 
 	// Backend only. Polls with no GPU work retain the slept candidate. A pixel
 	// comparison that rejects an input finishes its own render attempt instead
@@ -137,22 +140,23 @@ public:
 		_captureFrameId = 0;
 	}
 	void RegisterGenerationQueue(ID3D12CommandQueue* queue) noexcept {
-		if (_Usable()) _Check("NotifyOutOfBandCommandQueue", _driver->RegisterGenerationQueue(queue));
+		if (AsyncMarkersAvailable())
+			_CheckAsync("NotifyOutOfBandCommandQueue", _driver->RegisterGenerationQueue(queue));
 	}
 	void Generation(ID3D12CommandQueue* queue, uint64_t frameId,
 		uint64_t presentId, bool start) noexcept {
-		if (frameId && presentId && _Usable())
-			_Check("D3D12 async generation marker", _driver->Generation(queue, frameId, presentId, start));
+		if (frameId && presentId && AsyncMarkersAvailable())
+			_CheckAsync("D3D12 async generation marker", _driver->Generation(queue, frameId, presentId, start));
 	}
 	// Frontend only. IDs come from the immutable published ring slot, never
 	// from the backend's currently running (possibly newer) capture.
 	void FrontendRender(uint64_t frameId, uint64_t presentId, bool start) noexcept {
-		if (frameId && presentId && _Usable())
-			_Check("D3D11 async render marker", _driver->FrontendRender(frameId, presentId, start));
+		if (frameId && presentId && AsyncMarkersAvailable())
+			_CheckAsync("D3D11 async render marker", _driver->FrontendRender(frameId, presentId, start));
 	}
 	void Present(uint64_t frameId, uint64_t presentId, bool generated, bool start) noexcept {
-		if (frameId && presentId && _Usable())
-			_Check("D3D11 async present marker", _driver->Present(frameId, presentId, generated, start));
+		if (frameId && presentId && AsyncMarkersAvailable())
+			_CheckAsync("D3D11 async present marker", _driver->Present(frameId, presentId, generated, start));
 	}
 
 private:
@@ -188,6 +192,13 @@ private:
 		_StopLocked(operation, status);
 		return false;
 	}
+	void _CheckAsync(const char* operation, int status) noexcept {
+		// Async tracking is optional. A rejected marker must not call SetSleepMode
+		// in the middle of FG submission, revoke its cap, or repeatedly probe the
+		// unsupported API. Ordinary Sleep/base markers remain usable.
+		if (status && !_asyncMarkersDisabled.exchange(true))
+			_driver->ReportFailure(operation, status);
+	}
 	void _StopLocked(const char* operation, int status) noexcept {
 		if (!_driver || _stopped.exchange(true)) return;
 		_pacingState.store(ReflexPacingState::Configuring);
@@ -212,6 +223,7 @@ private:
 	uint64_t _captureRevision = 0;
 	std::atomic<bool> _presentationAvailable = false;
 	std::atomic<bool> _stopped = false;
+	std::atomic<bool> _asyncMarkersDisabled = false;
 	uint64_t _nextFrameId = 0;
 	uint64_t _nextPresentId = 0;
 	uint64_t _captureFrameId = 0;

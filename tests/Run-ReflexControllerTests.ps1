@@ -13,6 +13,17 @@ Enter-VsDevShell -VsInstallPath $reflexVs -SkipAutomaticLocation -DevCmdArgument
 if ($LASTEXITCODE) { throw 'Reflex controller test compilation failed' }
 & "$reflexOutput/reflex-controller-tests.exe"
 if ($LASTEXITCODE) { throw 'Reflex controller test failed' }
+& python (Join-Path $PSScriptRoot 'prepare_reflex_startup_test.py') $reflexOutput
+if ($LASTEXITCODE) { throw 'Reflex startup production extraction failed' }
+foreach ($reflexSource in @('NvapiCallGuardTests.cpp', 'reflex-startup.cpp')) {
+    $reflexSourcePath = if ($reflexSource -eq 'reflex-startup.cpp') { Join-Path $reflexOutput $reflexSource } else { Join-Path $PSScriptRoot $reflexSource }
+    $reflexTestName = [IO.Path]::GetFileNameWithoutExtension($reflexSource)
+    & cl.exe /nologo /std:c++20 /EHsc /utf-8 /MT /O2 /W4 /WX "/I$reflexRepo/src/Magpie.Core" `
+        $reflexSourcePath "/Fe:$reflexOutput/$reflexTestName.exe" "/Fo:$reflexOutput/$reflexTestName.obj"
+    if ($LASTEXITCODE) { throw "Reflex regression compilation failed: $reflexSource" }
+    & "$reflexOutput/$reflexTestName.exe"
+    if ($LASTEXITCODE) { throw "Reflex regression failed: $reflexSource" }
+}
 & python (Join-Path $PSScriptRoot 'prepare_reflex_marker_boundary_test.py') $reflexOutput
 if ($LASTEXITCODE) { throw 'Reflex marker production extraction failed' }
 foreach ($reflexTest in @('reflex-marker-boundaries', 'late-copy-marker', 'late-capacity')) {
