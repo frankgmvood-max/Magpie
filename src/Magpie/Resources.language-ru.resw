@@ -1078,7 +1078,8 @@
   <data name="Home_NoFocusLoss.Header" xml:space="preserve"><value>NoFocusLoss</value></data>
   <data name="Home_NoFocusLoss.Description" xml:space="preserve"><value>Сохраняет активность окна масштабирования для драйвера и ввод в игре. Работает со всеми фильтрами и профилями; отключается при остановке масштабирования. Изменения применяются после его перезапуска.</value></data>
   <data name="Home_NoFocusLoss_Mode.Header" xml:space="preserve"><value>Режим</value></data>
-  <data name="Home_NoFocusLoss_Mode.Description" xml:space="preserve"><value>Совместимость также блокирует деактивацию окна вывода. При переходе в другое приложение NoFocusLoss временно приостанавливается.</value></data>
+  <data name="Home_NoFocusLoss_Mode.Description" xml:space="preserve"><value>Классический режим удерживает окно вывода активным на весь сеанс и блокирует деактивацию перед другими оконными обработчиками. Остальные режимы приостанавливаются при смене приложения. Ввод Magpie всегда использует настоящий фокус.</value></data>
   <data name="Home_NoFocusLoss_Foreground.Content" xml:space="preserve"><value>Только активное окно</value></data>
   <data name="Home_NoFocusLoss_Compatibility.Content" xml:space="preserve"><value>Совместимость NoFocusLoss</value></data>
+  <data name="Home_NoFocusLoss_Classic.Content" xml:space="preserve"><value>Классический (как внешний NoFocusLoss)</value></data>
 </root>

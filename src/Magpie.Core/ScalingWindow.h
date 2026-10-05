@@ -5,6 +5,7 @@
 #include "FramePresentationTiming.h"
 #include "SrcTracker.h"
 #include "NoFocusLossController.h"
+#include <chrono>
 #include "WindowBase.h"
 #include <deque>
 
@@ -255,6 +256,7 @@ private:
 	std::optional<std::pair<std::vector<EffectOption>, FrameRefreshSettings>> _pendingManualParameterRestart;
 	std::unique_ptr<class Renderer> _renderer;
 	NoFocusLossController _noFocusLoss;
+	std::chrono::steady_clock::time_point _nextNoFocusLossReport{};
 	std::unique_ptr<class CursorManager> _cursorManager;
 
 	class SrcTracker _srcTracker;

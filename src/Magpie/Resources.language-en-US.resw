@@ -1815,7 +1815,8 @@
   <data name="Home_NoFocusLoss.Header" xml:space="preserve"><value>NoFocusLoss</value></data>
   <data name="Home_NoFocusLoss.Description" xml:space="preserve"><value>Keep the scaling window active for the driver while preserving game input. Applies to every filter and profile; stops when scaling ends. Restart scaling to apply.</value></data>
   <data name="Home_NoFocusLoss_Mode.Header" xml:space="preserve"><value>Mode</value></data>
-  <data name="Home_NoFocusLoss_Mode.Description" xml:space="preserve"><value>Compatibility also keeps the output window from processing deactivation. Switching to another application temporarily suspends NoFocusLoss.</value></data>
+  <data name="Home_NoFocusLoss_Mode.Description" xml:space="preserve"><value>Classic keeps the output window active for the whole scaling session and blocks deactivation before other window handlers. The other modes suspend when switching applications. Magpie input always uses real focus.</value></data>
   <data name="Home_NoFocusLoss_Foreground.Content" xml:space="preserve"><value>Active window only</value></data>
   <data name="Home_NoFocusLoss_Compatibility.Content" xml:space="preserve"><value>NoFocusLoss compatibility</value></data>
+  <data name="Home_NoFocusLoss_Classic.Content" xml:space="preserve"><value>Classic (like external NoFocusLoss)</value></data>
 </root>

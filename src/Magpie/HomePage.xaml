@@ -331,6 +331,7 @@
 							<ComboBox SelectedIndex="{x:Bind ViewModel.NoFocusLossModeIndex, Mode=TwoWay}" MinWidth="200">
 								<ComboBoxItem x:Uid="Home_NoFocusLoss_Foreground" />
 								<ComboBoxItem x:Uid="Home_NoFocusLoss_Compatibility" />
+								<ComboBoxItem x:Uid="Home_NoFocusLoss_Classic" />
 							</ComboBox>
 						</local:SettingsCard>
 					</local:SettingsExpander.Items>

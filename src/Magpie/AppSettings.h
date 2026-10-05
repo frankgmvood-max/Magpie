@@ -64,7 +64,7 @@ struct _AppSettingsData {
 	float _vrrFrameRate = 0.0f;
 	uint32_t _vrrOutputMode = 0;
 	bool _isNoFocusLossEnabled = true;
-	uint32_t _noFocusLossMode = 1;
+	uint32_t _noFocusLossMode = 2;
 
 	ToolbarState _fullscreenInitialToolbarState = ToolbarState::AutoHide;
 	ToolbarState _windowedInitialToolbarState = ToolbarState::AutoHide;
@@ -373,7 +373,7 @@ public:
 	}
 	uint32_t NoFocusLossModeIndex() const noexcept { return _noFocusLossMode; }
 	void NoFocusLossModeIndex(uint32_t value) noexcept {
-		_noFocusLossMode = value <= 1 ? value : 1;
+		_noFocusLossMode = value <= 2 ? value : 2;
 		SaveAsync();
 	}
 

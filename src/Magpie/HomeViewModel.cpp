@@ -543,7 +543,7 @@ int32_t HomeViewModel::NoFocusLossModeIndex() const noexcept {
 	return int32_t(AppSettings::Get().NoFocusLossModeIndex());
 }
 void HomeViewModel::NoFocusLossModeIndex(int32_t value) {
-	if (value < 0 || value > 1) return;
+	if (value < 0 || value > 2) return;
 	AppSettings::Get().NoFocusLossModeIndex(uint32_t(value));
 	RaisePropertyChanged(L"NoFocusLossModeIndex");
 }

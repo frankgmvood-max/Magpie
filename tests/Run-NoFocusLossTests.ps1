@@ -21,7 +21,7 @@ foreach ($noFocusSource in @('buffer.c', 'hook.c', 'trampoline.c', 'hde/hde64.c'
 }
 & cl.exe /nologo /std:c++20 /EHsc /utf-8 /MT /O2 /W4 /WX "/I$noFocusRepo/src/Magpie.Core" `
     "$PSScriptRoot/NoFocusLossNativeTests.cpp" "$noFocusRepo/src/Magpie.Core/NoFocusLossController.cpp" `
-    $noFocusObjects "/Fe:$noFocusOutput/native.exe" "/Fo:$noFocusOutput/" /link user32.lib
+    $noFocusObjects "/Fe:$noFocusOutput/native.exe" "/Fo:$noFocusOutput/" /link user32.lib comctl32.lib
 if ($LASTEXITCODE) { throw 'NoFocusLoss native test compilation failed' }
 & "$noFocusOutput/native.exe"
 if ($LASTEXITCODE) { throw 'NoFocusLoss native tests failed' }

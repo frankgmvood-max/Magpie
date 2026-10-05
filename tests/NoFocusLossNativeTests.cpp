@@ -1,4 +1,5 @@
 #include "NoFocusLossController.h"
+#include <CommCtrl.h>
 #include <atomic>
 #include <chrono>
 #include <iostream>
@@ -9,6 +10,19 @@
 
 using namespace Magpie;
 namespace {
+WNDPROC originalOutputProcedure = nullptr;
+unsigned deactivationReachedOldHandler = 0;
+unsigned inputReachedOldHandler = 0;
+NoFocusLossController* stopDuringDestroy = nullptr;
+LRESULT CALLBACK ExistingOutputProcedure(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+	if (message == WM_ACTIVATEAPP && !wParam) ++deactivationReachedOldHandler;
+	if (message == WM_KEYDOWN) ++inputReachedOldHandler;
+	if (message == WM_DESTROY && stopDuringDestroy) stopDuringDestroy->Stop();
+	return CallWindowProcW(originalOutputProcedure, hwnd, message, wParam, lParam);
+}
+LRESULT CALLBACK OtherSubclass(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR) {
+	return DefSubclassProc(hwnd, message, wParam, lParam);
+}
 void Check(bool condition, const char* message) {
 	if (!condition) throw std::runtime_error(message);
 }
@@ -142,6 +156,9 @@ int wmain(int argc, wchar_t** argv) {
 		if (argc == 3 && std::wstring(argv[1]) == L"--source-window") return RunSource(argv[2]);
 		SourceProcess source;
 		Window output(L"NoFocusLoss scaling output");
+		originalOutputProcedure = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(output.value, GWLP_WNDPROC,
+			reinterpret_cast<LONG_PTR>(&ExistingOutputProcedure)));
+		Check(originalOutputProcedure != nullptr, "Existing output procedure installation failed");
 		Window settings(L"NoFocusLoss settings/input host");
 		NoFocusLossController controller;
 		NoFocusLossSettings options;
@@ -152,14 +169,24 @@ int wmain(int argc, wchar_t** argv) {
 		Check(!controller.Start(nullptr, source.window, options), "Invalid output accepted");
 		Check(!controller.Start(output.value, nullptr, options), "Invalid source accepted");
 		Check(!controller.Start(source.window, output.value, options), "Foreign-process output accepted");
-		for (const auto mode : {NoFocusLossMode::ForegroundOnly, NoFocusLossMode::Compatibility}) {
+		for (const auto mode : {NoFocusLossMode::ForegroundOnly, NoFocusLossMode::Compatibility, NoFocusLossMode::ClassicCompatibility}) {
 			options.mode = mode;
 			Focus(source.window);
 			Check(controller.Start(output.value, source.window, options), "Native hook start failed");
 			Check(controller.IsArmed() && controller.IsSpoofing(), "Valid source did not arm/spoof");
 			Check(GetForegroundWindow() == output.value, "USER32 foreground was not spoofed");
 			Check(GetActualForegroundWindow() == source.window, "Internal Magpie focus was spoofed");
-			const bool compatibility = mode == NoFocusLossMode::Compatibility;
+			const bool compatibility = mode != NoFocusLossMode::ForegroundOnly;
+			const bool classic = mode == NoFocusLossMode::ClassicCompatibility;
+			const auto initial = controller.Observe();
+			Check(initial.actual == source.window && initial.perceived == output.value && initial.shouldSpoof &&
+				initial.subclassRegistered == classic && initial.calls > 0 && initial.spoofed > 0, "USER32 observation mismatch");
+			const unsigned oldDeactivation = deactivationReachedOldHandler;
+			SendMessageW(output.value, WM_ACTIVATEAPP, FALSE, 0);
+			Check(deactivationReachedOldHandler == oldDeactivation + (classic ? 0u : 1u), "Deactivation reached old procedure before classic filter");
+			const unsigned oldInput = inputReachedOldHandler;
+			SendMessageW(output.value, WM_KEYDOWN, 'W', 0);
+			Check(inputReachedOldHandler == oldInput + 1, "Outer window subclass blocked keyboard input");
 			for (const UINT message : {UINT(WM_NCACTIVATE), UINT(WM_ACTIVATEAPP), UINT(WM_IME_SETCONTEXT), UINT(WM_ACTIVATE), UINT(WM_KILLFOCUS)}) {
 				Check(controller.SuppressMessage(message, 0) == compatibility, "Deactivation policy mismatch");
 			}
@@ -179,8 +206,12 @@ int wmain(int argc, wchar_t** argv) {
 			Check(!second.Start(output.value, source.window, options), "Second controller took over live session");
 			Check(controller.IsSpoofing(), "Rejected second controller disturbed active session");
 			Focus(settings.value);
-			Check(!controller.IsSpoofing() && GetForegroundWindow() == settings.value, "Settings/input focus was hidden");
-			Check(!controller.SuppressMessage(WM_KILLFOCUS, 0), "Background deactivation suppressed");
+			Check(GetActualForegroundWindow() == settings.value, "Internal settings/input focus was hidden");
+			Check(controller.IsSpoofing() == classic && GetForegroundWindow() == (classic ? output.value : settings.value), "Classic/conditional foreground policy mismatch");
+			Check(controller.SuppressMessage(WM_KILLFOCUS, 0) == classic, "Classic/conditional deactivation policy mismatch");
+			const auto background = controller.Observe();
+			Check(background.actual == settings.value && background.shouldSpoof == classic &&
+				background.perceived == (classic ? output.value : settings.value), "Background USER32 observation mismatch");
 			Focus(source.window);
 			Check(controller.IsSpoofing() && GetForegroundWindow() == output.value, "Source focus did not resume automatically");
 			ShowWindow(output.value, SW_HIDE);
@@ -193,8 +224,17 @@ int wmain(int argc, wchar_t** argv) {
 			Focus(output.value);
 			Check(controller.IsSpoofing() && GetActualForegroundWindow() == output.value, "Actual output focus rejected");
 			Focus(source.window);
+			if (classic) Check(SetWindowSubclass(output.value, &OtherSubclass, 1, 0), "Unrelated subclass installation failed");
 			controller.Stop();
+			if (classic) {
+				DWORD_PTR data = 0;
+				Check(GetWindowSubclass(output.value, &OtherSubclass, 1, &data), "Stop removed an unrelated window subclass");
+				RemoveWindowSubclass(output.value, &OtherSubclass, 1);
+			}
+			Check(reinterpret_cast<WNDPROC>(GetWindowLongPtrW(output.value, GWLP_WNDPROC)) == &ExistingOutputProcedure,
+				"Stop did not preserve the existing window procedure");
 			Check(!controller.IsArmed() && GetForegroundWindow() == source.window && GetActualForegroundWindow() == source.window, "Stop did not restore USER32 focus");
+			Check(controller.Observe().output == nullptr, "Stopped observation returned a stale window");
 			controller.Stop();
 		}
 		Focus(source.window);
@@ -221,9 +261,12 @@ int wmain(int argc, wchar_t** argv) {
 		}
 		Focus(source.window);
 		Check(controller.Start(output.value, source.window, options), "Destruction test start failed");
+		stopDuringDestroy = &controller;
 		DestroyWindow(output.value);
+		stopDuringDestroy = nullptr;
 		output.value = nullptr;
-		Check(!controller.IsSpoofing() && GetForegroundWindow() == source.window, "Destroyed output HWND returned by hook");
+		Check(!controller.IsArmed() && !controller.IsSpoofing() && GetForegroundWindow() == source.window,
+			"WM_DESTROY stop from inside the subclass chain left stale state");
 		controller.Stop();
 		Window finalOutput(L"NoFocusLoss source shutdown output");
 		Focus(source.window);
@@ -231,7 +274,7 @@ int wmain(int argc, wchar_t** argv) {
 		source.Close();
 		Check(!controller.IsSpoofing() && GetForegroundWindow() == GetActualForegroundWindow(), "Closed source kept stale spoofing alive");
 		controller.Stop();
-		std::cout << "PASS: real USER32 hook, separate source process, both modes, focus suspension/resume, cursor, 100 threaded restarts, 20 HWND recreations and teardown\n";
+		std::cout << "PASS: real USER32 hook, all three modes, persistent classic foreground, outer window subclass ordering, keyboard/cursor, unrelated subclass preservation, observations, 100 threaded restarts, 20 HWND recreations and teardown\n";
 		return 0;
 	} catch (const std::exception& error) {
 		std::cerr << "FAIL: " << error.what() << '\n';

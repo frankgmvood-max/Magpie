@@ -1062,7 +1062,7 @@ void AppSettings::_LoadSettings(const rapidjson::GenericObject<true, rapidjson::
 	if (_vrrOutputMode > 1) _vrrOutputMode = 0;
 	JsonHelper::ReadBool(root, "noFocusLossEnabled", _isNoFocusLossEnabled);
 	JsonHelper::ReadUInt(root, "noFocusLossMode", _noFocusLossMode);
-	if (_noFocusLossMode > 1) _noFocusLossMode = 1;
+	if (_noFocusLossMode > 2) _noFocusLossMode = 2;
 	JsonHelper::ReadBool(root, "disableFP16", _isFP16Disabled);
 
 	[[maybe_unused]] bool result = ScalingModesService::Get().Import(root, true);

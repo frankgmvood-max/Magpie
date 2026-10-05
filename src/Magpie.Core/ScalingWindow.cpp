@@ -565,6 +565,7 @@ void ScalingWindow::_CompleteFrontendRender(
 		_Show();
 		if (_options.noFocusLoss.enabled) {
 			if (_noFocusLoss.Start(Handle(), _srcTracker.Handle(), _options.noFocusLoss)) {
+				_nextNoFocusLossReport = std::chrono::steady_clock::now() + std::chrono::seconds(1);
 				Logger::Get().Info(fmt::format("NoFocusLoss armed after first output frame: mode={} output={:#x} source={:#x} scope={} cursorHook=false internalForeground=real",
 					uint32_t(_options.noFocusLoss.mode), uintptr_t(Handle()), uintptr_t(_srcTracker.Handle()),
 					_noFocusLoss.IsSpoofing() ? "active" : "suspended"));
@@ -576,6 +577,18 @@ void ScalingWindow::_CompleteFrontendRender(
 		ShowToast(GetLocalizedString(L"Message_ScalingStarted"));
 		const auto& notice = _renderer->MotionConfigurationNotice();
 		if (!notice.empty()) ShowToast(notice);
+	}
+	if (_noFocusLoss.IsArmed()) {
+		const auto now = std::chrono::steady_clock::now();
+		if (now >= _nextNoFocusLossReport) {
+			_nextNoFocusLossReport = now + std::chrono::seconds(1);
+			const auto state = _noFocusLoss.Observe();
+			Logger::Get().Info(fmt::format(
+				"NoFocusLoss status: mode={} expectedSpoof={} actual={:#x} APIsees={:#x} output={:#x} callsIncludingProbe={} spoofed={} suppressedMessages={} subclassRegistered={} telemetry=USER32-only",
+				uint32_t(_options.noFocusLoss.mode), state.shouldSpoof, uintptr_t(state.actual),
+				uintptr_t(state.perceived), uintptr_t(state.output), state.calls, state.spoofed,
+				state.suppressedMessages, state.subclassRegistered));
+		}
 	}
 }
 

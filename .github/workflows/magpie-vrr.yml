@@ -35,7 +35,7 @@ jobs:
           path: ~/.conan2/p
           key: Conan-VRR-x64-${{ hashFiles('src/**/conanfile.txt') }}
       - name: Build full Magpie 0.6.9 with global NoFocusLoss, VRR and optical flow scale
-        run: python scripts/publish.py --platform=x64 --compiler=MSVC --version-major=0 --version-minor=6 --version-patch=9 --version-string=0.6.9-vrr4 --release-symbols
+        run: python scripts/publish.py --platform=x64 --compiler=MSVC --version-major=0 --version-minor=6 --version-patch=9 --version-string=0.6.9-vrr5 --release-symbols
       - name: Native crash IPC through the actual Magpie executable entry point
         shell: pwsh
         run: |
@@ -51,7 +51,7 @@ jobs:
       - name: Regression tests
         shell: pwsh
         run: |
-          foreach ($test in @('Run-DlssOpticalFlowTests','Run-Beta6RegressionTests','Run-FrameSyncModesTests','Run-FrameRefreshTests','Run-CursorRefreshTests','Run-ReflexControllerTests','Run-FrontendDropTests','Run-DuplicateFrameTests','Run-DisplayOnlyAdapterTests')) {
+          foreach ($test in @('Run-DlssOpticalFlowTests','Run-Beta6RegressionTests','Run-ParameterInputTests','Run-FrameSyncModesTests','Run-FrameRefreshTests','Run-CursorRefreshTests','Run-ReflexControllerTests','Run-FrontendDropTests','Run-DuplicateFrameTests','Run-DisplayOnlyAdapterTests')) {
             # Isolate intentional failing mutants from the parent LASTEXITCODE.
             # A terminating test error still fails the child PowerShell process.
             & pwsh -NoProfile -File "./tests/$test.ps1"
@@ -61,12 +61,12 @@ jobs:
         run: python scripts/Package-VrrUpdate.py
       - uses: actions/upload-artifact@v7
         with:
-          name: Magpie-0.6.9-VRR4-x64
-          path: dist/Magpie-0.6.9-VRR4-update-x64.zip
+          name: Magpie-0.6.9-VRR5-x64
+          path: dist/Magpie-0.6.9-VRR5-update-x64.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         with:
-          name: Magpie-0.6.9-VRR4-native-symbols
+          name: Magpie-0.6.9-VRR5-native-symbols
           path: |
             publish/x64/Magpie.pdb
             publish/x64/Magpie.Core.pdb
