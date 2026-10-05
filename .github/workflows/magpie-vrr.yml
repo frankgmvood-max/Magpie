@@ -6,7 +6,7 @@ on:
     branches: [upstream-magpie-0.6.9]
   workflow_dispatch:
 concurrency:
-  group: magpie-vrr-${{ github.head_ref || github.ref_name }}
+  group: magpie-vrr-windows-2022-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 jobs:
   windows:
