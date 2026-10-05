@@ -1,3 +1,4 @@
+#define NOMINMAX
 #include "include/NvapiCallGuard.h"
 #include "ReflexController.h"
 #include <chrono>
