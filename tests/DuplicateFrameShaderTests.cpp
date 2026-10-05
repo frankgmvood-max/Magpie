@@ -9,6 +9,7 @@
 #include <iostream>
 #include <limits>
 #include <vector>
+#include "DuplicateFrameCS.h"
 using Microsoft::WRL::ComPtr;
 static void Check(bool value, const char* message) {
 	if (!value) { std::cerr << message << '\n'; std::exit(1); }
@@ -23,17 +24,15 @@ struct Harness {
 	ComPtr<ID3D11UnorderedAccessView> uav;
 	ComPtr<ID3D11SamplerState> sampler;
 	UINT lastResult = 0;
-	Harness(const wchar_t* path) {
+	Harness() {
 		HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_DEBUG,
 			nullptr, 0, D3D11_SDK_VERSION, &device, nullptr, &dc);
 		if (hr == DXGI_ERROR_SDK_COMPONENT_MISSING) hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP,
 			nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &device, nullptr, &dc);
 		Hr(hr); device.As(&debug);
-		ComPtr<ID3DBlob> code, errors;
-		hr = D3DCompileFromFile(path, nullptr, nullptr, "main", "cs_5_0",
-			D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_WARNINGS_ARE_ERRORS | D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors);
-		if (errors) std::cerr << static_cast<const char*>(errors->GetBufferPointer());
-		Hr(hr); Hr(device->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &shader));
+		// Execute the SDK FXC bytecode embedded into Magpie, not a separately
+		// optimized shader recompiled by the machine's system D3DCompiler DLL.
+		Hr(device->CreateComputeShader(DuplicateFrameCS, sizeof(DuplicateFrameCS), nullptr, &shader));
 		D3D11_BUFFER_DESC bd{};
 		bd.ByteWidth = bd.StructureByteStride = 4; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
 		Hr(device->CreateBuffer(&bd, nullptr, &result));
@@ -138,7 +137,7 @@ void main(uint3 tid : SV_GroupThreadID, uint3 gid : SV_GroupID) {
 };
 int wmain(int argc, wchar_t** argv) {
 	Check(argc==2,"Pass the production DuplicateFrameCS.hlsl path");
-	Harness test(argv[1]); unsigned cases=0;
+	Harness test; unsigned cases=0;
 	for (DXGI_FORMAT format : {DXGI_FORMAT_R8G8B8A8_UNORM,DXGI_FORMAT_B8G8R8A8_UNORM,
 		DXGI_FORMAT_R16G16B16A16_FLOAT,DXGI_FORMAT_R32G32B32A32_FLOAT}) {
 		const unsigned component = format==DXGI_FORMAT_R16G16B16A16_FLOAT ? 2u : format==DXGI_FORMAT_R32G32B32A32_FLOAT ? 4u : 1u;

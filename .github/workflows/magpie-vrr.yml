@@ -46,6 +46,9 @@ jobs:
           & $crashTest --helper-exe (Resolve-Path './publish/x64/Magpie.exe').Path
           if ($LASTEXITCODE) { throw 'Actual Magpie crash-helper integration failed' }
           if (Test-Path './publish/x64/magpie.log') { throw 'Crash helper entered regular logger/application startup' }
+      - name: Actual embedded duplicate-filter bytecode on WARP
+        shell: pwsh
+        run: ./tests/Run-DuplicateFrameTests.ps1 -ShaderOnly -ShaderHeader './obj/x64/Release/Magpie.Core/Generated Files/shaders/DuplicateFrameCS.h'
       - uses: actions/cache/save@v6
         if: always() && steps.conan-cache.outputs.cache-hit != 'true'
         with:
