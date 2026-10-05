@@ -22,6 +22,7 @@ struct Harness {
 	ComPtr<ID3D11Buffer> result, readback, constants;
 	ComPtr<ID3D11UnorderedAccessView> uav;
 	ComPtr<ID3D11SamplerState> sampler;
+	UINT lastResult = 0;
 	Harness(const wchar_t* path) {
 		HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_DEBUG,
 			nullptr, 0, D3D11_SDK_VERSION, &device, nullptr, &dc);
@@ -62,7 +63,30 @@ struct Harness {
 		dc->CopyResource(readback.Get(), result.Get());
 		D3D11_MAPPED_SUBRESOURCE mapped{}; Hr(dc->Map(readback.Get(),0,D3D11_MAP_READ,0,&mapped));
 		UINT value=1; std::memcpy(&value,mapped.pData,sizeof(value)); dc->Unmap(readback.Get(),0);
+		lastResult = value;
 		return value==0;
+	}
+	void InspectImages(ID3D11Texture2D* a, ID3D11Texture2D* b,
+		const std::vector<unsigned char>& expected, UINT pitch) {
+		D3D11_TEXTURE2D_DESC td{}; a->GetDesc(&td);
+		std::cerr << "Equal-image failure: format=" << static_cast<unsigned>(td.Format)
+			<< " extent=" << td.Width << 'x' << td.Height << " result=" << lastResult
+			<< " featureLevel=" << static_cast<unsigned>(device->GetFeatureLevel()) << '\n';
+		td.Usage = D3D11_USAGE_STAGING; td.BindFlags = 0; td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		for (auto* texture : {a, b}) {
+			ComPtr<ID3D11Texture2D> staging; Hr(device->CreateTexture2D(&td, nullptr, &staging));
+			dc->CopyResource(staging.Get(), texture);
+			D3D11_MAPPED_SUBRESOURCE mapped{}; Hr(dc->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped));
+			UINT differentRows = 0;
+			for (UINT row = 0; row < td.Height; ++row) {
+				const auto* data = static_cast<const unsigned char*>(mapped.pData) + static_cast<size_t>(row) * mapped.RowPitch;
+				if (std::memcmp(data, expected.data() + static_cast<size_t>(row) * pitch, pitch) != 0) ++differentRows;
+			}
+			dc->Unmap(staging.Get(), 0);
+			std::cerr << "Texture " << (texture == a ? 'A' : 'B') << ": " << differentRows
+				<< " rows differ from CPU fixture\n";
+		}
+		CheckDebug();
 	}
 	void CheckDebug() {
 		if (!debug) { std::cout << "D3D debug layer unavailable; message check skipped.\n"; return; }
@@ -98,7 +122,9 @@ int wmain(int argc, wchar_t** argv) {
 			ComPtr<ID3D11Texture2D> a,b; ComPtr<ID3D11ShaderResourceView> as,bs;
 			Hr(test.device->CreateTexture2D(&td,&initial,&a)); Hr(test.device->CreateTexture2D(&td,&initial,&b));
 			Hr(test.device->CreateShaderResourceView(a.Get(),nullptr,&as)); Hr(test.device->CreateShaderResourceView(b.Get(),nullptr,&bs));
-			Check(test.Duplicate(as.Get(),bs.Get(),w,h,false),"equal RGB images differed"); ++cases;
+			const bool equal = test.Duplicate(as.Get(),bs.Get(),w,h,false);
+			if (!equal) test.InspectImages(a.Get(), b.Get(), image, w * stride);
+			Check(equal,"equal RGB images differed"); ++cases;
 			for (unsigned pixel=0;pixel<w*h;++pixel) {
 				// Exhaust every pixel for small odd images; cover the complete border
 				// and the central pixel across multi-group images as well.
