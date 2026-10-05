@@ -25,8 +25,7 @@ void main(uint3 tid : SV_GroupThreadID, uint3 gid : SV_GroupID) {
 	if (compareAlpha != 0) different = different ||
 		any(tex1.GatherAlpha(sam, pos) != tex2.GatherAlpha(sam, pos));
 	// Each lane owns one flag. Reduce columns without groupshared atomics,
-	// then publish one monotonic flag for the complete 16x16 tile. This also
-	// works on the older WARP implementation used by Windows Server 2022.
+	// then publish one monotonic flag for the complete 16x16 tile.
 	groupDifferent[tid.y * 8 + tid.x] = different ? 1u : 0u;
 	GroupMemoryBarrierWithGroupSync();
 	if (tid.y == 0) {

@@ -88,21 +88,22 @@ struct Harness {
 		}
 		CheckDebug();
 	}
-	void ProbeFailure(const wchar_t* path, ID3D11ShaderResourceView* a, ID3D11ShaderResourceView* b, UINT w, UINT h) {
+	void ProbeFailure(const wchar_t* path, ID3D11ShaderResourceView* a, ID3D11ShaderResourceView* b, UINT w, UINT h, bool alpha) {
 		const UINT zero[4]{}; dc->ClearUnorderedAccessViewUint(uav.Get(), zero);
 		dc->CopyResource(readback.Get(), result.Get());
 		D3D11_MAPPED_SUBRESOURCE mapped{}; Hr(dc->Map(readback.Get(), 0, D3D11_MAP_READ, 0, &mapped));
 		UINT cleared = 1; std::memcpy(&cleared, mapped.pData, sizeof(cleared)); dc->Unmap(readback.Get(), 0);
 		std::cerr << "Clear-only result=" << cleared << '\n';
-		std::cerr << "Production same-SRV duplicate=" << Duplicate(a, a, w, h, false) << " result=" << lastResult << '\n';
+		std::cerr << "Production same-SRV duplicate=" << Duplicate(a, a, w, h, alpha) << " result=" << lastResult << '\n';
 		ComPtr<ID3DBlob> code, errors;
 		Hr(D3DCompileFromFile(path, nullptr, nullptr, "main", "cs_5_0",
 			D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_SKIP_OPTIMIZATION, 0, &code, &errors));
 		Hr(device->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, shader.ReleaseAndGetAddressOf()));
-		std::cerr << "Unoptimized production duplicate=" << Duplicate(a, b, w, h, false) << " result=" << lastResult << '\n';
+		std::cerr << "Unoptimized production duplicate=" << Duplicate(a, b, w, h, alpha) << " result=" << lastResult << '\n';
 		// This probe publishes the same comparison directly, without the group reduction.
 		const char probe[] = R"(
 RWBuffer<uint> result : register(u0);
+cbuffer CompareOptions : register(b0) { uint compareAlpha; };
 Texture2D tex1 : register(t0);
 Texture2D tex2 : register(t1);
 SamplerState sam : register(s0);
@@ -113,13 +114,14 @@ void main(uint3 tid : SV_GroupThreadID, uint3 gid : SV_GroupID) {
     bool different = any(tex1.GatherRed(sam, pos) != tex2.GatherRed(sam, pos)) ||
         any(tex1.GatherGreen(sam, pos) != tex2.GatherGreen(sam, pos)) ||
         any(tex1.GatherBlue(sam, pos) != tex2.GatherBlue(sam, pos));
+    if (compareAlpha != 0) different = different || any(tex1.GatherAlpha(sam, pos) != tex2.GatherAlpha(sam, pos));
     if (different) InterlockedOr(result[0], 1u);
 })";
 		code.Reset(); errors.Reset();
 		Hr(D3DCompile(probe, sizeof(probe) - 1, nullptr, nullptr, nullptr, "main", "cs_5_0",
 			D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors));
 		Hr(device->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, shader.ReleaseAndGetAddressOf()));
-		std::cerr << "Direct-atomic comparison duplicate=" << Duplicate(a, b, w, h, false) << " result=" << lastResult << '\n';
+		std::cerr << "Direct-atomic comparison duplicate=" << Duplicate(a, b, w, h, alpha) << " result=" << lastResult << '\n';
 		CheckDebug();
 	}
 	void CheckDebug() {
@@ -159,7 +161,7 @@ int wmain(int argc, wchar_t** argv) {
 			const bool equal = test.Duplicate(as.Get(),bs.Get(),w,h,false);
 			if (!equal) {
 				test.InspectImages(a.Get(), b.Get(), image, w * stride);
-				test.ProbeFailure(argv[1], as.Get(), bs.Get(), w, h);
+				test.ProbeFailure(argv[1], as.Get(), bs.Get(), w, h, false);
 			}
 			Check(equal,"equal RGB images differed"); ++cases;
 			for (unsigned pixel=0;pixel<w*h;++pixel) {
@@ -169,7 +171,15 @@ int wmain(int argc, wchar_t** argv) {
 				for (unsigned channel=0;channel<4;++channel) {
 					auto changed=image; changed[static_cast<size_t>(pixel)*stride+channel*component] ^= 1;
 					test.dc->UpdateSubresource(b.Get(),0,nullptr,changed.data(),w*stride,0);
-					Check(!test.Duplicate(as.Get(),bs.Get(),w,h,channel==3),"single-pixel/channel/edge change was filtered"); ++cases;
+					const bool duplicate = test.Duplicate(as.Get(),bs.Get(),w,h,channel==3);
+					if (duplicate) {
+						std::cerr << "Changed-image failure: format=" << static_cast<unsigned>(format)
+							<< " extent=" << w << 'x' << h << " pixel=" << pixel << " channel=" << channel
+							<< " alpha=" << (channel == 3) << " cases=" << cases << " result=" << test.lastResult << '\n';
+						test.InspectImages(a.Get(), b.Get(), changed, w * stride);
+						test.ProbeFailure(argv[1], as.Get(), bs.Get(), w, h, channel == 3);
+					}
+					Check(!duplicate,"single-pixel/channel/edge change was filtered"); ++cases;
 					if (channel==3) { Check(test.Duplicate(as.Get(),bs.Get(),w,h,false),"SDR RGB-only compatibility changed"); ++cases; }
 				}
 			}
