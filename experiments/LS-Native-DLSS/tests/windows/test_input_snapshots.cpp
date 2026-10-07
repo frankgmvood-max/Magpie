@@ -242,6 +242,20 @@ void Run(DXGI_FORMAT format) {
     Hr(list->Close(), "close read commands");
     const std::array<SnapshotTicket, 2> duplicate{tickets[0], tickets[0]};
     Check(pool.SubmitReads(duplicate.data(), 2, list.Get()) == SnapshotResult::Invalid, "duplicate lease rejected before GPU submit");
+    // Simulate the independent NVOFA engine with a second D3D12 queue. Native
+    // producer completion alone cannot retire its reads or admit NGX consumption.
+    ComPtr<ID3D12CommandQueue> external_queue;
+    ComPtr<ID3D12Fence> external_done, external_gate;
+    Hr(d12->CreateCommandQueue(&qdesc, IID_PPV_ARGS(&external_queue)), "independent reader queue");
+    Hr(d12->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&external_done)), "independent reader completion");
+    Hr(d12->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&external_gate)), "independent reader test gate");
+    Check(pool.PinExternalReads(tickets.data(), 2, external_done.Get(), 0) == SnapshotResult::Invalid, "zero external signal rejected");
+    Check(pool.PinExternalReads(tickets.data(), 2, pool.ReaderFence(), 1) == SnapshotResult::Invalid, "self-dependent reader timeline rejected");
+    Check(pool.PinExternalReads(tickets.data(), 2, external_done.Get(), 1) == SnapshotResult::Ok, "pin pair before independent engine submission");
+    Check(pool.PinExternalReads(tickets.data(), 2, external_done.Get(), 1) == SnapshotResult::Stale, "external read reservation is single use");
+    Hr(external_queue->Wait(pool.ProducerFence(), tickets[1].producer_fence), "independent engine waits on captured pair");
+    Hr(external_queue->Wait(external_gate.Get(), 1), "hold independent reader");
+    Hr(external_queue->Signal(external_done.Get(), 1), "independent engine completion signal");
     // Hold the reader queue deliberately: completion of native capture alone
     // must NOT allow slot recycling while a consumer is still outstanding.
     ComPtr<ID3D12Fence> gate;
@@ -253,6 +267,9 @@ void Run(DXGI_FORMAT format) {
     Check(!pool.Resource(tickets[0]) && pool.Discard(tickets[1]) == SnapshotResult::Stale, "submitted ticket consumed exactly once");
     Check(pool.CloseIfIdle() == SnapshotResult::Busy, "GPU reader prevents teardown");
     Hr(gate->Signal(1), "release test gate");
+    Check(pool.ReaderFence()->GetCompletedValue() < pool.LastReaderSignal(), "backend still waits for independent engine");
+    Check(pool.Capture(source.Get(), {100, 3}, extra) == SnapshotResult::Busy, "independent reader retains inputs");
+    Hr(external_gate->Signal(1), "release independent engine test gate");
     Wait(pool.ReaderFence(), pool.LastReaderSignal());
     a.Verify(first); b.Verify(second);
     Check(pool.Collect() == SnapshotResult::Ok, "retire read leases");
@@ -270,6 +287,11 @@ void Run(DXGI_FORMAT format) {
     RoundTrip(pool, extra, d11.Get(), context.Get(), d12.Get(), queue.Get(), format, third);
     Check(pool.Discard(extra) == SnapshotResult::Stale, "submitted input remains consumed after round-trip");
     Check(pool.Capture(source.Get(), {100, 4}, extra) == SnapshotResult::Ok, "capture a lease to discard");
+    Check(pool.PinExternalReads(&extra, 1, external_done.Get(), 1) == SnapshotResult::Invalid, "completed external value is not a new read");
+    Check(pool.PinExternalReads(&extra, 1, external_done.Get(), 2) == SnapshotResult::Ok, "pin discarded external read");
+    Hr(external_queue->Wait(pool.ProducerFence(), extra.producer_fence), "external discard producer ordering");
+    Hr(external_queue->Wait(external_gate.Get(), 2), "hold discarded external read");
+    Hr(external_queue->Signal(external_done.Get(), 2), "discarded external completion");
     Check(pool.Discard(extra) == SnapshotResult::Ok, "discard unused captured lease");
     Check(pool.Discard(extra) == SnapshotResult::Stale, "discard is single use");
     // Drain a discarded producer using a test-only fence on the host context.
@@ -285,6 +307,9 @@ void Run(DXGI_FORMAT format) {
     context->Flush();
     const DWORD wait = WaitForSingleObject(event, 15000); CloseHandle(event);
     Check(wait == WAIT_OBJECT_0, "producer drained within test timeout");
+    Check(pool.CloseIfIdle() == SnapshotResult::Busy, "discard still retains unfinished external reader");
+    Hr(external_gate->Signal(2), "release discarded external reader");
+    Wait(external_done.Get(), 2);
     Check(pool.CloseIfIdle() == SnapshotResult::Ok, "safe nonblocking teardown after retirement");
     Check(pool.Initialize(context.Get(), d12.Get(), queue.Get(), 77, kWidth, kHeight, format, 2)
         == E_INVALIDARG, "epoch cannot be reused after teardown");

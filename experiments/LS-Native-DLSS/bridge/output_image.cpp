@@ -103,7 +103,7 @@ SnapshotResult OutputImage::Acquire(const Identity& identity) {
     auto& s = *state_;
     if (Collect() != SnapshotResult::Ok) return SnapshotResult::DeviceFailure;
     if (identity.device_epoch != s.epoch || identity.adapter_luid != s.luid ||
-        identity.width != s.width || identity.height != s.height || identity.format != s.format ||
+        identity.width != s.width || identity.height != s.height || identity.format != static_cast<uint32_t>(s.format) ||
         identity.color_space != 0 || identity.phase_bits != 0x3f000000u ||
         !identity.previous_frame || identity.previous_frame == UINT64_MAX ||
         identity.current_frame != identity.previous_frame + 1 || !identity.slot_sequence ||

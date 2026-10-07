@@ -52,6 +52,15 @@ ownership/synchronization protocol is not certified by making another copy.
   signals a separate reader fence. No CPU wait. Separate producer and consumer
   timelines avoid signalling a larger value while older work on another queue
   is still incomplete.
+- NVOFA is an independent engine, not work certified by the D3D12 queue's own
+  completion. Call `PinExternalReads` **before** dispatching an external reader;
+  pass its separate, pending completion fence/value. That engine must wait for
+  the shared producer fence and signal only after finishing all input reads.
+  Combined D3D12 submission waits for both producer and external completion.
+  Discard retains a pinned image until both complete. On an uncertain NVOF
+  submission failure, never manufacture completion or recycle the leases.
+  Registration handles must be unregistered outside callbacks before closing
+  the pool; input leases do not own the NVIDIA registration/session lifecycle.
 - A captured lease remains reserved even when its copy completes. A submitted
   lease becomes reusable only after reader completion; a discarded lease only
   after producer completion. Pool exhaustion returns Busy immediately.
@@ -100,6 +109,9 @@ nonuniform pixels and padded readback row pitches. The test holds the D3D12 queu
 behind a separate fence to verify no recycling while the reader is outstanding.
 It also exercises duplicate writes/tickets, changed provenance, epoch reuse,
 discard, source-device mismatch on the same LUID, and nonblocking teardown.
+An independent WARP queue simulates the external-engine timeline: combined
+consumption and discard must both retain inputs while its fence is incomplete.
+This validates dependencies; it does not execute or certify NVOFA.
 
 The no-op backend then copies a captured image in D3D12 into the owned output and
 returns it into a D3D11 destination. Readback must be bit exact in both SDR

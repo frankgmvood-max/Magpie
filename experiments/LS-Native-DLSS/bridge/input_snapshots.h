@@ -41,6 +41,11 @@ public:
     SnapshotResult SubmitRead(const SnapshotTicket& ticket, ID3D12CommandList* closed_commands);
     SnapshotResult SubmitReads(const SnapshotTicket* tickets, uint32_t count,
                                ID3D12CommandList* closed_commands);
+    // Call BEFORE submitting to an independent engine such as NVOFA. It must
+    // wait on ProducerFence/ticket.producer_fence and signal external_done only
+    // after all reads finish. On uncertain API failure, retain these leases.
+    SnapshotResult PinExternalReads(const SnapshotTicket* tickets, uint32_t count,
+                                   ID3D12Fence* external_done, uint64_t value);
     SnapshotResult Discard(const SnapshotTicket& ticket);
     SnapshotResult Collect();
     // Nonblocking. Returns Busy while any lease or submitted GPU work exists.
@@ -51,6 +56,7 @@ public:
     uint64_t LastReaderSignal() const;
     ID3D12Fence* ReaderFence() const; // Borrowed; worker/test completion only.
     ID3D12CommandQueue* BackendQueue() const; // Borrowed; same-queue output retirement.
+    ID3D12Fence* ProducerFence() const; // Borrowed; independent-engine dependency.
     const char* InitializationStep() const { return init_step_; }
 private:
     struct State;

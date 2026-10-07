@@ -27,12 +27,14 @@ bool Supported(DXGI_FORMAT format) {
 }
 } // namespace
 struct InputSnapshots::State {
-    enum class Phase { Free, Captured, Reading, Discarded };
+    enum class Phase { Free, Captured, ExternalReading, Reading, Discarded };
     struct Slot {
         ComPtr<ID3D12Resource> texture12;
         ComPtr<ID3D11Texture2D> texture11;
         SnapshotTicket ticket;
         uint64_t reader_signal = 0;
+        ComPtr<ID3D12Fence> external_done;
+        uint64_t external_value = 0;
         Phase phase = Phase::Free;
     };
     ComPtr<ID3D11Device5> device11;
@@ -54,7 +56,7 @@ struct InputSnapshots::State {
     Slot* Find(const SnapshotTicket& t) {
         if (t.pool != pool || t.epoch != epoch || !t.serial || t.slot >= count) return nullptr;
         auto& s = slots[t.slot];
-        if (s.phase != Phase::Captured || s.ticket.serial != t.serial ||
+        if ((s.phase != Phase::Captured && s.phase != Phase::ExternalReading) || s.ticket.serial != t.serial ||
             s.ticket.producer_fence != t.producer_fence ||
             s.ticket.source.source_object != t.source.source_object ||
             s.ticket.source.write_submission != t.source.write_submission) return nullptr;
@@ -152,9 +154,14 @@ SnapshotResult InputSnapshots::Collect() {
     if (produced == UINT64_MAX || read == UINT64_MAX) { s.failed = true; return SnapshotResult::DeviceFailure; }
     for (uint32_t i = 0; i < s.count; ++i) {
         auto& slot = s.slots[i];
+        const auto external = slot.external_done ? slot.external_done->GetCompletedValue() : uint64_t{0};
+        if (external == UINT64_MAX) { s.failed = true; return SnapshotResult::DeviceFailure; }
         if ((slot.phase == State::Phase::Reading && read >= slot.reader_signal) ||
-            (slot.phase == State::Phase::Discarded && produced >= slot.ticket.producer_fence))
+            (slot.phase == State::Phase::Discarded && produced >= slot.ticket.producer_fence &&
+             (!slot.external_done || external >= slot.external_value))) {
             slot.phase = State::Phase::Free;
+            slot.external_done.Reset(); slot.external_value = 0;
+        }
     }
     return SnapshotResult::Ok;
 }
@@ -221,7 +228,8 @@ SnapshotResult InputSnapshots::SubmitReads(const SnapshotTicket* tickets, uint32
     if (s.read_signal == UINT64_MAX - 1) { s.failed = true; return SnapshotResult::DeviceFailure; }
     // GPU wait only. The caller must NOT flush native capture or wait on CPU.
     for (uint32_t i = 0; i < count; ++i)
-        if (FAILED(s.queue->Wait(s.producer12.Get(), tickets[i].producer_fence))) {
+        if (FAILED(s.queue->Wait(s.producer12.Get(), tickets[i].producer_fence)) ||
+            (selected[i]->external_done && FAILED(s.queue->Wait(selected[i]->external_done.Get(), selected[i]->external_value)))) {
             s.failed = true; return SnapshotResult::DeviceFailure;
         }
     s.queue->ExecuteCommandLists(1, &commands);
@@ -232,6 +240,33 @@ SnapshotResult InputSnapshots::SubmitReads(const SnapshotTicket* tickets, uint32
     }
     if (FAILED(s.queue->Signal(s.reader.Get(), s.read_signal))) {
         s.failed = true; return SnapshotResult::DeviceFailure;
+    }
+    return SnapshotResult::Ok;
+}
+SnapshotResult InputSnapshots::PinExternalReads(const SnapshotTicket* tickets, uint32_t count,
+    ID3D12Fence* done, uint64_t value) {
+    if (!state_) return SnapshotResult::NotInitialized;
+    auto& s = *state_;
+    if (!s.Alive()) return SnapshotResult::DeviceFailure;
+    if (!tickets || !count || count > s.count || !done || !value || value == UINT64_MAX)
+        return SnapshotResult::Invalid;
+    if (SameObject(done, s.producer12.Get()) || SameObject(done, s.reader.Get()))
+        return SnapshotResult::Invalid; // internal fence would create ambiguous/cyclic ownership
+    ComPtr<ID3D12Device> device;
+    if (FAILED(done->GetDevice(IID_PPV_ARGS(&device))) || !SameObject(device.Get(), s.device12.Get()))
+        return SnapshotResult::Invalid;
+    const auto completed = done->GetCompletedValue();
+    if (completed == UINT64_MAX) { s.failed = true; return SnapshotResult::DeviceFailure; }
+    if (completed >= value) return SnapshotResult::Invalid; // stale completion cannot certify a future read
+    std::array<State::Slot*, 8> selected{};
+    for (uint32_t i = 0; i < count; ++i) {
+        selected[i] = s.Find(tickets[i]);
+        if (!selected[i] || selected[i]->phase != State::Phase::Captured) return SnapshotResult::Stale;
+        for (uint32_t j = 0; j < i; ++j) if (selected[i] == selected[j]) return SnapshotResult::Invalid;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        selected[i]->external_done = done; selected[i]->external_value = value;
+        selected[i]->phase = State::Phase::ExternalReading;
     }
     return SnapshotResult::Ok;
 }
@@ -254,4 +289,5 @@ uint64_t InputSnapshots::AdapterLuid() const { return state_ ? state_->luid : 0;
 uint64_t InputSnapshots::LastReaderSignal() const { return state_ ? state_->read_signal : 0; }
 ID3D12Fence* InputSnapshots::ReaderFence() const { return state_ ? state_->reader.Get() : nullptr; }
 ID3D12CommandQueue* InputSnapshots::BackendQueue() const { return state_ ? state_->queue.Get() : nullptr; }
+ID3D12Fence* InputSnapshots::ProducerFence() const { return state_ ? state_->producer12.Get() : nullptr; }
 } // namespace ls_native
