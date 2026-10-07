@@ -30,6 +30,10 @@ ownership/synchronization protocol is not certified by making another copy.
 - Preallocate 2–8 shared SDR textures. RGBA8/BGRA8 UNORM, one mip, one slice,
   one sample, matching dimensions and native source device only. Unsupported
   formats require a separate, explicitly validated conversion path.
+  Create these allocations in D3D11 with SHARED/NTHANDLE and import them into
+  D3D12. The first Windows run rejected opening a D3D12-created allocation in
+  D3D11 with E_INVALIDARG; the creation direction is part of the compatibility
+  contract, not a reason to skip the interop test.
 - Supply monotonically increasing observed write-submission IDs across this
   context's source stream. Reusing a source object is valid; reusing a write ID
   is rejected. These IDs do not establish previous/current temporal order.

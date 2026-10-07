@@ -115,25 +115,27 @@ HRESULT InputSnapshots::Initialize(ID3D11DeviceContext* context, ID3D12Device* b
         init_step_ = "D3D11 open producer fence";
         if (FAILED(hr = s->device11->OpenSharedFence(handle.value, IID_PPV_ARGS(&s->producer11)))) return hr;
     }
-    D3D12_HEAP_PROPERTIES heap{};
-    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
-    heap.CreationNodeMask = heap.VisibleNodeMask = 1;
-    D3D12_RESOURCE_DESC desc{};
-    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    desc.Width = width; desc.Height = height; desc.DepthOrArraySize = 1; desc.MipLevels = 1;
-    desc.Format = format; desc.SampleDesc.Count = 1;
-    desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
+    // Create on the native API so the shared allocation carries a compatible
+    // D3D11 descriptor. D3D12-created allocations are not universally openable
+    // by an earlier runtime even with SHARED/SIMULTANEOUS_ACCESS set.
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = width; desc.Height = height; desc.ArraySize = 1; desc.MipLevels = 1;
+    desc.Format = format; desc.SampleDesc.Count = 1; desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
     for (uint32_t i = 0; i < count; ++i) {
         auto& slot = s->slots[i];
-        init_step_ = "shared D3D12 texture";
-        if (FAILED(hr = backend->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_SHARED, &desc,
-                D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&slot.texture12)))) return hr;
+        init_step_ = "shared native D3D11 texture";
+        if (FAILED(hr = s->device11->CreateTexture2D(&desc, nullptr, &slot.texture11))) return hr;
+        ComPtr<IDXGIResource1> dxgi_resource;
+        init_step_ = "shared texture DXGI interface";
+        if (FAILED(hr = slot.texture11.As(&dxgi_resource))) return hr;
         Handle handle;
         init_step_ = "shared texture handle";
-        if (FAILED(hr = backend->CreateSharedHandle(slot.texture12.Get(), nullptr, GENERIC_ALL, nullptr, &handle.value))) return hr;
-        init_step_ = "D3D11 open shared texture";
-        if (FAILED(hr = s->device11->OpenSharedResource1(handle.value, IID_PPV_ARGS(&slot.texture11)))) return hr;
+        if (FAILED(hr = dxgi_resource->CreateSharedHandle(nullptr,
+            DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &handle.value))) return hr;
+        init_step_ = "D3D12 open shared texture";
+        if (FAILED(hr = backend->OpenSharedHandle(handle.value, IID_PPV_ARGS(&slot.texture12)))) return hr;
     }
     s->pool = ++next_pool;
     if (!s->pool) return E_FAIL;
