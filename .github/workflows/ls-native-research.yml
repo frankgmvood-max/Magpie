@@ -35,7 +35,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build build/native-observer --config Release --parallel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Run native Windows queue, slot and forwarding tests
+      - name: Run native Windows queue, slot, forwarding and GPU snapshot tests
         run: ctest --test-dir build/native-observer -C Release --output-on-failure
       - name: Verify original native export names and ordinals
         run: python experiments/LS-Native-DLSS/tools/verify_proxy_exports.py build/native-observer/Release/Lossless.dll
