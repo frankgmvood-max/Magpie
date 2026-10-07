@@ -113,13 +113,13 @@ struct NativeBackend::State {
     }
     HRESULT PrivateTexture(uint32_t w, uint32_t h, DXGI_FORMAT format, D3D12_RESOURCE_FLAGS flags, ID3D12Resource** out) {
         D3D12_RESOURCE_DESC d{}; d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; d.Width = w; d.Height = h;
-        d.DepthOrArraySize = d.MipLevels = d.SampleDesc.Count = 1; d.Format = format; d.Flags = flags;
+        d.DepthOrArraySize = d.MipLevels = 1; d.SampleDesc.Count = 1; d.Format = format; d.Flags = flags;
         D3D12_HEAP_PROPERTIES heap{}; heap.Type = D3D12_HEAP_TYPE_DEFAULT;
         return device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &d, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(out));
     }
     HRESULT Buffer(uint64_t size, D3D12_HEAP_TYPE type, D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES state, ID3D12Resource** out) {
         D3D12_RESOURCE_DESC d{}; d.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; d.Width = size; d.Height = 1;
-        d.DepthOrArraySize = d.MipLevels = d.SampleDesc.Count = 1; d.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR; d.Flags = flags;
+        d.DepthOrArraySize = d.MipLevels = 1; d.SampleDesc.Count = 1; d.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR; d.Flags = flags;
         D3D12_HEAP_PROPERTIES h{}; h.Type = type;
         return device->CreateCommittedResource(&h, D3D12_HEAP_FLAG_NONE, &d, state, nullptr, IID_PPV_ARGS(out));
     }
@@ -505,9 +505,9 @@ bool NativeBackend::Source(ID3D11Texture2D* current, const SourceWriteObservatio
     if (s.failed || !s.initialized || !current || !SourceWriteValid(write)) return false;
     D3D11_TEXTURE2D_DESC desc{}; current->GetDesc(&desc); ComPtr<ID3D11Device> device; current->GetDevice(&device);
     if (write.adapter_luid != Luid(s.device->GetAdapterLuid()) ||
-        write.texture.width != desc.Width || write.texture.height != desc.Height || write.texture.format != desc.Format ||
+        write.texture.width != desc.Width || write.texture.height != desc.Height || write.texture.format != static_cast<uint32_t>(desc.Format) ||
         !Same(device.Get(), s.native_device.Get()) || desc.Width != s.extent.width || desc.Height != s.extent.height ||
-        desc.Format != s.extent.format || desc.MipLevels != 1 || desc.ArraySize != 1 || desc.SampleDesc.Count != 1 ||
+        static_cast<uint32_t>(desc.Format) != s.extent.format || desc.MipLevels != 1 || desc.ArraySize != 1 || desc.SampleDesc.Count != 1 ||
         desc.MiscFlags != 0 || desc.Usage != D3D11_USAGE_DEFAULT || desc.CPUAccessFlags != 0) return false;
     const bool pair = s.last_source && CanContinueSource(s.last_write, write) &&
         s.last_write.epoch == write.epoch && s.last_write.generation + 1 == write.generation;
@@ -548,8 +548,8 @@ bool NativeBackend::Composite(const DispatchObservation& slot, ID3D11UnorderedAc
     ComPtr<ID3D11Texture2D> texture; D3D11_TEXTURE2D_DESC desc{};
     if (FAILED(resource.As(&texture))) return false;
     texture->GetDesc(&desc);
-    if (desc.Width != slot.output.width || desc.Height != slot.output.height || desc.Format != slot.output.format ||
-        view_desc.Format != slot.output.view_format || desc.MipLevels != 1 || desc.ArraySize != 1 || desc.SampleDesc.Count != 1) return false;
+    if (desc.Width != slot.output.width || desc.Height != slot.output.height || static_cast<uint32_t>(desc.Format) != slot.output.format ||
+        static_cast<uint32_t>(view_desc.Format) != slot.output.view_format || desc.MipLevels != 1 || desc.ArraySize != 1 || desc.SampleDesc.Count != 1) return false;
     State::Job* job = nullptr;
     for (UINT i = 0; i != s.slots; ++i) {
         auto& j = s.jobs[i];

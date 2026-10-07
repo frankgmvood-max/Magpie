@@ -51,3 +51,32 @@ jobs:
         run: ctest --test-dir build/native-observer -C Release --output-on-failure
       - name: Verify original native export names and ordinals
         run: python experiments/LS-Native-DLSS/tools/verify_proxy_exports.py build/native-observer/Release/Lossless.dll
+      - name: Verify installer, rollback and script syntax
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File experiments/LS-Native-DLSS/tests/windows/test_package.ps1
+      - name: Package standalone native build
+        shell: pwsh
+        run: |
+          $out = 'build/LS-Native-DLSS-0.1.0'
+          New-Item -ItemType Directory -Path "$out/licenses" -Force | Out-Null
+          Copy-Item experiments/LS-Native-DLSS/package/* $out
+          Copy-Item build/native-observer/Release/Lossless.dll $out
+          Copy-Item experiments/LS-Native-DLSS/observer/NativeDLSS.ini $out
+          Copy-Item experiments/LS-Native-DLSS/observer/NOTICE.md $out
+          Copy-Item src/Magpie.Core/third_party/minhook/LICENSE.txt "$out/licenses/MINHOOK-LICENSE.txt"
+          Copy-Item build/ngx-sdk/LICENSE.txt "$out/licenses/NVIDIA-RTX-SDK-LICENSE.txt"
+          Copy-Item experiments/LS-Native-DLSS/third_party/nvof/*.h "$out/licenses"
+          Get-ChildItem $out -Filter '*.ps1' | ForEach-Object {
+            $text = [IO.File]::ReadAllText($_.FullName)
+            [IO.File]::WriteAllText($_.FullName, $text, [Text.UTF8Encoding]::new($true))
+          }
+          '${{ github.sha }}' | Set-Content "$out/build-commit.txt" -Encoding utf8
+          Get-ChildItem $out -Recurse -File | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $([IO.Path]::GetRelativePath((Resolve-Path $out), $_.FullName))"
+          } | Set-Content "$out/SHA256SUMS.txt" -Encoding utf8
+      - uses: actions/upload-artifact@v7
+        with:
+          name: LS-Native-DLSS-0.1.0
+          path: build/LS-Native-DLSS-0.1.0/
+          retention-days: 90
+          if-no-files-found: error
