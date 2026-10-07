@@ -1,0 +1,37 @@
+name: LS native research checks
+on:
+  push:
+    branches: [ls-native-dlss-research]
+    paths: ['experiments/LS-Native-DLSS/**', '.github/workflows/ls-native-research.yml']
+  pull_request:
+    paths: ['experiments/LS-Native-DLSS/**', '.github/workflows/ls-native-research.yml']
+permissions:
+  contents: read
+jobs:
+  portable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Parser rejection and token tests
+        run: python -m unittest discover -s experiments/LS-Native-DLSS/tests -p 'test_*.py' -v
+      - name: Native slot invariants
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic experiments/LS-Native-DLSS/tests/test_slot_policy.cpp -o /tmp/slot-policy
+          /tmp/slot-policy
+  windows-tool:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compile read-only disassembler and slot test
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
+          if errorlevel 1 exit /b 1
+          cl /nologo /std:c++17 /EHsc /W4 /WX experiments\LS-Native-DLSS\tools\disassemble_shaders.cpp /Fe:disassemble_shaders.exe /link d3dcompiler.lib
+          if errorlevel 1 exit /b 1
+          cl /nologo /std:c++17 /EHsc /W4 /WX experiments\LS-Native-DLSS\tests\test_slot_policy.cpp /Fe:slot-policy.exe
+          if errorlevel 1 exit /b 1
+          slot-policy.exe

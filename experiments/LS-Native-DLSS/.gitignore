@@ -1,0 +1,8 @@
+local/
+*.dll
+*.exe
+*.dxbc
+*.asm
+*.zip
+__pycache__/
+build/
