@@ -9,6 +9,7 @@
 #include <chrono>
 #include <fstream>
 #include <iomanip>
+#include <string>
 #include <thread>
 #include <type_traits>
 #include <utility>
