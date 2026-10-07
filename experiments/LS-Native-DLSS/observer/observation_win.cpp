@@ -1,6 +1,9 @@
 #include "observation_win.h"
 #include "../include/observation.h"
 #include "../include/source_pair.h"
+#ifdef LS_WITH_NGX
+#include "../backend/native_backend.h"
+#endif
 #include <MinHook.h>
 #include <bcrypt.h>
 #include <d3d11_4.h>
@@ -104,6 +107,7 @@ template<class Fn> bool Install(Hook<Fn>(&hooks)[kHookLimit], void* target);
 // a native thread could be returning through them. No shutdown work in DllMain.
 struct State {
     std::atomic<bool> active{false};
+    std::atomic<bool> tracing{false}, eligible{false};
     std::atomic<uint64_t> serial{0}, seen{0}, untagged{0}, busy{0}, tagged_shaders{0}, tagged_buffers{0}, callbacks{0};
     std::mutex capture_mutex, install_mutex;
     ObservationQueue<DispatchObservation, 512> records;
@@ -124,9 +128,84 @@ struct State {
     CreateDeviceFn create = nullptr;
     uint32_t duration = 20, max_records = 4096;
     uint64_t frequency = 0;
+#ifdef LS_WITH_NGX
+    struct Session {
+        uint64_t context = 0;
+        TextureObservation extent;
+        std::unique_ptr<NativeBackend> backend;
+    };
+    BackendOptions options;
+    std::filesystem::path folder;
+    std::mutex backend_mutex;
+    std::array<Session, 4> sessions;
+    std::ofstream backend_log;
+    std::atomic<uint64_t> source_calls{0}, slots_seen{0}, profile_revision{0}, backend_busy{0};
+    std::atomic<int> profile_type{0}, profile_mode{0}, profile_hdr{0};
+    std::atomic<float> profile_multiplier{0};
+#endif
 };
 State* g = nullptr;
 thread_local bool t_dispatch = false, t_shader = false, t_buffer = false;
+#ifdef LS_WITH_NGX
+bool BackendEnabled() { return g->options.enabled && g->eligible.load(); }
+State::Session* FindSession(uint64_t context, const TextureObservation& extent) {
+    for (auto& session : g->sessions)
+        if (session.backend && session.context == context && session.extent.width == extent.width &&
+            session.extent.height == extent.height && session.extent.format == extent.format) return &session;
+    return nullptr;
+}
+void BackendSource(ID3D11DeviceContext* ctx, ID3D11Resource* source, const SourceWriteObservation& write) {
+    if (!BackendEnabled() || !SourceWriteValid(write)) return;
+    ++g->source_calls;
+    std::unique_lock<std::mutex> lock(g->backend_mutex, std::try_to_lock);
+    if (!lock.owns_lock()) { ++g->backend_busy; ++g->source_invalidation_epoch; return; }
+    Com<ID3D11Texture2D> texture;
+    if (!source || FAILED(source->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(texture.Put())))) return;
+    auto* session = FindSession(write.context, write.texture);
+    if (!session) for (auto& candidate : g->sessions) {
+        if (candidate.backend) continue;
+        candidate.context = write.context; candidate.extent = write.texture;
+        candidate.backend = std::make_unique<NativeBackend>();
+        // One startup allocation on the native owning thread. No LS device is
+        // touched by the logger, including SINGLETHREADED devices.
+        candidate.backend->Initialize(ctx, write.texture, g->options, g->folder);
+        session = &candidate; break;
+    }
+    if (session) session->backend->Source(texture.p, write);
+}
+void BackendComposite(ID3D11DeviceContext* ctx, const DispatchObservation& record) {
+    if (!BackendEnabled() || !record.pair_matches_observed_updates) return;
+    ++g->slots_seen;
+    std::unique_lock<std::mutex> lock(g->backend_mutex, std::try_to_lock);
+    if (!lock.owns_lock()) { ++g->backend_busy; return; }
+    auto* session = FindSession(record.context, record.current_write.texture);
+    Com<ID3D11UnorderedAccessView> destination; ctx->CSGetUnorderedAccessViews(0, 1, destination.Put());
+    if (session) session->backend->Composite(record, destination.p);
+}
+void BackendWriter() {
+    while (g->active.load()) {
+        {
+            std::lock_guard<std::mutex> lock(g->backend_mutex);
+            auto& out = g->backend_log;
+            out << "profile=" << g->profile_revision.load() << " type=" << g->profile_type.load()
+                << " mode=" << g->profile_mode.load() << " multiplier=" << g->profile_multiplier.load()
+                << " hdr=" << g->profile_hdr.load() << " eligible=" << g->eligible.load()
+                << " source=" << g->source_calls.load() << " matched_slots=" << g->slots_seen.load()
+                << " controller_busy=" << g->backend_busy.load() << "\n";
+            for (const auto& session : g->sessions) if (session.backend) {
+                const auto c = session.backend->PollCounters();
+                out << "session=" << session.context << " " << session.extent.width << 'x' << session.extent.height
+                    << " step=" << session.backend->FailureStep() << " code=0x" << std::hex << session.backend->ErrorCode() << std::dec
+                    << " submitted=" << c.submitted << " composite_queued=" << c.composite_queued
+                    << " busy=" << c.busy << " unmatched=" << c.mismatched << " flag_enabled_samples=" << c.gpu_enabled
+                    << " flag_disabled_samples=" << c.gpu_disabled << " failures=" << c.failed << "\n";
+            }
+            out.flush();
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+}
+#endif
 template<class T> uint64_t ObjectId(T* object) {
     uint64_t value = 0;
     if (ReadTag(object, kObjectTag, value)) return value;
@@ -146,9 +225,7 @@ void Texture(ID3D11Resource* resource, UINT view_format, UINT mip, TextureObserv
     out.samples = desc.SampleDesc.Count; out.bind_flags = desc.BindFlags;
 }
 
-void Observe(ID3D11DeviceContext* ctx, UINT x, UINT y, UINT z, bool after_dispatch) {
-    // This is deliberately metadata-only. No Map, GPU copy, fence query/wait,
-    // Flush, Present, shader replacement or settings adjustment.
+void Observe(ID3D11DeviceContext* ctx, UINT x, UINT y, UINT z, bool after_dispatch, DispatchObservation* captured = nullptr) {
     Com<ID3D11ComputeShader> shader;
     ctx->CSGetShader(shader.Put(), nullptr, nullptr);
     uint32_t resource_id = 0;
@@ -156,7 +233,14 @@ void Observe(ID3D11DeviceContext* ctx, UINT x, UINT y, UINT z, bool after_dispat
         (after_dispatch ? resource_id != 254 : resource_id != 256)) return;
     if (ctx->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE) { ++g->untagged; return; }
     const uint64_t sequence = ++g->seen;
-    if (sequence > g->max_records) { g->active.store(false); return; }
+    if (g->tracing.load() && sequence > g->max_records) {
+        g->tracing.store(false);
+#ifdef LS_WITH_NGX
+        if (!g->options.enabled) g->active.store(false);
+#else
+        g->active.store(false);
+#endif
+    }
     std::unique_lock<std::mutex> lock(g->capture_mutex, std::try_to_lock);
     if (!lock.owns_lock()) { ++g->busy; ++g->source_invalidation_epoch; return; }
     Com<ID3D11Device> device;
@@ -226,11 +310,15 @@ void Observe(ID3D11DeviceContext* ctx, UINT x, UINT y, UINT z, bool after_dispat
             if (output_resource.p) output_resource->SetPrivateData(kSourceTag, 0, nullptr);
             ++g->untagged; ++g->source_invalidation_epoch;
         }
+#ifdef LS_WITH_NGX
+        else BackendSource(ctx, output_resource.p, w);
+#endif
     } else {
         record.previous_write = source_tags[0]; record.current_write = source_tags[1];
         record.pair_matches_observed_updates = MatchObservedSourcePair(history, source_tags[0], source_tags[1], record);
     }
-    if (!g->records.TryPush(record)) ++g->source_invalidation_epoch;
+    if (captured) *captured = record;
+    if (g->tracing.load() && !g->records.TryPush(record)) ++g->source_invalidation_epoch;
 }
 
 template<int I> HRESULT STDMETHODCALLTYPE Shader(ID3D11Device* dev, const void* bytes, SIZE_T size,
@@ -335,10 +423,18 @@ template<int I> void STDMETHODCALLTYPE Dispatch(ID3D11DeviceContext* ctx, UINT x
     ++g->callbacks;
     if (g->active.load()) {
         t_dispatch = true;
-        try { InvalidateComputeOutputs(ctx); Observe(ctx, x, y, z, false); }
+        DispatchObservation record;
+        try { InvalidateComputeOutputs(ctx); Observe(ctx, x, y, z, false, &record); }
         catch (...) { ++g->untagged; ++g->source_invalidation_epoch; }
         original(ctx, x, y, z); // Exactly once. Native output is always produced.
-        try { if (g->active.load()) Observe(ctx, x, y, z, true); }
+        try {
+            if (g->active.load()) {
+#ifdef LS_WITH_NGX
+                BackendComposite(ctx, record);
+#endif
+                Observe(ctx, x, y, z, true);
+            }
+        }
         catch (...) { ++g->untagged; ++g->source_invalidation_epoch; }
         t_dispatch = false;
     } else original(ctx, x, y, z);
@@ -491,14 +587,18 @@ void WriteRecord(const DispatchObservation& r) {
 void Writer() {
     const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(g->duration);
     uint64_t written = 0;
-    while (g->active.load() && std::chrono::steady_clock::now() < end && g->log) {
+    while (g->active.load() && g->tracing.load() && std::chrono::steady_clock::now() < end && g->log) {
         DispatchObservation record;
         while (g->records.TryPop(record)) { WriteRecord(record); ++written; }
         g->log.flush();
         std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Worker only.
     }
+    g->tracing.store(false);
+#ifdef LS_WITH_NGX
+    if (!g->options.enabled) g->active.store(false);
+#else
     g->active.store(false);
-    while (g->callbacks.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+#endif
     // Native observation callbacks might already be running: footer is written
     // after their capture critical section has retired, outside the render thread.
     std::lock_guard<std::mutex> lock(g->capture_mutex);
@@ -515,7 +615,12 @@ void Writer() {
 void StartNativeObservation(HMODULE native, HMODULE proxy, const std::filesystem::path& folder) noexcept {
     try {
         const auto ini = folder / L"NativeDLSS.ini";
-        if (GetPrivateProfileIntW(L"Observation", L"Enabled", 0, ini.c_str()) != 1) return;
+        const bool tracing = GetPrivateProfileIntW(L"Observation", L"Enabled", 0, ini.c_str()) == 1;
+        bool backend = false;
+#ifdef LS_WITH_NGX
+        backend = GetPrivateProfileIntW(L"NativeDLSS", L"Enabled", 0, ini.c_str()) == 1;
+#endif
+        if (!tracing && !backend) return;
         wchar_t nativePath[32768]{};
         const DWORD path_size = GetModuleFileNameW(native, nativePath, 32768);
         if (!path_size || path_size >= 32768 || HashFile(nativePath) != kDllHash) {
@@ -538,6 +643,15 @@ void StartNativeObservation(HMODULE native, HMODULE proxy, const std::filesystem
         if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
             reinterpret_cast<LPCWSTR>(proxy), &pinned)) return;
         g = new State; // Deliberate process-lifetime storage; no loader-lock teardown.
+        g->tracing.store(tracing);
+#ifdef LS_WITH_NGX
+        g->options.enabled = backend; g->folder = folder;
+        g->options.optical_flow = GetPrivateProfileIntW(L"NativeDLSS", L"OpticalFlow", 1, ini.c_str()) == 1;
+        g->options.gpu_ordered = GetPrivateProfileIntW(L"NativeDLSS", L"GPUOrdered", 1, ini.c_str()) == 1;
+        g->options.quality = std::clamp(GetPrivateProfileIntW(L"NativeDLSS", L"Quality", 2, ini.c_str()), 1u, 5u);
+        g->options.analysis_percent = std::clamp(GetPrivateProfileIntW(L"NativeDLSS", L"AnalysisPercent", 50, ini.c_str()), 10u, 100u);
+        g->options.slots = std::clamp(GetPrivateProfileIntW(L"NativeDLSS", L"Slots", 3, ini.c_str()), 2u, 4u);
+#endif
         g->shader.assign(bytes, bytes + size);
         g->input_shader.assign(input_bytes, input_bytes + input_size);
         g->duration = std::clamp(GetPrivateProfileIntW(L"Observation", L"DurationSeconds", 20, ini.c_str()), 1u, 120u);
@@ -546,14 +660,26 @@ void StartNativeObservation(HMODULE native, HMODULE proxy, const std::filesystem
         QueryPerformanceFrequency(&frequency); QueryPerformanceCounter(&start);
         g->frequency = static_cast<uint64_t>(frequency.QuadPart);
         std::filesystem::create_directories(folder / L"logs");
-        g->log.open(folder / L"logs" / (L"native-observation-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(start.QuadPart) + L".jsonl"));
-        if (!g->log) return;
-        g->log << "{\"kind\":\"header\",\"schema_version\":2,\"dll_sha256\":\"" << kDllHash
+        if (tracing) {
+          g->log.open(folder / L"logs" / (L"native-observation-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(start.QuadPart) + L".jsonl"));
+          if (!g->log) return;
+          g->log << "{\"kind\":\"header\",\"schema_version\":2,\"dll_sha256\":\"" << kDllHash
             << "\",\"shader_sha256\":\"" << kShaderHash << "\",\"resource_id\":256,\"qpc_frequency\":" << g->frequency
             << ",\"input_shader_sha256\":\"" << kInputShaderHash << "\",\"input_resource_id\":254"
             << ",\"source_mutation_coverage_complete\":false,\"source_content_verified\":false"
-            << ",\"present_owner\":\"LS\",\"replacement_enabled\":false,\"source_frame_ids_known\":false}\n";
-        g->log.flush();
+            << ",\"present_owner\":\"LS\",\"replacement_enabled\":" << (backend ? "true" : "false") << ",\"source_frame_ids_known\":false}\n";
+          g->log.flush();
+        }
+#ifdef LS_WITH_NGX
+        if (backend) {
+            g->backend_log.open(folder / L"logs" / (L"native-dlss-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(start.QuadPart) + L".log"));
+            if (!g->backend_log) return;
+            g->backend_log << "NativeDLSS 0.1.0 experimental. Present owner: LS. Full source coverage / real RTX3080 acceptance: unverified.\n"
+                << "OpticalFlow=" << g->options.optical_flow << " Quality=" << g->options.quality
+                << " AnalysisPercent=" << g->options.analysis_percent << " GPUOrdered=" << g->options.gpu_ordered
+                << " Slots=" << g->options.slots << "\n";
+        }
+#endif
         const auto d3d = LoadLibraryExW(L"d3d11.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
         g->create = d3d ? NativeExport<CreateDeviceFn>(d3d, "D3D11CreateDevice") : nullptr;
         void** const slot = DelayDeviceSlot(native);
@@ -577,13 +703,29 @@ void StartNativeObservation(HMODULE native, HMODULE proxy, const std::filesystem
         // Start the writer before enabling observations. Constructor failure
         // leaves active=false; every installed detour still forwards unchanged.
         g->active.store(true);
-        std::thread writer(Writer);
         if (!PatchSlot(slot, reinterpret_cast<void*>(&CreateDevice))) g->active.store(false);
-        writer.detach();
+        if (tracing) std::thread(Writer).detach();
+#ifdef LS_WITH_NGX
+        if (backend) std::thread(BackendWriter).detach();
+#endif
     } catch (...) {
         if (g) g->active.store(false);
         OutputDebugStringW(L"Native DLSS observer failed; leaving LS native.\n");
     }
+}
+
+void SetNativeProfile(int type, int mode, float multiplier, bool hdr) noexcept {
+    if (!g) return;
+    ++g->source_invalidation_epoch;
+#ifdef LS_WITH_NGX
+    g->profile_type.store(type); g->profile_mode.store(mode); g->profile_multiplier.store(multiplier);
+    g->profile_hdr.store(hdr); ++g->profile_revision;
+    // Values verified in this exact LosslessScaling.dll's CLI enum constants:
+    // FrameGenerationEnum.LSFG3=1, LSFG3ModeEnum.FIXED=0.
+    g->eligible.store(type == 1 && mode == 0 && multiplier == 2.0f && !hdr);
+#else
+    (void)type; (void)mode; (void)multiplier; (void)hdr;
+#endif
 }
 
 #ifdef LS_OBSERVER_TEST
@@ -600,6 +742,11 @@ int NativeObservationSelfTest() {
     Attach(dev.p, ctx.p);
     if (g->untagged.load()) return 1;
     g->active.store(true);
+    g->tracing.store(true);
+#ifdef LS_WITH_NGX
+    g->options.enabled = true; g->options.synthetic_test = true; g->folder = L".";
+    SetNativeProfile(1, 0, 2.0f, false);
+#endif
     std::array<uint32_t,12> bytes{}; bytes[7] = 0x3f000000;
     D3D11_BUFFER_DESC desc{};
     desc.ByteWidth = 48; desc.Usage = D3D11_USAGE_DYNAMIC;
@@ -642,7 +789,11 @@ int NativeObservationSelfTest() {
         "Texture2D<float4> A : register(t0); Texture2D<float4> B : register(t1);"
         "RWTexture2D<float4> O : register(u0);"
         "[numthreads(16,16,1)] void main(uint3 p:SV_DispatchThreadID) {"
+#ifdef LS_WITH_NGX
+        " O[p.xy] = float4(1,0,1,1); }";
+#else
         " O[p.xy] = (A.Load(int3(p.xy,0))+B.Load(int3(p.xy,0)))*0.5; }";
+#endif
     Com<ID3D11ComputeShader> copy_shader, synth_shader;
     if (!compile(copy_code, g->input_shader, copy_shader.Put()) ||
         !compile(synth_code, g->shader, synth_shader.Put())) return 1;
@@ -705,6 +856,52 @@ int NativeObservationSelfTest() {
     // Known kernel writing the same object twice cannot establish distinct sources.
     update(1); synthesize(2, 1);
     if (!g->records.TryPop(first) || !g->records.TryPop(synthesis) || synthesis.pair_matches_observed_updates) return 1;
+#ifdef LS_WITH_NGX
+    Com<ID3D11Device5> dev5; Com<ID3D11DeviceContext4> ctx4; Com<ID3D11Fence> fence;
+    if (FAILED(dev->QueryInterface(__uuidof(ID3D11Device5), reinterpret_cast<void**>(dev5.Put()))) ||
+        FAILED(ctx->QueryInterface(__uuidof(ID3D11DeviceContext4), reinterpret_cast<void**>(ctx4.Put()))) ||
+        FAILED(dev5->CreateFence(0, D3D11_FENCE_FLAG_NONE, __uuidof(ID3D11Fence), reinterpret_cast<void**>(fence.Put())))) return 1;
+    uint64_t completion = 0;
+    auto drain = [&] {
+        if (FAILED(ctx4->Signal(fence.p, ++completion))) return false;
+        ctx->Flush(); // TEST ONLY: the production hook path does not flush/wait.
+        HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (!event) return false;
+        const HRESULT hr = fence->SetEventOnCompletion(completion, event);
+        const DWORD result = SUCCEEDED(hr) ? WaitForSingleObject(event, 15000) : WAIT_FAILED;
+        CloseHandle(event); return result == WAIT_OBJECT_0;
+    };
+    auto source = [&](uint32_t color, size_t target) {
+        unbind(); std::vector<uint32_t> pixels(256, color);
+        ctx->UpdateSubresource(images[0].p, 0, nullptr, pixels.data(), 64, 0); update(target);
+    };
+    auto pixels = [&](uint32_t expected) {
+        if (!drain()) return false;
+        D3D11_TEXTURE2D_DESC read_desc = td; read_desc.BindFlags = 0;
+        read_desc.Usage = D3D11_USAGE_STAGING; read_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        Com<ID3D11Texture2D> read;
+        if (FAILED(dev->CreateTexture2D(&read_desc, nullptr, read.Put()))) return false;
+        ctx->CopyResource(read.p, images[5].p); if (!drain()) return false;
+        D3D11_MAPPED_SUBRESOURCE mapped_image{};
+        if (FAILED(ctx->Map(read.p, 0, D3D11_MAP_READ, 0, &mapped_image))) return false;
+        bool valid = true;
+        for (UINT y = 0; y != 16; ++y) for (UINT x = 0; x != 16; ++x) {
+            uint32_t value = 0; std::memcpy(&value, static_cast<const uint8_t*>(mapped_image.pData) + y * mapped_image.RowPitch + x * 4, 4);
+            valid &= value == expected;
+        }
+        ctx->Unmap(read.p, 0); return valid;
+    };
+    if (!drain()) return 1;
+    SetNativeProfile(1, 0, 2.0f, false);
+    source(0xff000014, 1); source(0xff00003c, 2); synthesize(1, 2);
+    if (!pixels(0xffff00ff)) { std::cerr << "hook warmup did not preserve native output\n"; return 1; }
+    source(0xff000064, 1); synthesize(2, 1);
+    if (!pixels(0xff000050)) { std::cerr << "real Dispatch hook did not replace native magenta with pair midpoint\n"; return 1; }
+    SetNativeProfile(1, 1, 2.0f, false); // Adaptive stays native.
+    source(0xff00008c, 2); synthesize(1, 2);
+    if (!pixels(0xffff00ff)) { std::cerr << "unsupported profile was replaced\n"; return 1; }
+    std::cout << "End-to-end native hooks: original Dispatch, warmup fallback, GPU midpoint replacement and profile gate passed\n";
+#endif
     g->active.store(false);
     std::cout << "WARP creation snapshot, Map invalidation, deferred epoch, source writes, reuse and pair invalidation passed\n";
     return 0;

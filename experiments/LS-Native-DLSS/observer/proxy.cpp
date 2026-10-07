@@ -68,6 +68,7 @@ extern "C" __declspec(dllexport) void __fastcall ApplySettings(LS_SETTINGS_ARGS)
         RaiseException(ERROR_PROC_NOT_FOUND, EXCEPTION_NONCONTINUABLE, 0, nullptr);
         return;
     }
+    SetNativeProfile(frameGenType, frameGenMode, frameGenMultiplier, hdrSupport != 0);
     g_apply(LS_SETTINGS_VALUES); // Every native setting reaches LS unchanged.
 }
 

@@ -33,9 +33,17 @@ jobs:
     runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v7
+      - name: Fetch pinned official NVIDIA SDK
+        shell: pwsh
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/NVIDIA/DLSS.git build/ngx-sdk
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C build/ngx-sdk sparse-checkout set include lib/Windows_x86_64/x64
+          git -C build/ngx-sdk checkout 374959484e79a640feaba44c93ac8cfb0a03f5b5
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Configure standalone proxy, tools and ABI fixture
         run: |
-          cmake -S experiments/LS-Native-DLSS/observer -B build/native-observer -A x64
+          cmake -S experiments/LS-Native-DLSS/observer -B build/native-observer -A x64 -DLS_ENABLE_NGX=ON -DNGX_ROOT="${{ github.workspace }}/build/ngx-sdk"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build build/native-observer --config Release --parallel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

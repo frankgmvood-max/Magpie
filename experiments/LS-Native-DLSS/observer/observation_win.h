@@ -12,6 +12,7 @@ template<class Function> Function NativeExport(HMODULE module, const char* name)
 }
 
 // Called only from an exported application call, never from DllMain.
-// Failures leave all native LS calls running. This stage cannot enable DLSS.
+// Failures leave all native LS calls running.
 void StartNativeObservation(HMODULE native, HMODULE proxy,
                             const std::filesystem::path& folder) noexcept;
+void SetNativeProfile(int type, int mode, float multiplier, bool hdr) noexcept;
