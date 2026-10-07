@@ -2,7 +2,10 @@ $ErrorActionPreference = 'Stop'
 $project = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 foreach ($name in @('Install.ps1','Settings.ps1')) {
     $errors = $null; $tokens = $null
-    [Management.Automation.Language.Parser]::ParseFile((Join-Path $project "package/$name"), [ref]$tokens, [ref]$errors) | Out-Null
+    # Windows PowerShell defaults BOM-less files to ANSI. Read source as UTF-8;
+    # the distributed scripts receive a UTF-8 BOM during packaging.
+    $script = [IO.File]::ReadAllText((Join-Path $project "package/$name"))
+    [Management.Automation.Language.Parser]::ParseInput($script, [ref]$tokens, [ref]$errors) | Out-Null
     if ($errors.Count) { throw "Parse errors in ${name}: $errors" }
 }
 $root = Join-Path ([IO.Path]::GetTempPath()) ('native-package-test-' + [Guid]::NewGuid())

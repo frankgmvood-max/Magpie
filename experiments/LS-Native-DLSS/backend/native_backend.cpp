@@ -16,16 +16,23 @@
 namespace ls_native {
 using Microsoft::WRL::ComPtr;
 namespace {
+std::atomic<bool> driver_exception{false};
 template<class F> NVSDK_NGX_Result Ngx(const F& fn) {
+    if (driver_exception.load()) return NVSDK_NGX_Result_FAIL_PlatformError;
 #ifdef _MSC_VER
-    __try { return fn(); } __except(EXCEPTION_EXECUTE_HANDLER) { return NVSDK_NGX_Result_FAIL_PlatformError; }
+    __try { return fn(); } __except(EXCEPTION_EXECUTE_HANDLER) {
+        driver_exception.store(true); return NVSDK_NGX_Result_FAIL_PlatformError;
+    }
 #else
     return fn();
 #endif
 }
 template<class F> NV_OF_STATUS Of(const F& fn) {
+    if (driver_exception.load()) return NV_OF_ERR_GENERIC;
 #ifdef _MSC_VER
-    __try { return fn(); } __except(EXCEPTION_EXECUTE_HANDLER) { return NV_OF_ERR_GENERIC; }
+    __try { return fn(); } __except(EXCEPTION_EXECUTE_HANDLER) {
+        driver_exception.store(true); return NV_OF_ERR_GENERIC;
+    }
 #else
     return fn();
 #endif
@@ -303,6 +310,9 @@ struct NativeBackend::State {
         const std::wstring runtime = (folder / L"native-runtime").wstring();
         const std::wstring old = (folder / L"addons" / L"LS_DLSSFG" / L"runtime").wstring();
         const std::wstring app = folder.wstring(), cache = (folder / L"native-dlss-cache").wstring();
+        std::error_code cache_error;
+        std::filesystem::create_directories(cache, cache_error);
+        if (cache_error) return Fail("NGX cache directory", static_cast<uint32_t>(cache_error.value()));
         const wchar_t* paths[]{runtime.c_str(), old.c_str(), app.c_str()};
         NVSDK_NGX_FeatureCommonInfo info{}; info.PathListInfo.Path = paths; info.PathListInfo.Length = 3;
         auto result = Ngx([&]{return NVSDK_NGX_D3D12_Init_with_ProjectID("eae67294-65c6-4bb7-a34a-51df0b8c95de",
@@ -312,7 +322,11 @@ struct NativeBackend::State {
         if (!NVSDK_NGX_SUCCEED(result) || !params) return Fail("NGX capability parameters", static_cast<uint32_t>(result));
         int available = 0;
         result = Ngx([&]{return NVSDK_NGX_Parameter_GetI(params, NVSDK_NGX_Parameter_FrameGeneration_Available, &available);});
-        if (!NVSDK_NGX_SUCCEED(result) || !available) return Fail("FG unavailable: compatible runtime required", static_cast<uint32_t>(result));
+        if (!NVSDK_NGX_SUCCEED(result) || !available) {
+            int reason = 0;
+            Ngx([&]{return NVSDK_NGX_Parameter_GetI(params, NVSDK_NGX_Parameter_FrameGeneration_FeatureInitResult, &reason);});
+            return Fail("FG unavailable: compatible runtime required", reason ? static_cast<uint32_t>(reason) : static_cast<uint32_t>(result));
+        }
         const unsigned unused = NVSDK_NGX_DLSSG_ResourceFlags_HUDLess | NVSDK_NGX_DLSSG_ResourceFlags_UI |
             NVSDK_NGX_DLSSG_ResourceFlags_UIAlpha | NVSDK_NGX_DLSSG_ResourceFlags_BidirectionalDistortionField | NVSDK_NGX_DLSSG_ResourceFlags_OutputReal;
         result = Ngx([&]{NVSDK_NGX_Parameter_SetUI(params, NVSDK_NGX_DLSSG_Parameter_ResourceNeverProvided_Flags, unused); return NVSDK_NGX_Result_Success;});

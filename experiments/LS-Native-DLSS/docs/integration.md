@@ -10,8 +10,9 @@ preprocessing/NGX code selectively; do not run the old addon concurrently.
 
 The target excludes the addon manager. `observer/` now implements the standalone
 Lossless.dll proxy and does not build against the manager or its SDK. It forwards
-the native ABI and observes selected compute commands; it does not yet replace
-either native optical flow or synthesis. No addon is required for this stage.
+the native ABI and observes selected compute commands. The experimental backend
+conditionally replaces final synthesis pixels after the original Dispatch;
+native analysis and synthesis still run as a fallback. No addon is required.
 Manager SDK 1.2 provides pre/post Dispatch hooks, not authoritative pair IDs,
 interpolation phase or a native generated-frame provider. Its shader-intercepted
 event is reserved and not sent. Do not assume it supplies a ready integration API.
@@ -57,11 +58,48 @@ actual output adapter, and uses distinct producer/reader/output/native-copy
 signals. See [input-snapshots.md](input-snapshots.md); this transport does not
 make an unverified source pair eligible for replacement.
 
-Feature/device recreation is performed outside native rendering callbacks.
+Earlier design goal: feature/device recreation outside rendering callbacks.
+Implementation 0.1 initializes a bounded preallocated session on the first
+source callback on the owning native thread, to respect SINGLETHREADED D3D11
+devices. This may cause a startup hitch, but not recurring allocation per frame.
 Restart, minimize/restore, resize, color-space or adapter change increments the
 epoch and drains/invalidates old jobs. Never copy a previous epoch into a new slot.
-No CPU Readback/Map, formatted logging, allocation, or resource discovery should
-remain in the shipping synthesis callback. Observation overhead is measured separately.
+No CPU Readback/Map, formatted logging or allocation remains in the synthesis
+callback. Current bindings are still inspected to reject incompatible slots.
+The worker maps only a completed four-byte private D3D12 flag for sampled stats.
+
+## Implemented experimental path (0.1.0)
+
+The portable ready-only policy remains a separate conservative contract, not
+a verified production contract. The backend has its own hash/profile/exact-pair
+gates. Real LS semantic acceptance, full external-write coverage, image quality
+and physical VRR remain unverified.
+
+Default GPUOrdered=1 inserts an immediate-context GPU dependency after LS's
+original synthesis. GPU fence ordering replaces CPU "is ready" checking because
+the native D3D11 stream may not submit the producer signal until a later Present.
+GPUOrdered=0 retains the already-ready-only experiment.
+
+Dependencies: native source update → owned copies → producer P; backend queue
+waits P → analysis conversion → C; NVOF waits C → flow F; backend waits F → NGX
+and actual flag → ready R; native queue waits R → conditional stores → retirement.
+The graph is acyclic. Shared images return to COMMON for cross-API handoff.
+A job is reusable only after backend ready AND native-store retirement.
+GPU latency can still grow despite avoiding CPU stalls.
+
+Both source images are privately snapshotted. Stateful NGX gets the current
+backbuffer of each consecutive successful pair. A skipped evaluation/generation,
+profile change, epoch change or >250 ms input pause triggers reset/warmup. Only
+exact phase 0.5 in LSFG3 Fixed x2 SDR and same device/LUID can be replaced.
+Original/endpoint frames, unmatched history and disabled flags stay native.
+
+Four session graphs maximum remain pinned until process exit. No hot shutdown,
+driver-module unload or blocking resource drain occurs during native profile
+teardown. Restart LS after many device/context/extent changes or changing INI.
+
+The WARP synthetic provider compiles only in test executables. Tests cover GPU
+pixel transport, actual disable flag path, state restoration and end-to-end real
+Dispatch detours. They do not test the NVIDIA runtime or LS itself.
 
 ## DLSS-specific limits
 

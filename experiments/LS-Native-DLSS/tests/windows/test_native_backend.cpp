@@ -135,5 +135,47 @@ void Test(bool disabled) {
     f.Native(); Require(backend.Composite(f.Slot(e, g), f.outputs[3].Get()), "resume composite"); f.Pixels(disabled ? 255 : 130);
     std::cout << "GPU transport, exact-pair gate, " << (disabled ? "disable flag fallback" : "pixel replacement") << ", state restoration and reset passed\n";
 }
+void TestRetirement(bool ordered) {
+    Fixture f; NativeBackend backend; BackendOptions options;
+    options.enabled = options.synthetic_test = true; options.slots = 2; options.gpu_ordered = ordered;
+    Hr(backend.Initialize(f.context.Get(), f.extent, options, L"."), "retirement backend");
+    auto a = f.Source(0, 20); backend.Source(f.images[0].Get(), a);
+    auto b = f.Source(1, 40); Require(backend.Source(f.images[1].Get(), b), "retirement warmup");
+    auto completed = [&](uint64_t samples) {
+        f.Drain(); const auto deadline = GetTickCount64() + 15000;
+        while (GetTickCount64() < deadline) {
+            const auto counts = backend.PollCounters();
+            if (counts.gpu_enabled + counts.gpu_disabled >= samples) return;
+            Sleep(1); // TEST ONLY
+        }
+        throw std::runtime_error("backend did not complete");
+    };
+    completed(1);
+    auto c = f.Source(0, 80); Require(backend.Source(f.images[0].Get(), c), "retirement second pair"); completed(2);
+    ComPtr<IDXGIDevice> dxgi; ComPtr<IDXGIAdapter> adapter; ComPtr<ID3D12Device> gate_device;
+    Hr(f.device.As(&dxgi), "gate dxgi"); Hr(dxgi->GetAdapter(&adapter), "gate adapter");
+    Hr(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&gate_device)), "gate device");
+    ComPtr<ID3D12Fence> gate12; ComPtr<ID3D11Fence> gate11;
+    Hr(gate_device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&gate12)), "gate fence");
+    HANDLE handle = nullptr; Hr(gate_device->CreateSharedHandle(gate12.Get(), nullptr, GENERIC_ALL, nullptr, &handle), "gate handle");
+    const HRESULT opened = f.device5->OpenSharedFence(handle, IID_PPV_ARGS(&gate11)); CloseHandle(handle); Hr(opened, "gate import");
+    struct ReleaseGate { ID3D12Fence* fence; ~ReleaseGate() { fence->Signal(1); } } release{gate12.Get()};
+    Hr(f.context4->Wait(gate11.Get(), 1), "hold native retirement");
+    f.Native(); Require(backend.Composite(f.Slot(b, c), f.outputs[3].Get()), "ready result queued behind held native fence");
+    f.Unbind();
+    auto d = f.Source(1, 100); Require(backend.Source(f.images[1].Get(), d), "second ring slot");
+    if (!ordered) {
+        f.Native(); Require(!backend.Composite(f.Slot(c, d), f.outputs[3].Get()), "ready-only rejects unfinished GPU result");
+        f.Unbind();
+    }
+    auto e = f.Source(0, 120);
+    Require(!backend.Source(f.images[0].Get(), e), "completed output is still leased until native retirement");
+    Require(backend.PollCounters().busy > 0, "bounded ring busy fallback");
+    Hr(gate12->Signal(1), "release native retirement"); f.Pixels(ordered ? 60 : 255);
+    auto next = f.Source(1, 140); Require(backend.Source(f.images[1].Get(), next), "retired ring reusable");
+    f.Native(); Require(!backend.Composite(f.Slot(e, next), f.outputs[3].Get()), "dropped evaluation resets history"); f.Pixels(255);
+    std::cout << "Held native retirement, bounded ring reuse and " << (ordered ? "GPU ordering" : "ready-only fallback") << " passed\n";
 }
-int main() { try { Test(false); Test(true); return 0; } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; } }
+}
+int main() { try { Test(false); Test(true); TestRetirement(true); TestRetirement(false); return 0; }
+    catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; } }
