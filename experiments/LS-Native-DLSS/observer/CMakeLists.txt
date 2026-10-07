@@ -11,17 +11,7 @@ add_library(native_observer_minhook STATIC
   ${MINHOOK_ROOT}/src/trampoline.c ${MINHOOK_ROOT}/src/hde/hde64.c)
 target_include_directories(native_observer_minhook PUBLIC ${MINHOOK_ROOT}/include)
 add_library(Lossless SHARED proxy.cpp observation_win.cpp)
-if(MSVC)
-  # Feed forwarders straight to LINK. MSVC's import-library pass otherwise
-  # treats these DEF aliases as unresolved local symbols. PRIVATE only omits
-  # unused import-library entries; the runtime DLL exports remain named.
-  file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/Lossless.def" exports REGEX "=Lossless_original")
-  foreach(entry IN LISTS exports)
-    string(REGEX MATCH "^[ \t]*([^= ]+)=([^ ]+) @([0-9]+)" match "${entry}")
-    target_link_options(Lossless PRIVATE "/EXPORT:${CMAKE_MATCH_1}=${CMAKE_MATCH_2},@${CMAKE_MATCH_3},PRIVATE")
-  endforeach()
-  target_link_options(Lossless PRIVATE "/EXPORT:ApplySettings,@2")
-else()
+if(NOT MSVC)
   target_sources(Lossless PRIVATE Lossless.def)
 endif()
 target_compile_definitions(Lossless PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)

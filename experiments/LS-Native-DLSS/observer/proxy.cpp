@@ -2,6 +2,24 @@
 #include <cstdint>
 #include <mutex>
 
+#ifdef _MSC_VER
+// The same plain named-forwarder mechanism used by the working reference.
+// With exactly these eleven alphabetically sorted names the linker assigns
+// native ordinals 1..11; the CI PE-table check guards that assumption.
+#define LS_FORWARD(name) __pragma(comment(linker, "/export:" #name "=Lossless_original." #name))
+LS_FORWARD(Activate)
+LS_FORWARD(GetAdapterNames)
+LS_FORWARD(GetDisplayNames)
+LS_FORWARD(GetDwmRefreshRate)
+LS_FORWARD(GetForegroundWindowEx)
+LS_FORWARD(Init)
+LS_FORWARD(IsWindowsBuildAtLeast)
+LS_FORWARD(SetDriverSettings)
+LS_FORWARD(SetWindowsSettings)
+LS_FORWARD(UnInit)
+#undef LS_FORWARD
+#endif
+
 // ABI reference: Echo-Storm/ls-addon-manager, MIT, main.cpp at
 // fbcc3c179e4052785c032d157d8eb785608eb28e. The observer does not link its SDK
 // or manager. Ten exports are transparent PE forwarders, including Init/UnInit.
@@ -22,7 +40,7 @@
     gsyncSupport, hdrSupport, captureApi, queueTarget, drawFps, gpuId, displayId, \
     cropLeft, cropTop, cropRight, cropBottom, multiDisplayMode
 
-extern "C" void __fastcall ApplySettings(LS_SETTINGS_ARGS);
+extern "C" __declspec(dllexport) void __fastcall ApplySettings(LS_SETTINGS_ARGS);
 namespace {
 HMODULE g_proxy = nullptr;
 std::once_flag g_start;
@@ -42,7 +60,7 @@ void Resolve() {
 }
 }
 
-extern "C" void __fastcall ApplySettings(LS_SETTINGS_ARGS) {
+extern "C" __declspec(dllexport) void __fastcall ApplySettings(LS_SETTINGS_ARGS) {
     std::call_once(g_start, Resolve);
     if (!g_apply) {
         // A missing native implementation is an installation failure, not a
