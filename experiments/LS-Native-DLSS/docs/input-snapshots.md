@@ -62,10 +62,33 @@ ownership/synchronization protocol is not certified by making another copy.
   but repeated failed pool creation is not a recovery policy and must not be
   enabled in the host integration.
 
-There is no output-copy lease yet. A replacement image will also need to remain
-alive through the native D3D11 copy and its retirement fence, not just through
-NGX completion. No replacement is enabled until that side is implemented and
-the actual LS frame-pair/phase/slot contract is verified.
+## Return into the native output
+
+`bridge/output_image.*` implements one preallocated output lease (the future
+host owns a bounded set). Its shared D3D11 allocation supports UAV writes through
+the imported D3D12 resource. It checks the actual adapter and queue, dimensions,
+SDR format, session epoch and exact midpoint slot identity.
+
+The backend list declares its input leases and is submitted through the same
+queue as `InputSnapshots`. Input retirement, then output completion, have distinct
+signals. The worker must publish the actual inference success and
+disable-interpolation result after GPU completion. Unknown or disabled output is
+not copied. `TryCopy` additionally applies the existing verified-slot policy and
+checks the destination's native device, extent and format. It never waits or
+flushes the native context and returns native fallback unless the exact image is
+ready and authorized. One output can be submitted into a native slot only once.
+
+The output remains reserved **after** backend completion, until the D3D11 copy
+retirement fence completes. A backend result discarded before copying retires
+on its backend fence instead. An unsubmitted reservation can be discarded
+immediately. Shutdown/resize cannot free an active lease without draining it.
+
+Pipeline bindings and native output-slot ownership still require a verified
+LS hook; the transport does not discover or change bindings. The
+`VerifiedContract` flags are supplied as trusted fixture values in the test;
+that does not establish them for LS. Source-pair provenance, runtime disabled-flag
+readback and controlled LS image/display tests remain prerequisites. Neither
+transport component is attached to LS or calls NVIDIA inference yet.
 
 ## Windows test
 
@@ -77,6 +100,14 @@ nonuniform pixels and padded readback row pitches. The test holds the D3D12 queu
 behind a separate fence to verify no recycling while the reader is outstanding.
 It also exercises duplicate writes/tickets, changed provenance, epoch reuse,
 discard, source-device mismatch on the same LUID, and nonblocking teardown.
+
+The no-op backend then copies a captured image in D3D12 into the owned output and
+returns it into a D3D11 destination. Readback must be bit exact in both SDR
+formats. Separate artificial gates hold the backend queue and the native copy:
+unfinished output cannot be published, and finished backend output cannot be
+reused while the native copy is pending. Unverified/wrong slots and unknown
+backend decisions prohibit the copy. This tests transport in isolation, not an
+actual LS generated-image pass or its queue cadence.
 
 CPU completion events, native Flush and GPU readback are **test harness actions**.
 They do not exist in the transport. This test measures content isolation and

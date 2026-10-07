@@ -50,6 +50,12 @@ without waiting. Restore every affected D3D11 binding and handle the currently
 bound output UAV before copying; submit the copy before native consumption.
 The initial policy in `include/native_slot_policy.h` checks metadata only. It
 does not implement resource transfer or prove these lifetimes in the driver.
+The separate `bridge/` now implements owned input snapshots and output-copy
+retirement for isolated Windows tests, without attaching either component to LS.
+It creates shared textures in D3D11, imports them into the backend device on the
+actual output adapter, and uses distinct producer/reader/output/native-copy
+signals. See [input-snapshots.md](input-snapshots.md); this transport does not
+make an unverified source pair eligible for replacement.
 
 Feature/device recreation is performed outside native rendering callbacks.
 Restart, minimize/restore, resize, color-space or adapter change increments the

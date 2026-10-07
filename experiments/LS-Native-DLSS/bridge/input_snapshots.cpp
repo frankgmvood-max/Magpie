@@ -253,4 +253,5 @@ SnapshotResult InputSnapshots::CloseIfIdle() {
 uint64_t InputSnapshots::AdapterLuid() const { return state_ ? state_->luid : 0; }
 uint64_t InputSnapshots::LastReaderSignal() const { return state_ ? state_->read_signal : 0; }
 ID3D12Fence* InputSnapshots::ReaderFence() const { return state_ ? state_->reader.Get() : nullptr; }
+ID3D12CommandQueue* InputSnapshots::BackendQueue() const { return state_ ? state_->queue.Get() : nullptr; }
 } // namespace ls_native

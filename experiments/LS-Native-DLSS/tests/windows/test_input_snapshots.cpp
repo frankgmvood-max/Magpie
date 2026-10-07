@@ -1,4 +1,5 @@
 #include "../../bridge/input_snapshots.h"
+#include "../../bridge/output_image.h"
 #include <dxgi1_4.h>
 #include <wrl/client.h>
 #include <array>
@@ -85,6 +86,105 @@ struct Readback {
         Check(equal, "snapshot contents survived source reuse");
     }
 };
+void RoundTrip(InputSnapshots& inputs, const SnapshotTicket& input, ID3D11Device* d11,
+    ID3D11DeviceContext* context, ID3D12Device* d12, ID3D12CommandQueue* queue,
+    DXGI_FORMAT format, const std::vector<uint8_t>& expected) {
+    OutputImage output;
+    Hr(output.Initialize(context, d12, queue, 77, kWidth, kHeight, format), "initialize output image");
+    Identity slot{77, inputs.AdapterLuid(), 2, 3, 22, kWidth, kHeight,
+        static_cast<uint32_t>(format), 0, 0x3f000000u};
+    Check(output.Acquire(slot) == SnapshotResult::Ok, "reserve exact output slot");
+    auto old = slot; --old.slot_sequence;
+    Check(!output.Resource(old), "output slot mismatch rejected");
+    ComPtr<ID3D12CommandAllocator> allocator;
+    ComPtr<ID3D12GraphicsCommandList> list;
+    Hr(d12->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator)), "output allocator");
+    Hr(d12->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr,
+        IID_PPV_ARGS(&list)), "output commands");
+    D3D12_RESOURCE_BARRIER barriers[2]{};
+    for (auto& b : barriers) {
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    }
+    barriers[0].Transition.pResource = inputs.Resource(input);
+    barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    barriers[1].Transition.pResource = output.Resource(slot);
+    barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    list->ResourceBarrier(2, barriers);
+    // No-op backend establishes bit-exact transport. This is not DLSS inference.
+    list->CopyResource(output.Resource(slot), inputs.Resource(input));
+    for (auto& b : barriers) {
+        b.Transition.StateBefore = b.Transition.StateAfter;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+    }
+    list->ResourceBarrier(2, barriers);
+    Hr(list->Close(), "close output commands");
+    ComPtr<ID3D12Fence> backend_gate;
+    Hr(d12->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&backend_gate)), "output reader gate");
+    Hr(queue->Wait(backend_gate.Get(), 1), "hold output work");
+    Check(output.Submit(slot, inputs, &input, 1, list.Get()) == SnapshotResult::Ok, "submit no-op backend");
+    Check(output.PublishResult(slot, true, false) == SnapshotResult::Busy, "cannot publish unfinished GPU output");
+    Check(output.CloseIfIdle() == SnapshotResult::Busy, "backend output retains allocation");
+    Hr(backend_gate->Signal(1), "release backend output");
+    context->Flush(); // Test's host submission boundary only.
+    Wait(output.ReadyFence(), output.ReadySignal());
+
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = kWidth; desc.Height = kHeight; desc.MipLevels = desc.ArraySize = 1;
+    desc.Format = format; desc.SampleDesc.Count = 1; desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+    ComPtr<ID3D11Texture2D> destination;
+    Hr(d11->CreateTexture2D(&desc, nullptr, &destination), "native output destination");
+    Check(output.TryCopy({true,true,true,true}, slot, destination.Get(), 0) == Decision::NativeFailure,
+        "completed GPU output without a decision remains native");
+    Check(output.PublishResult(slot, true, false) == SnapshotResult::Ok, "publish worker no-op result");
+    Check(output.TryCopy({}, slot, destination.Get(), 0) == Decision::NativeUnverified, "unverified LS contract forbids copy");
+    Check(output.TryCopy({true,true,true,true}, old, destination.Get(), 0) == Decision::NativeMismatch, "wrong exact slot forbids copy");
+
+    // Independently hold the native copy to prove output lifetime extends past
+    // D3D12 completion, all the way through D3D11 copy retirement.
+    ComPtr<ID3D12Fence> native_gate;
+    ComPtr<ID3D11Device5> d11v5;
+    ComPtr<ID3D11DeviceContext4> context4;
+    ComPtr<ID3D11Fence> gate11;
+    Hr(d11->QueryInterface(IID_PPV_ARGS(&d11v5)), "output device5");
+    Hr(context->QueryInterface(IID_PPV_ARGS(&context4)), "output context4");
+    Hr(d12->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&native_gate)), "native copy gate");
+    HANDLE handle = nullptr;
+    Hr(d12->CreateSharedHandle(native_gate.Get(), nullptr, GENERIC_ALL, nullptr, &handle), "native gate handle");
+    HRESULT open = d11v5->OpenSharedFence(handle, IID_PPV_ARGS(&gate11)); CloseHandle(handle);
+    Hr(open, "import native copy gate");
+    Hr(context4->Wait(gate11.Get(), 1), "hold native copy queue");
+    Check(output.TryCopy({true,true,true,true}, slot, destination.Get(), 0) == Decision::UseReplacement, "submit exact native slot copy");
+    Check(output.TryCopy({true,true,true,true}, slot, destination.Get(), 0) == Decision::NativeAlreadyConsumed, "output consumed once");
+    auto next = slot; ++next.slot_sequence;
+    Check(output.Acquire(next) == SnapshotResult::Busy, "output not reused at D3D12 completion");
+    Check(output.CloseIfIdle() == SnapshotResult::Busy, "native copy retains output lease");
+    Hr(native_gate->Signal(1), "release native copy");
+    HANDLE done = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    Check(done != nullptr, "native output completion event");
+    Hr(output.CopyFence()->SetEventOnCompletion(output.CopySignal(), done), "output completion registration");
+    context->Flush();
+    DWORD wait = WaitForSingleObject(done, 15000); CloseHandle(done);
+    Check(wait == WAIT_OBJECT_0, "native output copy retired");
+    desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = 0; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ComPtr<ID3D11Texture2D> readback;
+    Hr(d11->CreateTexture2D(&desc, nullptr, &readback), "native readback texture");
+    context->CopyResource(readback.Get(), destination.Get());
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    Hr(context->Map(readback.Get(), 0, D3D11_MAP_READ, 0, &mapped), "native readback TEST ONLY");
+    bool equal = true;
+    for (uint32_t y = 0; y < kHeight; ++y) for (uint32_t x = 0; x < kWidth * 4; ++x)
+        equal &= static_cast<const uint8_t*>(mapped.pData)[y * mapped.RowPitch + x] == expected[y * kWidth * 4 + x];
+    context->Unmap(readback.Get(), 0);
+    Check(equal, "D3D11->D3D12->D3D11 round-trip is bit exact");
+    Check(output.Acquire(next) == SnapshotResult::Ok, "output can recycle after native copy completion");
+    Check(output.Discard() == SnapshotResult::Ok && output.CloseIfIdle() == SnapshotResult::Ok,
+        "unused output reservation teardown");
+    std::cout << "PASS output round-trip format=" << static_cast<uint32_t>(format)
+        << ": exact image, ready-only copy, native copy retirement; no LS/Present test\n";
+}
 void Run(DXGI_FORMAT format) {
     ComPtr<IDXGIFactory4> factory;
     ComPtr<IDXGIAdapter> adapter;
@@ -167,6 +267,9 @@ void Run(DXGI_FORMAT format) {
     Hr(foreign->CreateTexture2D(&desc, nullptr, &foreign_source), "foreign source");
     SnapshotTicket invalid;
     Check(pool.Capture(foreign_source.Get(), {200, 4}, invalid) == SnapshotResult::Invalid, "foreign device rejected");
+    RoundTrip(pool, extra, d11.Get(), context.Get(), d12.Get(), queue.Get(), format, third);
+    Check(pool.Discard(extra) == SnapshotResult::Stale, "submitted input remains consumed after round-trip");
+    Check(pool.Capture(source.Get(), {100, 4}, extra) == SnapshotResult::Ok, "capture a lease to discard");
     Check(pool.Discard(extra) == SnapshotResult::Ok, "discard unused captured lease");
     Check(pool.Discard(extra) == SnapshotResult::Stale, "discard is single use");
     // Drain a discarded producer using a test-only fence on the host context.

@@ -50,6 +50,7 @@ public:
     uint64_t AdapterLuid() const;
     uint64_t LastReaderSignal() const;
     ID3D12Fence* ReaderFence() const; // Borrowed; worker/test completion only.
+    ID3D12CommandQueue* BackendQueue() const; // Borrowed; same-queue output retirement.
     const char* InitializationStep() const { return init_step_; }
 private:
     struct State;
