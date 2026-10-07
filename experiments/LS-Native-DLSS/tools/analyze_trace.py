@@ -8,6 +8,7 @@ from pathlib import Path
 import struct
 
 DLL_HASH = "626b196d799606cd4250b7b29e04228692ab70cf56a5d1bbb56d748c8219f0eb"
+INPUT_SHADER_HASH = "214a8ad496c0ffff58e9739d4be085a450d82eaaf23e2ad21dea8b251872880f"
 SHADER_HASH = "3af0031e97f43a9372c23749ebbbe91506119268d84e869ba715ffe71bb9d45a"
 
 
@@ -29,19 +30,24 @@ def analyze(rows):
         errors.append("missing initial header")
     if not footer:
         errors.append("missing final footer: capture interrupted or initialization failed")
-    if header.get("schema_version") != 1 or header.get("dll_sha256") != DLL_HASH or header.get("shader_sha256") != SHADER_HASH:
+    if header.get("schema_version") not in (1, 2) or header.get("dll_sha256") != DLL_HASH or header.get("shader_sha256") != SHADER_HASH:
         errors.append("unsupported schema or native/shader identity")
     if header.get("resource_id") != 256 or header.get("replacement_enabled") is not False or header.get("present_owner") != "LS":
         errors.append("unexpected pass or ownership declaration")
     if header.get("source_frame_ids_known") is not False:
         errors.append("object IDs must not be declared source frame IDs")
+    schema = header.get("schema_version")
+    if schema == 2 and (header.get("input_resource_id") != 254 or header.get("input_shader_sha256") != INPUT_SHADER_HASH
+                        or header.get("source_mutation_coverage_complete") is not False
+                        or header.get("source_content_verified") is not False):
+        errors.append("unsupported input shader or overstated source-content provenance")
     frequency = header.get("qpc_frequency")
     if not uint(frequency) or not frequency:
         errors.append("invalid QPC frequency")
-    records = [r for r in rows[1:] if r.get("kind") == "dispatch"]
+    records = [r for r in rows[1:] if r.get("kind") in (("dispatch", "input_update") if schema == 2 else ("dispatch",))]
     if len(rows) != len(records) + bool(header) + bool(footer):
         errors.append("unexpected, repeated or misplaced records")
-    if not records:
+    if not any(r.get("kind") == "dispatch" for r in records):
         errors.append("no identified synthesis dispatches")
 
     phases = collections.Counter()
@@ -50,7 +56,8 @@ def analyze(rows):
     unknown = 0
     object_devices = {}
     for index, row in enumerate(records):
-        prefix = f"dispatch {index + 1}: "
+        input_update = row.get("kind") == "input_update"
+        prefix = f"{row.get('kind')} {index + 1}: "
         integers = ["sequence", "qpc", "device", "context", "adapter_luid", "thread"]
         if any(not uint(row.get(k)) or not row[k] for k in integers):
             errors.append(prefix + "missing/invalid dispatch or device identity")
@@ -60,7 +67,9 @@ def analyze(rows):
         devices.add(row["device"])
         contexts.add(row["context"])
         key = (row["device"], row["adapter_luid"])
-        if row["constants_known"] is True:
+        if input_update:
+            pass  # Timestamp/scale are not consumed by the input-copy kernel.
+        elif row.get("constants_known") is True:
             try:
                 phase = float_bits(row.get("phase_bits"))
                 scale = float_bits(row.get("resolution_scale_bits"))
@@ -75,12 +84,12 @@ def analyze(rows):
                 errors.append(prefix + "constant snapshot range does not contain the shader constants")
             else:
                 widths.add(width)
-        elif row["constants_known"] is False:
+        elif row.get("constants_known") is False:
             unknown += 1
         else:
             errors.append(prefix + "invalid constants_known flag")
         inputs, output, groups = row.get("inputs"), row.get("output"), row.get("groups")
-        if not isinstance(inputs, list) or len(inputs) != 5 or not isinstance(output, dict):
+        if not isinstance(inputs, list) or len(inputs) != (1 if input_update else 5) or not isinstance(output, dict):
             errors.append(prefix + "invalid binding list")
             continue
         valid_bindings = True
@@ -99,14 +108,16 @@ def analyze(rows):
                 errors.append(prefix + "texture object identity used across devices/adapters")
         if not valid_bindings:
             continue
-        if inputs[0]["object"] == inputs[1]["object"]:
+        if not input_update and inputs[0]["object"] == inputs[1]["object"]:
             warnings.append(prefix + "t0 and t1 reference the same resource; no distinct source pair is established")
         if output["object"] in {r["object"] for r in inputs}:
             errors.append(prefix + "output aliases an input resource")
         width = max(1, output["width"] >> output["mip"])
         height = max(1, output["height"] >> output["mip"])
-        dimensions.add((width, height, output["view_format"]))
-        if groups != [(width + 15) // 16, (height + 15) // 16, 1]:
+        if not input_update:
+            dimensions.add((width, height, output["view_format"]))
+        group_size = 8 if input_update else 16
+        if groups != [(width + group_size - 1) // group_size, (height + group_size - 1) // group_size, 1]:
             errors.append(prefix + "Dispatch groups disagree with output mip dimensions")
 
     if sorted(sequences) != list(range(1, len(records) + 1)):
@@ -126,20 +137,96 @@ def analyze(rows):
         errors.append(f"{unknown} dispatches have unknown constant contents")
     if phases and any(not p.startswith("0x3f000000 ") for p in phases):
         warnings.append("non-midpoint phases observed: the current fixed x2 DLSS slot policy cannot replace these slots")
+    pair_matches = validate_source_updates(records, errors, warnings) if schema == 2 else 0
     return {
-        "schema_version": 1, "observation_valid": not errors,
-        "records": len(records), "phase_histogram": dict(sorted(phases.items())),
+        "schema_version": schema, "observation_valid": not errors,
+        "records": len(records), "input_updates": sum(r.get("kind") == "input_update" for r in records),
+        "pairs_matching_observed_updates": pair_matches, "phase_histogram": dict(sorted(phases.items())),
         "constant_buffer_sizes": sorted(widths),
         "adapter_luids": [f"0x{x:016x}" for x in sorted(adapters)],
         "devices": len(devices), "contexts": len(contexts),
         "output_dimensions_and_formats": [list(d) for d in sorted(dimensions)],
         "errors": errors, "warnings": warnings,
+        "source_mutation_coverage_complete": False, "source_content_verified": False,
         "replacement_verified": False, "source_frame_ids_verified": False,
         "physical_vrr_verified": False,
-        "limits": ["Texture object IDs do not identify successive image contents.",
+        "limits": ["Input-update generations identify observed submissions, not actual game frames or complete mutation coverage.",
                    "A pre-Dispatch record does not establish GPU completion or displayed frame order.",
                    "This metadata cannot prove native frame pacing, HDR semantics, or game motion-vector packing."]
     }
+
+
+def validate_source_updates(records, errors, warnings):
+    """Replay CPU submission stamps. Missing writer coverage never authorizes replacement."""
+    histories, epoch_owners = {}, {}
+    matches = unmatched = 0
+    identity = ("device", "context", "adapter_luid", "thread")
+    stamp_ids = ("epoch", "generation", "sequence", "qpc", *identity)
+    for row in sorted(records, key=lambda r: r.get("sequence", -1) if uint(r.get("sequence")) else -1):
+        prefix = f"record {row.get('sequence')}: "
+        key = tuple(row.get(k) for k in identity)
+        if any(not uint(v) or not v for v in key):
+            continue
+        if row.get("kind") == "input_update":
+            w = row.get("source_write")
+            if not isinstance(w, dict) or any(not uint(w.get(k)) or not w[k] for k in stamp_ids) or not uint(w.get("command_epoch")):
+                errors.append(prefix + "invalid source-write stamp")
+                continue
+            if any(w[k] != row.get(k) for k in ("sequence", "qpc", *identity)) or w.get("texture") != row.get("output"):
+                errors.append(prefix + "source-write stamp disagrees with the submitted update")
+            texture = w.get("texture", {})
+            if (not isinstance(texture, dict) or texture.get("mip") != 0 or texture.get("samples") != 1
+                    or texture.get("array_size") != 1 or not texture.get("object")
+                    or texture.get("format") != texture.get("view_format")):
+                errors.append(prefix + "unsupported source-write view")
+                continue
+            old = histories.get(key, [])
+            if w["epoch"] in epoch_owners and old and old[-1]["epoch"] != w["epoch"]:
+                errors.append(prefix + "retired source epoch was reused")
+            owner = epoch_owners.setdefault(w["epoch"], key)
+            if owner != key:
+                errors.append(prefix + "source epoch reused across devices, contexts or threads")
+            if old and old[-1]["epoch"] == w["epoch"]:
+                last = old[-1]
+                compatible = (last["generation"] + 1 == w["generation"] and last["qpc"] <= w["qpc"]
+                              and last["command_epoch"] == w["command_epoch"]
+                              and last["texture"].get("object") != texture.get("object")
+                              and all(last["texture"].get(k) == texture.get(k) for k in ("width", "height", "format", "view_format")))
+                if not compatible:
+                    errors.append(prefix + "source generation, extent, order or command epoch is inconsistent")
+                histories[key] = [last, w]
+            else:
+                if w["generation"] != 1:
+                    errors.append(prefix + "source session starts without generation one")
+                histories[key] = [w]
+        else:
+            declared = row.get("pair_matches_observed_updates")
+            if type(declared) is not bool:
+                errors.append(prefix + "missing source-pair declaration")
+                continue
+            if not declared:
+                unmatched += 1
+                continue
+            history = histories.get(key, [])
+            inputs = row.get("inputs")
+            good = (len(history) == 2 and isinstance(inputs, list) and len(inputs) >= 2)
+            if good:
+                a, b = history
+                good = (row.get("previous_write") == a and row.get("current_write") == b
+                        and a["generation"] + 1 == b["generation"] and a["epoch"] == b["epoch"]
+                        and a["command_epoch"] == b["command_epoch"]
+                        and a["texture"] == inputs[0] and b["texture"] == inputs[1]
+                        and uint(row.get("qpc")) and row["qpc"] >= b["qpc"]
+                        and uint(row.get("sequence")) and row["sequence"] > b["sequence"])
+            if not good:
+                errors.append(prefix + "declared pair does not match the latest two observed input writes")
+            else:
+                matches += 1
+    if unmatched:
+        warnings.append(f"{unmatched} synthesis dispatches have no matching observed input pair; native fallback required")
+    if not any(r.get("kind") == "input_update" for r in records):
+        warnings.append("no identified input updates; texture content generations remain unknown")
+    return matches
 
 
 def read_trace(path):

@@ -15,6 +15,14 @@ struct TextureObservation {
     uint32_t mip = 0, array_size = 0, samples = 0, bind_flags = 0;
 };
 
+// A CPU-observed input Dispatch submission, not a game frame or GPU completion.
+struct SourceWriteObservation {
+    uint64_t epoch = 0, generation = 0, sequence = 0, qpc = 0;
+    uint64_t command_epoch = 0, device = 0, context = 0, adapter_luid = 0;
+    uint32_t thread = 0;
+    TextureObservation texture;
+};
+
 struct DispatchObservation {
     uint64_t sequence = 0, qpc = 0, device = 0, context = 0, adapter_luid = 0;
     uint32_t thread = 0, groups_x = 0, groups_y = 0, groups_z = 0;
@@ -23,6 +31,8 @@ struct DispatchObservation {
     bool constants_known = false;
     std::array<TextureObservation, 5> inputs{};
     TextureObservation output;
+    bool input_update = false, pair_matches_observed_updates = false;
+    SourceWriteObservation source_write, previous_write, current_write;
 };
 
 struct ConstantBytes {

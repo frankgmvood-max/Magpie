@@ -17,7 +17,7 @@ once for every intercepted Dispatch. No texture contents are changed.
   First ApplySettings resolves the sibling native library; optional observation
   starts outside loader lock. If no ApplySettings call occurs, observation does
   not start. Wrong/missing observation config leaves the ordinary proxy active.
-- Observation requires the full provided native DLL's SHA256 and shader 256's
+- Observation requires the full provided native DLL's SHA256 and both shaders 254/256's
   exact SHA256. A mismatch leaves native generation running. This is not an ABI
   promise for future LS versions: revalidate the original DLL and settings ABI.
 - No manager window, addon discovery, SDK, resource replacement callback, or old
@@ -38,20 +38,26 @@ native frame pacing with observation enabled is not a shipping acceptance run.
 
 ## Trace contents and limitations
 
-For every identified synthesis pass, JSONL records:
+Schema 2 records input-update 254 submissions after native Dispatch and synthesis
+256 bindings before Dispatch. The sequence counter covers **both** event types.
+The analyzer remains compatible with schema 1 synthesis-only captures. Records contain:
 
 - QPC/thread/context/device IDs, adapter LUID, Dispatch group counts;
 - b0 subrange, captured allocation size, phase bits and resolution-scale bits;
 - five input texture IDs and output UAV texture ID, resource/view formats,
   dimensions, mip, samples and array size;
-- header identity and footer counters, including lost records and hook/tag failures.
+- input update epochs/generations and the last two per-context submissions;
+- whether synthesis t0/t1 match those observed writes, including actual texture,
+  device/context/thread identity, extent and command-list epoch;
+- header identities for both kernels and footer counters, including lost records
+  and hook/tag failures. Generations are submission versions, not game frame IDs.
 
 No observer-initiated GPU Map/readback, additional Copy, wait, Flush, sleep/limiter
 or Present is executed from the rendering callback. Native Map/Copy/update calls
 are forwarded unchanged; their destination snapshots are invalidated beforehand. The observer's bounded queue uses try-lock;
 it drops records instead of blocking if full or contended. Formatting and disk
 I/O run on a separate writer thread. The writer stops after the configured time
-or maximum identified slots. Disabling observation takes effect on next launch.
+or maximum identified records (input updates plus synthesis slots). Disabling observation takes effect on next launch.
 
 Executable detours/trampolines and state are pinned for process lifetime.
 The worker stops and closes the trace outside DllMain; hooks then only forward.
@@ -61,7 +67,20 @@ evidence. Configuration or log failures never activate a replacement backend.
 
 **Texture object IDs are not source frame IDs.** Reused textures may contain new
 image data, and externally shared textures can change without an LS write.
-The trace establishes bindings and phase observations, not pair content order,
+A source texture's private stamp changes at each observed native input update.
+Consecutive updates can be associated with the statically mapped previous/current
+bindings even when an object is reused. Map/Copy/update destinations, unknown
+compute writes to the first eight UAV slots, missed records and deferred execution
+invalidate continuity. Same-object consecutive updates, extent changes, thread
+changes and new sessions cannot establish a pair. A repeated synthesis slot can
+use the same pair; synthesis slots are not mistaken for new input images.
+
+**Mutation coverage is incomplete.** Draw/Clear/Resolve/Discard, higher UAV slots
+and external writes are not all intercepted. Therefore headers/reports explicitly
+keep `source_mutation_coverage_complete` and `source_content_verified` false.
+`pair_matches_observed_updates` is only agreement with observed submissions;
+it never authorizes DLSS replacement or proves the pixels stayed unchanged.
+The trace establishes bindings and phase observations, not verified pair pixels,
 source capture IDs, GPU retirement, motion units/direction, SDR/HDR semantics,
 displayed frame order or physical VRR. Those remain separate acceptance gates.
 The game GPU exists in another process; observing one output adapter here does
@@ -106,7 +125,7 @@ code is not part of this path. Do not substitute fixture files.
 
 Observation defaults off. To capture, set [Observation] Enabled=1, then launch
 and activate a native Fixed x2 profile. DurationSeconds and MaxRecords bound the
-capture (1..120 seconds, 1..65536 identified slots). This stage still generates
+capture (1..120 seconds, 1..65536 identified records). This stage still generates
 with LSFG. Logs are `logs/native-observation-PID-QPC.jsonl`.
 
 ```sh
@@ -119,3 +138,15 @@ can become true from this stage; passing metadata is not permission to substitut
 an NGX result. Next work: capture-content provenance and lifetime, a native
 bit-identical no-op copy, then compatible SM86/NVOF shadow execution and measured
 ready-only substitution at verified midpoint slots.
+
+## Source-pair regression coverage
+
+Portable tests check first-frame warm-up, order reversal, reused texture objects,
+stale stamps, different device/context/thread, command-list epochs, dimensions,
+missing generations and repeated synthesis slots. The Windows WARP test compiles
+its **own** 8×8 input-copy and 16×16 interpolation kernels, exercises real
+CreateComputeShader/Dispatch hooks, and checks post-submission stamps, pair
+matching, CopyResource invalidation, reversed inputs and repeated-resource writes.
+It contains no commercial shader bytecode, NVIDIA runtime or native LS execution.
+The transport tests remain separate; this observer is not yet connected to their
+GPU-copy pools. Passing WARP cannot certify physical VRR or native cadence.

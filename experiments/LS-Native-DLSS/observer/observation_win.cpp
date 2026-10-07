@@ -1,5 +1,6 @@
 #include "observation_win.h"
 #include "../include/observation.h"
+#include "../include/source_pair.h"
 #include <MinHook.h>
 #include <bcrypt.h>
 #include <d3d11_4.h>
@@ -16,12 +17,16 @@
 #include <vector>
 #ifdef LS_OBSERVER_TEST
 #include <iostream>
+#include <d3dcompiler.h>
 #endif
 
 namespace {
 using namespace ls_native;
 constexpr char kDllHash[] = "626b196d799606cd4250b7b29e04228692ab70cf56a5d1bbb56d748c8219f0eb";
 constexpr char kShaderHash[] = "3af0031e97f43a9372c23749ebbbe91506119268d84e869ba715ffe71bb9d45a";
+constexpr char kInputShaderHash[] = "214a8ad496c0ffff58e9739d4be085a450d82eaaf23e2ad21dea8b251872880f";
+constexpr GUID kSourceTag = {0x50df9543,0x14a1,0x4bbd,{0x92,0xa4,0x17,0x2b,0x6e,0x9c,0x41,0x25}};
+constexpr GUID kHistoryTag = {0x672e5e3c,0x0a87,0x4e53,{0xbb,0xa6,0x9c,0xe6,0xdf,0x13,0x26,0x6b}};
 constexpr GUID kShaderTag = {0x31cc6f57,0xb3af,0x46b2,{0x83,0x5a,0x15,0xa7,0xd3,0x1d,0x68,0x08}};
 constexpr GUID kConstantTag = {0x8962412c,0x5b5a,0x445e,{0xaf,0x61,0xf6,0x56,0x5c,0x90,0x26,0xa5}};
 constexpr GUID kDeviceTag = {0x0836a18d,0x2a0b,0x40fb,{0x8d,0xc7,0xc9,0x15,0xc0,0x91,0x01,0x14}};
@@ -102,7 +107,8 @@ struct State {
     std::atomic<uint64_t> serial{0}, seen{0}, untagged{0}, busy{0}, tagged_shaders{0}, tagged_buffers{0}, callbacks{0};
     std::mutex capture_mutex, install_mutex;
     ObservationQueue<DispatchObservation, 512> records;
-    std::vector<uint8_t> shader;
+    std::vector<uint8_t> shader, input_shader;
+    std::atomic<uint64_t> source_invalidation_epoch{1};
     std::ofstream log;
     Hook<CreateShaderFn> shaders[kHookLimit];
     Hook<CreateBufferFn> buffers[kHookLimit];
@@ -140,23 +146,25 @@ void Texture(ID3D11Resource* resource, UINT view_format, UINT mip, TextureObserv
     out.samples = desc.SampleDesc.Count; out.bind_flags = desc.BindFlags;
 }
 
-void Observe(ID3D11DeviceContext* ctx, UINT x, UINT y, UINT z) {
+void Observe(ID3D11DeviceContext* ctx, UINT x, UINT y, UINT z, bool after_dispatch) {
     // This is deliberately metadata-only. No Map, GPU copy, fence query/wait,
     // Flush, Present, shader replacement or settings adjustment.
     Com<ID3D11ComputeShader> shader;
     ctx->CSGetShader(shader.Put(), nullptr, nullptr);
     uint32_t resource_id = 0;
-    if (!ReadTag(shader.p, kShaderTag, resource_id) || resource_id != 256) return;
+    if (!ReadTag(shader.p, kShaderTag, resource_id) ||
+        (after_dispatch ? resource_id != 254 : resource_id != 256)) return;
     if (ctx->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE) { ++g->untagged; return; }
     const uint64_t sequence = ++g->seen;
     if (sequence > g->max_records) { g->active.store(false); return; }
     std::unique_lock<std::mutex> lock(g->capture_mutex, std::try_to_lock);
-    if (!lock.owns_lock()) { ++g->busy; return; }
+    if (!lock.owns_lock()) { ++g->busy; ++g->source_invalidation_epoch; return; }
     Com<ID3D11Device> device;
     ctx->GetDevice(device.Put());
     DeviceTag tag;
     if (!ReadTag(device.p, kDeviceTag, tag)) { ++g->untagged; return; }
     DispatchObservation record;
+    record.input_update = after_dispatch;
     record.sequence = sequence; record.device = tag.object; record.adapter_luid = tag.luid;
     record.context = ObjectId(ctx); record.thread = GetCurrentThreadId();
     LARGE_INTEGER now{}; QueryPerformanceCounter(&now); record.qpc = static_cast<uint64_t>(now.QuadPart);
@@ -174,7 +182,8 @@ void Observe(ID3D11DeviceContext* ctx, UINT x, UINT y, UINT z) {
         DecodeConstants(constants.bytes, first, count, record);
     else { record.first_constant = first; record.num_constants = count; }
 
-    for (UINT i = 0; i != 5; ++i) {
+    std::array<SourceWriteObservation, 2> source_tags{};
+    for (UINT i = 0; i != (after_dispatch ? 1u : 5u); ++i) {
         Com<ID3D11ShaderResourceView> view;
         ctx->CSGetShaderResources(i, 1, view.Put());
         if (!view.p) continue;
@@ -182,17 +191,46 @@ void Observe(ID3D11DeviceContext* ctx, UINT x, UINT y, UINT z) {
         if (desc.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D) continue;
         Com<ID3D11Resource> texture; view->GetResource(texture.Put());
         Texture(texture.p, desc.Format, desc.Texture2D.MostDetailedMip, record.inputs[i]);
+        if (i < source_tags.size()) ReadTag(texture.p, kSourceTag, source_tags[i]);
     }
+    Com<ID3D11Resource> output_resource;
     Com<ID3D11UnorderedAccessView> output;
     ctx->CSGetUnorderedAccessViews(0, 1, output.Put());
     if (output.p) {
         D3D11_UNORDERED_ACCESS_VIEW_DESC desc{}; output->GetDesc(&desc);
         if (desc.ViewDimension == D3D11_UAV_DIMENSION_TEXTURE2D) {
-            Com<ID3D11Resource> texture; output->GetResource(texture.Put());
-            Texture(texture.p, desc.Format, desc.Texture2D.MipSlice, record.output);
+            output->GetResource(output_resource.Put());
+            Texture(output_resource.p, desc.Format, desc.Texture2D.MipSlice, record.output);
         }
     }
-    g->records.TryPush(record);
+    SourcePairHistory history;
+    ReadTag(ctx, kHistoryTag, history);
+    const uint64_t invalidation = g->source_invalidation_epoch.load();
+    if (history.invalidation_epoch != invalidation ||
+        history.current.command_epoch != g->command_epoch.load()) history = {};
+    if (after_dispatch) {
+        auto& w = record.source_write;
+        w.sequence = sequence; w.qpc = record.qpc; w.command_epoch = g->command_epoch.load();
+        w.device = record.device; w.context = record.context; w.adapter_luid = record.adapter_luid;
+        w.thread = record.thread; w.texture = record.output;
+        if (CanContinueSource(history.current, w)) {
+            w.epoch = history.current.epoch; w.generation = history.current.generation + 1;
+        } else { w.epoch = ++g->serial; w.generation = 1; }
+        const bool valid = record.inputs[0].object && record.inputs[0].object != w.texture.object &&
+            x == (uint64_t(w.texture.width) + 7) / 8 && y == (uint64_t(w.texture.height) + 7) / 8 && z == 1 &&
+            AppendSourceWrite(history, w);
+        history.invalidation_epoch = invalidation;
+        if (!valid || !output_resource.p ||
+            FAILED(output_resource->SetPrivateData(kSourceTag, sizeof(w), &w)) ||
+            FAILED(ctx->SetPrivateData(kHistoryTag, sizeof(history), &history))) {
+            if (output_resource.p) output_resource->SetPrivateData(kSourceTag, 0, nullptr);
+            ++g->untagged; ++g->source_invalidation_epoch;
+        }
+    } else {
+        record.previous_write = source_tags[0]; record.current_write = source_tags[1];
+        record.pair_matches_observed_updates = MatchObservedSourcePair(history, source_tags[0], source_tags[1], record);
+    }
+    if (!g->records.TryPush(record)) ++g->source_invalidation_epoch;
 }
 
 template<int I> HRESULT STDMETHODCALLTYPE Shader(ID3D11Device* dev, const void* bytes, SIZE_T size,
@@ -202,10 +240,11 @@ template<int I> HRESULT STDMETHODCALLTYPE Shader(ID3D11Device* dev, const void* 
     t_shader = true;
     const HRESULT hr = original(dev, bytes, size, linkage, result);
     DeviceTag device;
-    if (SUCCEEDED(hr) && result && *result && bytes && ReadTag(dev, kDeviceTag, device) &&
-        size == g->shader.size() && std::memcmp(bytes, g->shader.data(), size) == 0) {
-        const uint32_t id = 256;
-        if (SUCCEEDED((*result)->SetPrivateData(kShaderTag, sizeof(id), &id))) ++g->tagged_shaders;
+    if (SUCCEEDED(hr) && result && *result && bytes && ReadTag(dev, kDeviceTag, device)) {
+        uint32_t id = 0;
+        if (size == g->shader.size() && std::memcmp(bytes, g->shader.data(), size) == 0) id = 256;
+        else if (size == g->input_shader.size() && std::memcmp(bytes, g->input_shader.data(), size) == 0) id = 254;
+        if (id && SUCCEEDED((*result)->SetPrivateData(kShaderTag, sizeof(id), &id))) ++g->tagged_shaders;
     }
     t_shader = false;
     return hr;
@@ -238,6 +277,10 @@ void Invalidate(ID3D11Resource* destination) {
     if (!g->active.load() || !destination) return;
     ConstantTag prior;
     if (ReadTag(destination, kConstantTag, prior)) destination->SetPrivateData(kConstantTag, 0, nullptr);
+    SourceWriteObservation source;
+    if (ReadTag(destination, kSourceTag, source)) {
+        destination->SetPrivateData(kSourceTag, 0, nullptr); ++g->source_invalidation_epoch;
+    }
 }
 template<int I> HRESULT STDMETHODCALLTYPE Map(ID3D11DeviceContext* ctx, ID3D11Resource* res, UINT sub,
     D3D11_MAP type, UINT flags, D3D11_MAPPED_SUBRESOURCE* result) {
@@ -268,14 +311,35 @@ template<int I> void STDMETHODCALLTYPE Execute(ID3D11DeviceContext* ctx, ID3D11C
     if (g->active.load()) ++g->command_epoch; // Contents of arbitrary lists are unknown.
     g->executions[I].original(ctx, list, restore);
 }
+// Conservative invalidation for compute writes to previously tagged inputs.
+// Clear/Draw/Resolve/Discard and external writes are NOT covered; logs explicitly
+// refuse to certify source contents or authorize replacement from these stamps.
+void InvalidateComputeOutputs(ID3D11DeviceContext* ctx) {
+    Com<ID3D11Device> device; ctx->GetDevice(device.Put()); DeviceTag tag;
+    if (!ReadTag(device.p, kDeviceTag, tag)) return;
+    Com<ID3D11ComputeShader> shader; ctx->CSGetShader(shader.Put(), nullptr, nullptr);
+    uint32_t id = 0; ReadTag(shader.p, kShaderTag, id);
+    for (UINT i = 0; i != D3D11_PS_CS_UAV_REGISTER_COUNT; ++i) {
+        Com<ID3D11UnorderedAccessView> view; ctx->CSGetUnorderedAccessViews(i, 1, view.Put());
+        if (!view.p) continue;
+        Com<ID3D11Resource> resource; view->GetResource(resource.Put());
+        SourceWriteObservation prior;
+        if (!ReadTag(resource.p, kSourceTag, prior)) continue;
+        if (id == 254 && i == 0) resource->SetPrivateData(kSourceTag, 0, nullptr);
+        else Invalidate(resource.p);
+    }
+}
 template<int I> void STDMETHODCALLTYPE Dispatch(ID3D11DeviceContext* ctx, UINT x, UINT y, UINT z) {
     const auto original = g->dispatches[I].original;
     if (t_dispatch) { original(ctx, x, y, z); return; }
     ++g->callbacks;
     if (g->active.load()) {
         t_dispatch = true;
-        try { Observe(ctx, x, y, z); } catch (...) { ++g->untagged; }
+        try { InvalidateComputeOutputs(ctx); Observe(ctx, x, y, z, false); }
+        catch (...) { ++g->untagged; ++g->source_invalidation_epoch; }
         original(ctx, x, y, z); // Exactly once. Native output is always produced.
+        try { if (g->active.load()) Observe(ctx, x, y, z, true); }
+        catch (...) { ++g->untagged; ++g->source_invalidation_epoch; }
         t_dispatch = false;
     } else original(ctx, x, y, z);
     --g->callbacks;
@@ -399,16 +463,30 @@ void WriteTexture(std::ostream& out, const TextureObservation& t) {
         << ",\"format\":" << t.format << ",\"view_format\":" << t.view_format << ",\"mip\":" << t.mip
         << ",\"array_size\":" << t.array_size << ",\"samples\":" << t.samples << ",\"bind_flags\":" << t.bind_flags << '}';
 }
+void WriteSource(std::ostream& out, const SourceWriteObservation& w) {
+    out << "{\"epoch\":" << w.epoch << ",\"generation\":" << w.generation
+        << ",\"sequence\":" << w.sequence << ",\"qpc\":" << w.qpc << ",\"command_epoch\":" << w.command_epoch
+        << ",\"device\":" << w.device << ",\"context\":" << w.context << ",\"adapter_luid\":" << w.adapter_luid
+        << ",\"thread\":" << w.thread << ",\"texture\":";
+    WriteTexture(out, w.texture); out << '}';
+}
 void WriteRecord(const DispatchObservation& r) {
     auto& out = g->log;
-    out << "{\"kind\":\"dispatch\",\"sequence\":" << r.sequence << ",\"qpc\":" << r.qpc
+    out << "{\"kind\":\"" << (r.input_update ? "input_update" : "dispatch") << "\",\"sequence\":" << r.sequence << ",\"qpc\":" << r.qpc
         << ",\"device\":" << r.device << ",\"context\":" << r.context << ",\"adapter_luid\":" << r.adapter_luid
         << ",\"thread\":" << r.thread << ",\"groups\":[" << r.groups_x << ',' << r.groups_y << ',' << r.groups_z
         << "],\"constants_known\":" << (r.constants_known ? "true" : "false") << ",\"phase_bits\":" << r.phase_bits
         << ",\"resolution_scale_bits\":" << r.resolution_scale_bits << ",\"cb_byte_width\":" << r.cb_byte_width
         << ",\"first_constant\":" << r.first_constant << ",\"num_constants\":" << r.num_constants << ",\"inputs\":[";
-    for (size_t i = 0; i != r.inputs.size(); ++i) { if (i) out << ','; WriteTexture(out, r.inputs[i]); }
-    out << "],\"output\":"; WriteTexture(out, r.output); out << "}\n";
+    for (size_t i = 0; i != (r.input_update ? 1u : r.inputs.size()); ++i) { if (i) out << ','; WriteTexture(out, r.inputs[i]); }
+    out << "],\"output\":"; WriteTexture(out, r.output);
+    if (r.input_update) { out << ",\"source_write\":"; WriteSource(out, r.source_write); }
+    else {
+        out << ",\"pair_matches_observed_updates\":" << (r.pair_matches_observed_updates ? "true" : "false");
+        out << ",\"previous_write\":"; WriteSource(out, r.previous_write);
+        out << ",\"current_write\":"; WriteSource(out, r.current_write);
+    }
+    out << "}\n";
 }
 void Writer() {
     const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(g->duration);
@@ -448,6 +526,12 @@ void StartNativeObservation(HMODULE native, HMODULE proxy, const std::filesystem
         const auto bytes = static_cast<const uint8_t*>(LockResource(LoadResource(native, res)));
         Hash sha;
         if (!bytes || !size || !sha.Open() || !sha.Add(bytes, size) || sha.Finish() != kShaderHash) return;
+        const auto input_res = FindResourceW(native, MAKEINTRESOURCEW(254), MAKEINTRESOURCEW(10));
+        const auto input_size = SizeofResource(native, input_res);
+        const auto input_bytes = static_cast<const uint8_t*>(LockResource(LoadResource(native, input_res)));
+        Hash input_sha;
+        if (!input_bytes || !input_size || !input_sha.Open() || !input_sha.Add(input_bytes, input_size) ||
+            input_sha.Finish() != kInputShaderHash) return;
         // Pin before installing executable detours. Never remove a trampoline
         // while native callers might still be inside it or unload this module.
         HMODULE pinned = nullptr;
@@ -455,6 +539,7 @@ void StartNativeObservation(HMODULE native, HMODULE proxy, const std::filesystem
             reinterpret_cast<LPCWSTR>(proxy), &pinned)) return;
         g = new State; // Deliberate process-lifetime storage; no loader-lock teardown.
         g->shader.assign(bytes, bytes + size);
+        g->input_shader.assign(input_bytes, input_bytes + input_size);
         g->duration = std::clamp(GetPrivateProfileIntW(L"Observation", L"DurationSeconds", 20, ini.c_str()), 1u, 120u);
         g->max_records = std::clamp(GetPrivateProfileIntW(L"Observation", L"MaxRecords", 4096, ini.c_str()), 1u, 65536u);
         LARGE_INTEGER frequency{}, start{};
@@ -463,8 +548,10 @@ void StartNativeObservation(HMODULE native, HMODULE proxy, const std::filesystem
         std::filesystem::create_directories(folder / L"logs");
         g->log.open(folder / L"logs" / (L"native-observation-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(start.QuadPart) + L".jsonl"));
         if (!g->log) return;
-        g->log << "{\"kind\":\"header\",\"schema_version\":1,\"dll_sha256\":\"" << kDllHash
+        g->log << "{\"kind\":\"header\",\"schema_version\":2,\"dll_sha256\":\"" << kDllHash
             << "\",\"shader_sha256\":\"" << kShaderHash << "\",\"resource_id\":256,\"qpc_frequency\":" << g->frequency
+            << ",\"input_shader_sha256\":\"" << kInputShaderHash << "\",\"input_resource_id\":254"
+            << ",\"source_mutation_coverage_complete\":false,\"source_content_verified\":false"
             << ",\"present_owner\":\"LS\",\"replacement_enabled\":false,\"source_frame_ids_known\":false}\n";
         g->log.flush();
         const auto d3d = LoadLibraryExW(L"d3d11.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -539,8 +626,87 @@ int NativeObservationSelfTest() {
     if (FAILED(deferred->FinishCommandList(FALSE, list.Put()))) return 1;
     ctx->ExecuteCommandList(list.p, FALSE);
     if (initial_epoch == g->command_epoch.load()) { std::cerr << "command-list provenance unchanged\n"; return 1; }
+    // Compile our own two tiny kernels. No commercial shader bytes are used.
+    auto compile = [&](const char* source, std::vector<uint8_t>& identity, ID3D11ComputeShader** result) {
+        Com<ID3DBlob> code, error;
+        if (FAILED(D3DCompile(source, std::strlen(source), nullptr, nullptr, nullptr, "main", "cs_5_0",
+            D3DCOMPILE_ENABLE_STRICTNESS, 0, code.Put(), error.Put()))) return false;
+        const auto begin = static_cast<const uint8_t*>(code->GetBufferPointer());
+        identity.assign(begin, begin + code->GetBufferSize());
+        return SUCCEEDED(dev->CreateComputeShader(begin, code->GetBufferSize(), nullptr, result));
+    };
+    const char* copy_code =
+        "Texture2D<float4> A : register(t0); RWTexture2D<float4> O : register(u0);"
+        "[numthreads(8,8,1)] void main(uint3 p:SV_DispatchThreadID) { O[p.xy] = A.Load(int3(p.xy,0)); }";
+    const char* synth_code =
+        "Texture2D<float4> A : register(t0); Texture2D<float4> B : register(t1);"
+        "RWTexture2D<float4> O : register(u0);"
+        "[numthreads(16,16,1)] void main(uint3 p:SV_DispatchThreadID) {"
+        " O[p.xy] = (A.Load(int3(p.xy,0))+B.Load(int3(p.xy,0)))*0.5; }";
+    Com<ID3D11ComputeShader> copy_shader, synth_shader;
+    if (!compile(copy_code, g->input_shader, copy_shader.Put()) ||
+        !compile(synth_code, g->shader, synth_shader.Put())) return 1;
+    uint32_t id = 0;
+    if (!ReadTag(copy_shader.p, kShaderTag, id) || id != 254 ||
+        !ReadTag(synth_shader.p, kShaderTag, id) || id != 256) return 1;
+    std::array<Com<ID3D11Texture2D>, 6> images;
+    std::array<Com<ID3D11ShaderResourceView>, 6> views;
+    std::array<Com<ID3D11UnorderedAccessView>, 6> outputs;
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = 16; td.Height = 16; td.MipLevels = td.ArraySize = td.SampleDesc.Count = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+    for (size_t i = 0; i != images.size(); ++i) {
+        if (FAILED(dev->CreateTexture2D(&td, nullptr, images[i].Put())) ||
+            FAILED(dev->CreateShaderResourceView(images[i].p, nullptr, views[i].Put())) ||
+            FAILED(dev->CreateUnorderedAccessView(images[i].p, nullptr, outputs[i].Put()))) return 1;
+    }
+    bytes[6] = 0x3f800000;
+    Com<ID3D11Buffer> phase;
+    if (FAILED(dev->CreateBuffer(&desc, &initial, phase.Put()))) return 1;
+    ctx->CSSetConstantBuffers(0, 1, &phase.p);
+    auto unbind = [&] {
+        ID3D11ShaderResourceView* nulls[5]{}; ID3D11UnorderedAccessView* null_output = nullptr;
+        ctx->CSSetShaderResources(0, 5, nulls); ctx->CSSetUnorderedAccessViews(0, 1, &null_output, nullptr);
+    };
+    auto update = [&](size_t destination) {
+        unbind(); ctx->CSSetShader(copy_shader.p, nullptr, 0);
+        ctx->CSSetShaderResources(0, 1, &views[0].p);
+        ctx->CSSetUnorderedAccessViews(0, 1, &outputs[destination].p, nullptr);
+        ctx->Dispatch(2, 2, 1); unbind();
+    };
+    auto synthesize = [&](size_t previous, size_t current) {
+        unbind(); ctx->CSSetShader(synth_shader.p, nullptr, 0);
+        ID3D11ShaderResourceView* bindings[]{views[previous].p, views[current].p, views[0].p, views[3].p, views[4].p};
+        ctx->CSSetShaderResources(0, 5, bindings);
+        ctx->CSSetUnorderedAccessViews(0, 1, &outputs[5].p, nullptr);
+        ctx->Dispatch(1, 1, 1); unbind();
+    };
+    DispatchObservation first, second, synthesis;
+    update(1); update(2); synthesize(1, 2);
+    if (!g->records.TryPop(first) || !g->records.TryPop(second) || !g->records.TryPop(synthesis) ||
+        !first.input_update || !second.input_update || first.source_write.generation != 1 ||
+        second.source_write.generation != 2 || synthesis.input_update ||
+        !synthesis.pair_matches_observed_updates || !synthesis.constants_known) {
+        std::cerr << "post-Dispatch source update pair was not established\n"; return 1;
+    }
+    synthesize(2, 1);
+    if (!g->records.TryPop(synthesis) || synthesis.pair_matches_observed_updates) return 1;
+    ctx->CopyResource(images[1].p, images[0].p);
+    synthesize(1, 2);
+    if (!g->records.TryPop(synthesis) || synthesis.pair_matches_observed_updates) {
+        std::cerr << "pair survived an unaccounted CopyResource write\n"; return 1;
+    }
+    update(1); update(2); update(1); synthesize(2, 1);
+    DispatchObservation third;
+    if (!g->records.TryPop(first) || !g->records.TryPop(second) || !g->records.TryPop(third) ||
+        !g->records.TryPop(synthesis) || first.source_write.generation != 1 ||
+        third.source_write.generation != 3 || third.source_write.texture.object != first.source_write.texture.object ||
+        !synthesis.pair_matches_observed_updates || g->untagged.load()) return 1;
+    // Known kernel writing the same object twice cannot establish distinct sources.
+    update(1); synthesize(2, 1);
+    if (!g->records.TryPop(first) || !g->records.TryPop(synthesis) || synthesis.pair_matches_observed_updates) return 1;
     g->active.store(false);
-    std::cout << "WARP creation snapshot, Map invalidation and deferred epoch passed\n";
+    std::cout << "WARP creation snapshot, Map invalidation, deferred epoch, source writes, reuse and pair invalidation passed\n";
     return 0;
 }
 #endif
