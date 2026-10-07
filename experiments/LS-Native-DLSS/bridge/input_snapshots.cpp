@@ -290,4 +290,5 @@ uint64_t InputSnapshots::LastReaderSignal() const { return state_ ? state_->read
 ID3D12Fence* InputSnapshots::ReaderFence() const { return state_ ? state_->reader.Get() : nullptr; }
 ID3D12CommandQueue* InputSnapshots::BackendQueue() const { return state_ ? state_->queue.Get() : nullptr; }
 ID3D12Fence* InputSnapshots::ProducerFence() const { return state_ ? state_->producer12.Get() : nullptr; }
+ID3D11Device* InputSnapshots::NativeDevice() const { return state_ ? state_->device11.Get() : nullptr; }
 } // namespace ls_native

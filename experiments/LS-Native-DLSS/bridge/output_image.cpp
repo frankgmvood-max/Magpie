@@ -123,7 +123,16 @@ SnapshotResult OutputImage::Submit(const Identity& identity, InputSnapshots& inp
     auto& s = *state_;
     if (!s.Alive()) return SnapshotResult::DeviceFailure;
     if (s.phase != State::Phase::Acquired || !(s.identity == identity)) return SnapshotResult::Stale;
-    if (!Same(inputs.BackendQueue(), s.queue.Get())) return SnapshotResult::Invalid;
+    if (!tickets || !count || count > 8 || !Same(inputs.BackendQueue(), s.queue.Get()) ||
+        !Same(inputs.NativeDevice(), s.device11.Get())) return SnapshotResult::Invalid;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (tickets[i].epoch != s.epoch) return SnapshotResult::Invalid;
+        auto* resource = inputs.Resource(tickets[i]);
+        if (!resource) return SnapshotResult::Stale;
+        const auto desc = resource->GetDesc();
+        if (desc.Width != s.width || desc.Height != s.height || desc.Format != s.format)
+            return SnapshotResult::Invalid;
+    }
     if (s.ready_value == UINT64_MAX - 1) { s.failed = true; return SnapshotResult::DeviceFailure; }
     const auto result = inputs.SubmitReads(tickets, count, commands);
     if (result != SnapshotResult::Ok) {

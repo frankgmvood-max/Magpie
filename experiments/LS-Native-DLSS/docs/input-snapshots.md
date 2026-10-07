@@ -80,7 +80,9 @@ SDR format, session epoch and exact midpoint slot identity.
 
 The backend list declares its input leases and is submitted through the same
 queue as `InputSnapshots`. Input retirement, then output completion, have distinct
-signals. The worker must publish the actual inference success and
+signals. The source pool must also belong to the same native device, session
+epoch, extent and format; sharing a queue or adapter alone is insufficient.
+The worker must publish the actual inference success and
 disable-interpolation result after GPU completion. Unknown or disabled output is
 not copied. `TryCopy` additionally applies the existing verified-slot policy and
 checks the destination's native device, extent and format. It never waits or

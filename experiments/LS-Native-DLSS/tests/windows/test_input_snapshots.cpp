@@ -123,6 +123,9 @@ void RoundTrip(InputSnapshots& inputs, const SnapshotTicket& input, ID3D11Device
     ComPtr<ID3D12Fence> backend_gate;
     Hr(d12->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&backend_gate)), "output reader gate");
     Hr(queue->Wait(backend_gate.Get(), 1), "hold output work");
+    auto changed_input = input; ++changed_input.epoch;
+    Check(output.Submit(slot, inputs, &changed_input, 1, list.Get()) == SnapshotResult::Invalid,
+        "another input epoch cannot populate this output slot");
     Check(output.Submit(slot, inputs, &input, 1, list.Get()) == SnapshotResult::Ok, "submit no-op backend");
     Check(output.PublishResult(slot, true, false) == SnapshotResult::Busy, "cannot publish unfinished GPU output");
     Check(output.CloseIfIdle() == SnapshotResult::Busy, "backend output retains allocation");

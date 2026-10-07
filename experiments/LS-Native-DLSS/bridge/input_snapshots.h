@@ -57,6 +57,7 @@ public:
     ID3D12Fence* ReaderFence() const; // Borrowed; worker/test completion only.
     ID3D12CommandQueue* BackendQueue() const; // Borrowed; same-queue output retirement.
     ID3D12Fence* ProducerFence() const; // Borrowed; independent-engine dependency.
+    ID3D11Device* NativeDevice() const; // Borrowed; output/source session validation.
     const char* InitializationStep() const { return init_step_; }
 private:
     struct State;
