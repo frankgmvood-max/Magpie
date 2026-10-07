@@ -73,6 +73,7 @@ InputSnapshots::~InputSnapshots() {
 HRESULT InputSnapshots::Initialize(ID3D11DeviceContext* context, ID3D12Device* backend,
     ID3D12CommandQueue* queue, uint64_t epoch, uint32_t width, uint32_t height,
     DXGI_FORMAT format, uint32_t count) {
+    init_step_ = "validate configuration";
     if (state_ || !context || !backend || !queue || !epoch || epoch <= last_epoch_ || !width || !height ||
         width > 16384 || height > 16384 || count < 2 || count > 8 || !Supported(format) ||
         context->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE) return E_INVALIDARG;
@@ -83,24 +84,35 @@ HRESULT InputSnapshots::Initialize(ID3D11DeviceContext* context, ID3D12Device* b
     ComPtr<IDXGIAdapter> adapter;
     ComPtr<ID3D12Device> queue_device;
     DXGI_ADAPTER_DESC adapter_desc{};
+    init_step_ = "native device5";
     HRESULT hr = native_device.As(&s->device11);
     if (FAILED(hr)) return hr;
+    init_step_ = "native context4";
     if (FAILED(hr = context->QueryInterface(IID_PPV_ARGS(&s->context)))) return hr;
+    init_step_ = "DXGI device";
     if (FAILED(hr = native_device.As(&dxgi))) return hr;
+    init_step_ = "DXGI adapter";
     if (FAILED(hr = dxgi->GetAdapter(&adapter))) return hr;
+    init_step_ = "adapter description";
     if (FAILED(hr = adapter->GetDesc(&adapter_desc))) return hr;
+    init_step_ = "queue device";
     if (FAILED(hr = queue->GetDevice(IID_PPV_ARGS(&queue_device)))) return hr;
     s->luid = LuidBits(adapter_desc.AdapterLuid);
+    init_step_ = "queue type and adapter identity";
     if (!SameObject(queue_device.Get(), backend) ||
         s->luid != LuidBits(backend->GetAdapterLuid()) ||
         queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT) return E_INVALIDARG;
     s->device12 = backend; s->queue = queue;
     s->count = count; s->epoch = epoch; s->width = width; s->height = height; s->format = format;
+    init_step_ = "shared producer fence";
     if (FAILED(hr = backend->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&s->producer12)))) return hr;
+    init_step_ = "reader fence";
     if (FAILED(hr = backend->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&s->reader)))) return hr;
     {
         Handle handle;
+        init_step_ = "producer fence handle";
         if (FAILED(hr = backend->CreateSharedHandle(s->producer12.Get(), nullptr, GENERIC_ALL, nullptr, &handle.value))) return hr;
+        init_step_ = "D3D11 open producer fence";
         if (FAILED(hr = s->device11->OpenSharedFence(handle.value, IID_PPV_ARGS(&s->producer11)))) return hr;
     }
     D3D12_HEAP_PROPERTIES heap{};
@@ -114,16 +126,20 @@ HRESULT InputSnapshots::Initialize(ID3D11DeviceContext* context, ID3D12Device* b
     desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
     for (uint32_t i = 0; i < count; ++i) {
         auto& slot = s->slots[i];
+        init_step_ = "shared D3D12 texture";
         if (FAILED(hr = backend->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_SHARED, &desc,
                 D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&slot.texture12)))) return hr;
         Handle handle;
+        init_step_ = "shared texture handle";
         if (FAILED(hr = backend->CreateSharedHandle(slot.texture12.Get(), nullptr, GENERIC_ALL, nullptr, &handle.value))) return hr;
+        init_step_ = "D3D11 open shared texture";
         if (FAILED(hr = s->device11->OpenSharedResource1(handle.value, IID_PPV_ARGS(&slot.texture11)))) return hr;
     }
     s->pool = ++next_pool;
     if (!s->pool) return E_FAIL;
     last_epoch_ = epoch;
     state_ = std::move(s);
+    init_step_ = "ready";
     return S_OK;
 }
 SnapshotResult InputSnapshots::Collect() {

@@ -103,7 +103,9 @@ void Run(DXGI_FORMAT format) {
     Check(pool.Collect() == SnapshotResult::NotInitialized, "uninitialized gate");
     Check(pool.Initialize(context.Get(), d12.Get(), queue.Get(), 0, kWidth, kHeight, format, 2)
         == E_INVALIDARG, "zero epoch rejected");
-    Hr(pool.Initialize(context.Get(), d12.Get(), queue.Get(), 77, kWidth, kHeight, format, 2), "initialize shared snapshots");
+    const HRESULT init = pool.Initialize(context.Get(), d12.Get(), queue.Get(), 77, kWidth, kHeight, format, 2);
+    if (FAILED(init)) std::cerr << "Initialization stage: " << pool.InitializationStep() << '\n';
+    Hr(init, "initialize shared snapshots");
     Check(pool.AdapterLuid() != 0, "actual adapter identity");
     Check(pool.Initialize(context.Get(), d12.Get(), queue.Get(), 78, kWidth, kHeight, format, 2)
         == E_INVALIDARG, "live epoch cannot be replaced");

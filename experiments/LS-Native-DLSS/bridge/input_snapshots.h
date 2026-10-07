@@ -50,9 +50,11 @@ public:
     uint64_t AdapterLuid() const;
     uint64_t LastReaderSignal() const;
     ID3D12Fence* ReaderFence() const; // Borrowed; worker/test completion only.
+    const char* InitializationStep() const { return init_step_; }
 private:
     struct State;
     std::unique_ptr<State> state_;
     uint64_t last_epoch_ = 0;
+    const char* init_step_ = "not started";
 };
 } // namespace ls_native
