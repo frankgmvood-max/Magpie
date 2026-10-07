@@ -1,0 +1,13 @@
+LIBRARY Lossless
+EXPORTS
+    Activate=Lossless_original.Activate @1
+    ApplySettings @2
+    GetAdapterNames=Lossless_original.GetAdapterNames @3
+    GetDisplayNames=Lossless_original.GetDisplayNames @4
+    GetDwmRefreshRate=Lossless_original.GetDwmRefreshRate @5
+    GetForegroundWindowEx=Lossless_original.GetForegroundWindowEx @6
+    Init=Lossless_original.Init @7
+    IsWindowsBuildAtLeast=Lossless_original.IsWindowsBuildAtLeast @8
+    SetDriverSettings=Lossless_original.SetDriverSettings @9
+    SetWindowsSettings=Lossless_original.SetWindowsSettings @10
+    UnInit=Lossless_original.UnInit @11

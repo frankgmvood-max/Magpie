@@ -1,0 +1,115 @@
+# Standalone native observer (stage 1)
+
+The target architecture replaces native optical flow and synthesis with NVIDIA
+work while LS retains scaling, capture, profiles, cursor handling, HDR behaviour,
+its output window, queue and every Present. The addon manager is excluded.
+
+This commit implements **observation**, not DLSS/NVOF replacement. It must not
+be described as a working quality or VRR fix. Native synthesis still runs exactly
+once for every intercepted Dispatch. No texture contents are changed.
+
+## Bootstrap and compatibility
+
+- x64 `Lossless.dll`: ten PE forwarders to `Lossless_original.dll`, preserving
+  names and ordinals. Only ApplySettings is wrapped, with all 32 native arguments
+  passed unchanged. Init, UnInit and native settings/driver functions remain LS's.
+- DllMain only stores the module handle and disables thread notifications.
+  First ApplySettings resolves the sibling native library; optional observation
+  starts outside loader lock. If no ApplySettings call occurs, observation does
+  not start. Wrong/missing observation config leaves the ordinary proxy active.
+- Observation requires the full provided native DLL's SHA256 and shader 256's
+  exact SHA256. A mismatch leaves native generation running. This is not an ABI
+  promise for future LS versions: revalidate the original DLL and settings ABI.
+- No manager window, addon discovery, SDK, resource replacement callback, or old
+  OutputBridge. MinHook 1.3.4 uses the fork's existing BSD-2-Clause sources.
+- The native module's D3D11CreateDevice delay import is intercepted. Successfully
+  created LS devices receive independent IDs and actual DXGI adapter LUIDs.
+  CreateComputeShader tags only an exact matching bytecode payload; CreateBuffer
+  snapshots immutable/dynamic constant buffers with initial CPU data, 32..64 bytes.
+- Native immediate-context Dispatch is intercepted at the runtime entry points.
+  WARP probes discover regular/single-threaded and protected/unprotected refresh
+  entries before native capture starts. Nested runtime calls are counted once.
+  Deferred-context synthesis is unsupported and reported as untagged.
+
+Only the observer's private COM metadata GUIDs and import/detour bindings are
+changed. Shader bytes, texture pixels and native CS bindings are not changed.
+Private-data calls and metadata queries still have CPU overhead. Benchmarking
+native frame pacing with observation enabled is not a shipping acceptance run.
+
+## Trace contents and limitations
+
+For every identified synthesis pass, JSONL records:
+
+- QPC/thread/context/device IDs, adapter LUID, Dispatch group counts;
+- b0 subrange, captured allocation size, phase bits and resolution-scale bits;
+- five input texture IDs and output UAV texture ID, resource/view formats,
+  dimensions, mip, samples and array size;
+- header identity and footer counters, including lost records and hook/tag failures.
+
+No observer-initiated GPU Map/readback, additional Copy, wait, Flush, sleep/limiter
+or Present is executed from the rendering callback. Native Map/Copy/update calls
+are forwarded unchanged; their destination snapshots are invalidated beforehand. The observer's bounded queue uses try-lock;
+it drops records instead of blocking if full or contended. Formatting and disk
+I/O run on a separate writer thread. The writer stops after the configured time
+or maximum identified slots. Disabling observation takes effect on next launch.
+
+Executable detours/trampolines and state are pinned for process lifetime.
+The worker stops and closes the trace outside DllMain; hooks then only forward.
+No unsafe FreeLibrary/hot-unload or trampoline removal is attempted. Exit before
+the footer can produce an interrupted trace; the analyzer rejects it as complete
+evidence. Configuration or log failures never activate a replacement backend.
+
+**Texture object IDs are not source frame IDs.** Reused textures may contain new
+image data, and externally shared textures can change without an LS write.
+The trace establishes bindings and phase observations, not pair content order,
+source capture IDs, GPU retirement, motion units/direction, SDR/HDR semantics,
+displayed frame order or physical VRR. Those remain separate acceptance gates.
+The game GPU exists in another process; observing one output adapter here does
+not prove or disprove the user's two-GPU topology.
+
+## Build and tests
+
+Developer shell on Windows with CMake, VS/Windows SDK:
+
+```bat
+cmake -S experiments\LS-Native-DLSS\observer -B build\native-observer -A x64
+cmake --build build\native-observer --config Release --parallel
+ctest --test-dir build\native-observer -C Release --output-on-failure
+```
+
+`abi-fixture/` contains a **fake** original DLL exclusively for automated tests.
+It is not LS; never put it in an LS installation. The fixture independently
+declares the ABI, verifies all 32 differently typed settings arguments, checks
+ten export forwarders, and requests observation with a deliberately unsupported
+DLL hash to exercise normal pass-through after a failed observation gate.
+Assertion-based tests explicitly undefine NDEBUG in Release builds.
+
+Local Linux validation: the real supplied DLL metadata match, Python rejection
+tests, native C++ queue/slot tests, MinGW Windows x64 compilation with warnings as
+errors, and PE export verification. Cross compilation is not a Windows runtime
+test; CI does not contain the proprietary DLL or RTX 3080 runtime.
+
+## Research installation, once Windows tests pass
+
+Use a separate copy of the user's licensed LS installation, with LS stopped.
+Preserve the manager proxy so it can be restored. Keep the **actual** native
+Lossless_original.dll (expected hash); use only the built standalone Lossless.dll
+and observer/NativeDLSS.ini beside the application. The addons folder need not
+be moved or deleted: this proxy never loads it. Existing old addon/OutputBridge
+code is not part of this path. Do not substitute fixture files.
+
+Observation defaults off. To capture, set [Observation] Enabled=1, then launch
+and activate a native Fixed x2 profile. DurationSeconds and MaxRecords bound the
+capture (1..120 seconds, 1..65536 identified slots). This stage still generates
+with LSFG. Logs are `logs/native-observation-PID-QPC.jsonl`.
+
+```sh
+python experiments/LS-Native-DLSS/tools/analyze_trace.py /path/to/trace.jsonl --output local/trace-summary.json
+```
+
+The analysis has separate `observation_valid`, `replacement_verified`,
+`source_frame_ids_verified` and `physical_vrr_verified` fields. Only the first
+can become true from this stage; passing metadata is not permission to substitute
+an NGX result. Next work: capture-content provenance and lifetime, a native
+bit-identical no-op copy, then compatible SM86/NVOF shadow execution and measured
+ready-only substitution at verified midpoint slots.

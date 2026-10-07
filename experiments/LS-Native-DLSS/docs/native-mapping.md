@@ -20,6 +20,7 @@ version using these offsets. Reproduce the metadata with `verify_reference.py`.
 | Bind final shader | 0x24570 → 0x2457d | Object +0x11f0 bound through context offset 0x228 (CSSetShader) |
 | Final synthesis dispatch | 0x245cd | Context offset 0x148 (Dispatch), dimensions derived from output width/height |
 | Phase-like value propagation | 0x21961, 0x21a68 | XMM2 copied to XMM9; written at byte 28 of per-level constant data |
+| Constant buffer recreation | 0x21ab1 → 0x21ae3 | ByteWidth=48, Usage=2 (DYNAMIC), BindFlags=4 (CONSTANT_BUFFER); CreateBuffer at device vtable offset 0x18 |
 
 RTTI does not recover names or prototypes. `.pdata` contains split function
 fragments; adjacent unwind entries must not be interpreted as whole function
@@ -56,6 +57,18 @@ Timestamp is consistent with a continuous interpolation parameter, but midpoint
 0.5, frame direction, end-point tolerance and source order have not been checked
 against controlled images on the user's machine. No readiness/deadline is recovered
 from this float. It is not an absolute presentation timestamp just because of its name.
+
+The 32-byte size above is the shader's reflected layout, not the CPU allocation.
+The inspected CPU path releases the earlier buffer (+0x298), writes the phase
+into the CPU data (+0x258 → byte 28), and creates a **48-byte dynamic** buffer
+using initial pSysMem. This supports an observation-only CreateBuffer snapshot
+without GPU readback. DYNAMIC is value 2; IMMUTABLE is value 1. A creation
+snapshot of a dynamic buffer is valid only until a later write. The observer
+invalidates it on Map, CopyResource/CopySubresourceRegion(1), UpdateSubresource(1),
+and invalidates all dynamic epochs on ExecuteCommandList. It never reads a
+native mapped write-combined pointer. An incomplete mutation-hook installation
+stops observation. This does not assume another mode/version follows the path. Constant-buffer subrange offsets
+are decoded from CSGetConstantBuffers1 where that interface exists.
 
 Resources 262/266/281 also use Timestamp and multiple inputs, but are loaded into
 other object members (+0x1170 in alternative modes). This is why the earlier heuristic

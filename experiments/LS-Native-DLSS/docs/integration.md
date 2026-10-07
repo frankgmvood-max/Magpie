@@ -8,12 +8,16 @@ OnPresent, wait on a CPU fence in a dispatch callback, or driver FG presenter.
 The old LS-DLSSFG addon/OutputBridge do not satisfy this ownership model. Reuse
 preprocessing/NGX code selectively; do not run the old addon concurrently.
 
-The addon manager could be a temporary observation/bootstrap mechanism. It is
-not architecturally required by the replacement backend; a standalone proxy
-must forward the exact native ABI and settings before it can replace the manager.
+The target excludes the addon manager. `observer/` now implements the standalone
+Lossless.dll proxy and does not build against the manager or its SDK. It forwards
+the native ABI and observes selected compute commands; it does not yet replace
+either native optical flow or synthesis. No addon is required for this stage.
 Manager SDK 1.2 provides pre/post Dispatch hooks, not authoritative pair IDs,
 interpolation phase or a native generated-frame provider. Its shader-intercepted
 event is reserved and not sent. Do not assume it supplies a ready integration API.
+The manager source was used to check ABI conventions only. The standalone
+observer uses the actual intercepted context and its device, not a newest-device
+global. Its full DLL/shader hash gates and limitations are documented separately.
 
 ## Initial implementation sequence
 

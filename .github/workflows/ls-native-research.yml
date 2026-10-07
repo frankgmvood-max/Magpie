@@ -21,17 +21,19 @@ jobs:
         run: |
           g++ -std=c++17 -Wall -Wextra -Werror -pedantic experiments/LS-Native-DLSS/tests/test_slot_policy.cpp -o /tmp/slot-policy
           /tmp/slot-policy
+      - name: Observation snapshots and concurrent queue
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic -pthread experiments/LS-Native-DLSS/tests/test_observation.cpp -o /tmp/observation-tests
+          /tmp/observation-tests
   windows-tool:
-    runs-on: windows-2025
+    runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v7
-      - name: Compile read-only disassembler and slot test
-        shell: cmd
+      - name: Configure standalone proxy, tools and ABI fixture
         run: |
-          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
-          if errorlevel 1 exit /b 1
-          cl /nologo /std:c++17 /EHsc /W4 /WX experiments\LS-Native-DLSS\tools\disassemble_shaders.cpp /Fe:disassemble_shaders.exe /link d3dcompiler.lib
-          if errorlevel 1 exit /b 1
-          cl /nologo /std:c++17 /EHsc /W4 /WX experiments\LS-Native-DLSS\tests\test_slot_policy.cpp /Fe:slot-policy.exe
-          if errorlevel 1 exit /b 1
-          slot-policy.exe
+          cmake -S experiments/LS-Native-DLSS/observer -B build/native-observer -A x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build/native-observer --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run native Windows queue, slot and forwarding tests
+        run: ctest --test-dir build/native-observer -C Release --output-on-failure
