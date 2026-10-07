@@ -6,6 +6,7 @@
 #include <iostream>
 #include <vector>
 #include <stdexcept>
+#include <thread>
 
 using namespace ls_native;
 using Microsoft::WRL::ComPtr;
@@ -159,9 +160,22 @@ void TestRetirement(bool ordered) {
     Hr(gate_device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&gate12)), "gate fence");
     HANDLE handle = nullptr; Hr(gate_device->CreateSharedHandle(gate12.Get(), nullptr, GENERIC_ALL, nullptr, &handle), "gate handle");
     const HRESULT opened = f.device5->OpenSharedFence(handle, IID_PPV_ARGS(&gate11)); CloseHandle(handle); Hr(opened, "gate import");
-    struct ReleaseGate { ID3D12Fence* fence; ~ReleaseGate() { fence->Signal(1); } } release{gate12.Get()};
+    struct ReleaseGate {
+        ID3D12Fence* fence;
+        HANDLE event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        std::atomic<bool> forced{false};
+        std::thread worker;
+        explicit ReleaseGate(ID3D12Fence* f) : fence(f), worker([this] {
+            if (WaitForSingleObject(event, 2000) != WAIT_OBJECT_0) { forced.store(true); fence->Signal(1); }
+        }) {}
+        ~ReleaseGate() { SetEvent(event); fence->Signal(1); worker.join(); CloseHandle(event); }
+        void Release() { SetEvent(event); fence->Signal(1); }
+    } release(gate12.Get());
+    std::cout << "retirement: holding native GPU queue\n";
     Hr(f.context4->Wait(gate11.Get(), 1), "hold native retirement");
+    std::cout << "retirement: native dispatch/composite\n";
     f.Native(); Require(backend.Composite(f.Slot(b, c), f.outputs[3].Get()), "ready result queued behind held native fence");
+    std::cout << "retirement: second ring source\n";
     f.Unbind();
     auto d = f.Source(1, 100); Require(backend.Source(f.images[1].Get(), d), "second ring slot");
     if (!ordered) {
@@ -169,13 +183,15 @@ void TestRetirement(bool ordered) {
         f.Unbind();
     }
     auto e = f.Source(0, 120);
+    std::cout << "retirement: acquiring third ring source; forced=" << release.forced.load() << '\n';
     Require(!backend.Source(f.images[0].Get(), e), "completed output is still leased until native retirement");
     Require(backend.PollCounters().busy > 0, "bounded ring busy fallback");
-    Hr(gate12->Signal(1), "release native retirement"); f.Pixels(ordered ? 60 : 255);
+    Require(!release.forced.load(), "WARP blocked host while native fence was held");
+    release.Release(); f.Pixels(ordered ? 60 : 255);
     auto next = f.Source(1, 140); Require(backend.Source(f.images[1].Get(), next), "retired ring reusable");
     f.Native(); Require(!backend.Composite(f.Slot(e, next), f.outputs[3].Get()), "dropped evaluation resets history"); f.Pixels(255);
     std::cout << "Held native retirement, bounded ring reuse and " << (ordered ? "GPU ordering" : "ready-only fallback") << " passed\n";
 }
 }
-int main() { try { Test(false); Test(true); TestRetirement(true); TestRetirement(false); return 0; }
+int main() { std::cout << std::unitbuf; try { Test(false); Test(true); TestRetirement(true); TestRetirement(false); return 0; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; } }
