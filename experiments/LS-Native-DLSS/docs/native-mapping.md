@@ -48,6 +48,11 @@ index at object +0x40. t2/t3/t4 are bound from +0xfa8/+0x1018/+0x1078.
 These three intermediate textures must not be called NGX motion vectors merely
 because they are used by interpolation. Their packing/direction/units are unverified.
 
+Subsequent local translated-assembly inspection narrows their *consumer* roles:
+t2/t3 each provide two xy/zw displacement pairs; t4 supplies four blend-logit
+samples. Producer conventions and temporal interpretation remain unverified.
+See [synthesis-inputs.md](synthesis-inputs.md); this is not GPU validation.
+
 UAV comes from the output ring around +0x1108; the function returns an SRV from
 +0x1118 indexed by +0x48, with an alternate branch returning +0x10d8. Texture
 identity and conversion branches require runtime verification. The two endpoint

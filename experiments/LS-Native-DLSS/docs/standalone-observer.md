@@ -89,6 +89,12 @@ tests, native C++ queue/slot tests, MinGW Windows x64 compilation with warnings 
 errors, and PE export verification. Cross compilation is not a Windows runtime
 test; CI does not contain the proprietary DLL or RTX 3080 runtime.
 
+Windows MSVC/WARP validation subsequently passed in
+[run 37662866543](https://github.com/frankgmvood-max/Magpie/actions/runs/37662866543):
+four tests including real CreateBuffer/Map/ExecuteCommandList detours on WARP,
+the independent ABI fixture, and the native name/ordinal PE-table check. No real
+LS, SM86 NGX, hardware image-quality test or physical VRR test was performed.
+
 ## Research installation, once Windows tests pass
 
 Use a separate copy of the user's licensed LS installation, with LS stopped.
