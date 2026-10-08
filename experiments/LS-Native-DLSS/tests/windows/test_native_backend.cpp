@@ -153,6 +153,10 @@ void TestRetirement(bool ordered) {
     };
     completed(1);
     auto c = f.Source(0, 80); Require(backend.Source(f.images[0].Get(), c), "retirement second pair"); completed(2);
+    // Upload future source images before holding WARP's native queue. The CPU
+    // UpdateSubresource implementation may synchronize a blocked software queue;
+    // production Source uses GPU CopyResource and performs no CPU uploads.
+    auto d = f.Source(1, 100), e = f.Source(2, 120); f.Drain();
     ComPtr<IDXGIDevice> dxgi; ComPtr<IDXGIAdapter> adapter; ComPtr<ID3D12Device> gate_device;
     Hr(f.device.As(&dxgi), "gate dxgi"); Hr(dxgi->GetAdapter(&adapter), "gate adapter");
     Hr(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&gate_device)), "gate device");
@@ -177,14 +181,13 @@ void TestRetirement(bool ordered) {
     f.Native(); Require(backend.Composite(f.Slot(b, c), f.outputs[3].Get()), "ready result queued behind held native fence");
     std::cout << "retirement: second ring source\n";
     f.Unbind();
-    auto d = f.Source(1, 100); Require(backend.Source(f.images[1].Get(), d), "second ring slot");
+    Require(backend.Source(f.images[1].Get(), d), "second ring slot");
     if (!ordered) {
         f.Native(); Require(!backend.Composite(f.Slot(c, d), f.outputs[3].Get()), "ready-only rejects unfinished GPU result");
         f.Unbind();
     }
-    auto e = f.Source(0, 120);
     std::cout << "retirement: acquiring third ring source; forced=" << release.forced.load() << '\n';
-    Require(!backend.Source(f.images[0].Get(), e), "completed output is still leased until native retirement");
+    Require(!backend.Source(f.images[2].Get(), e), "completed output is still leased until native retirement");
     Require(backend.PollCounters().busy > 0, "bounded ring busy fallback");
     Require(!release.forced.load(), "WARP blocked host while native fence was held");
     release.Release(); f.Pixels(ordered ? 60 : 255);
