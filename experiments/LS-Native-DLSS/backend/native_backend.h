@@ -16,6 +16,7 @@ struct BackendOptions {
 struct BackendCounters {
     uint64_t submitted = 0, composite_queued = 0, busy = 0, mismatched = 0;
     uint64_t gpu_disabled = 0, gpu_enabled = 0, failed = 0;
+    uint64_t ineligible = 0, destination_rejected = 0, warmup = 0;
 };
 // Initial experimental Fixed x2 SDR path. LS still executes its original
 // synthesis. GPU-side conditional stores replace only a matched midpoint and

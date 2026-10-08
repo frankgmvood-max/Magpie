@@ -98,6 +98,14 @@ using UpdateFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Resource*,
 using Region1Fn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext1*, ID3D11Resource*, UINT, UINT, UINT, UINT, ID3D11Resource*, UINT, const D3D11_BOX*, UINT);
 using Update1Fn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext1*, ID3D11Resource*, UINT, const D3D11_BOX*, const void*, UINT, UINT, UINT);
 using ExecuteFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11CommandList*, BOOL);
+using IndirectFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Buffer*, UINT);
+using ResolveFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Resource*, UINT, ID3D11Resource*, UINT, DXGI_FORMAT);
+using ClearUintFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11UnorderedAccessView*, const UINT*);
+using ClearFloatFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11UnorderedAccessView*, const FLOAT*);
+using DiscardResourceFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext1*, ID3D11Resource*);
+using DiscardViewFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext1*, ID3D11View*);
+using ClearViewFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext1*, ID3D11View*, const FLOAT*, const D3D11_RECT*, UINT);
+using DiscardView1Fn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext1*, ID3D11View*, const D3D11_RECT*, UINT);
 struct ConstantTag { ConstantBytes bytes; uint64_t command_epoch = 0; uint32_t usage = 0; };
 template<class Fn> struct Hook { void* target = nullptr; Fn original = nullptr; };
 constexpr int kHookLimit = 12;
@@ -124,6 +132,14 @@ struct State {
     Hook<Region1Fn> regions1[kHookLimit];
     Hook<Update1Fn> updates1[kHookLimit];
     Hook<ExecuteFn> executions[kHookLimit];
+    Hook<IndirectFn> indirects[kHookLimit];
+    Hook<ResolveFn> resolves[kHookLimit];
+    Hook<ClearUintFn> clear_uints[kHookLimit];
+    Hook<ClearFloatFn> clear_floats[kHookLimit];
+    Hook<DiscardResourceFn> discard_resources[kHookLimit];
+    Hook<DiscardViewFn> discard_views[kHookLimit];
+    Hook<ClearViewFn> clear_views[kHookLimit];
+    Hook<DiscardView1Fn> discard_views1[kHookLimit];
     std::atomic<uint64_t> command_epoch{0};
     CreateDeviceFn create = nullptr;
     uint32_t duration = 20, max_records = 4096;
@@ -139,7 +155,7 @@ struct State {
     std::mutex backend_mutex;
     std::array<Session, 4> sessions;
     std::ofstream backend_log;
-    std::atomic<uint64_t> source_calls{0}, slots_seen{0}, profile_revision{0}, backend_busy{0};
+    std::atomic<uint64_t> source_calls{0}, slots_seen{0}, profile_revision{0}, backend_busy{0}, session_limit{0};
     std::atomic<int> profile_type{0}, profile_mode{0}, profile_hdr{0};
     std::atomic<float> profile_multiplier{0};
 #endif
@@ -172,6 +188,7 @@ void BackendSource(ID3D11DeviceContext* ctx, ID3D11Resource* source, const Sourc
         session = &candidate; break;
     }
     if (session) session->backend->Source(texture.p, write);
+    else ++g->session_limit;
 }
 void BackendComposite(ID3D11DeviceContext* ctx, const DispatchObservation& record) {
     if (!BackendEnabled() || !record.pair_matches_observed_updates) return;
@@ -191,14 +208,15 @@ void BackendWriter() {
                 << " mode=" << g->profile_mode.load() << " multiplier=" << g->profile_multiplier.load()
                 << " hdr=" << g->profile_hdr.load() << " eligible=" << g->eligible.load()
                 << " source=" << g->source_calls.load() << " matched_slots=" << g->slots_seen.load()
-                << " controller_busy=" << g->backend_busy.load() << "\n";
+                << " controller_busy=" << g->backend_busy.load() << " session_limit=" << g->session_limit.load() << "\n";
             for (const auto& session : g->sessions) if (session.backend) {
                 const auto c = session.backend->PollCounters();
                 out << "session=" << session.context << " " << session.extent.width << 'x' << session.extent.height
                     << " step=" << session.backend->FailureStep() << " code=0x" << std::hex << session.backend->ErrorCode() << std::dec
                     << " submitted=" << c.submitted << " composite_queued=" << c.composite_queued
                     << " busy=" << c.busy << " unmatched=" << c.mismatched << " flag_enabled_samples=" << c.gpu_enabled
-                    << " flag_disabled_samples=" << c.gpu_disabled << " failures=" << c.failed << "\n";
+                    << " flag_disabled_samples=" << c.gpu_disabled << " failures=" << c.failed
+                    << " ineligible=" << c.ineligible << " destination_rejected=" << c.destination_rejected << " warmup=" << c.warmup << "\n";
             }
             out.flush();
         }
@@ -370,6 +388,32 @@ void Invalidate(ID3D11Resource* destination) {
         destination->SetPrivateData(kSourceTag, 0, nullptr); ++g->source_invalidation_epoch;
     }
 }
+void InvalidateView(ID3D11View* view) {
+    if (!view) return;
+    Com<ID3D11Resource> resource; view->GetResource(resource.Put()); Invalidate(resource.p);
+}
+template<int I> void STDMETHODCALLTYPE Resolve(ID3D11DeviceContext* ctx, ID3D11Resource* dst, UINT sub,
+    ID3D11Resource* src, UINT src_sub, DXGI_FORMAT format) {
+    Invalidate(dst); g->resolves[I].original(ctx, dst, sub, src, src_sub, format);
+}
+template<int I> void STDMETHODCALLTYPE ClearUint(ID3D11DeviceContext* ctx, ID3D11UnorderedAccessView* view, const UINT* values) {
+    InvalidateView(view); g->clear_uints[I].original(ctx, view, values);
+}
+template<int I> void STDMETHODCALLTYPE ClearFloat(ID3D11DeviceContext* ctx, ID3D11UnorderedAccessView* view, const FLOAT* values) {
+    InvalidateView(view); g->clear_floats[I].original(ctx, view, values);
+}
+template<int I> void STDMETHODCALLTYPE DiscardResource(ID3D11DeviceContext1* ctx, ID3D11Resource* resource) {
+    Invalidate(resource); g->discard_resources[I].original(ctx, resource);
+}
+template<int I> void STDMETHODCALLTYPE DiscardView(ID3D11DeviceContext1* ctx, ID3D11View* view) {
+    InvalidateView(view); g->discard_views[I].original(ctx, view);
+}
+template<int I> void STDMETHODCALLTYPE ClearView(ID3D11DeviceContext1* ctx, ID3D11View* view, const FLOAT* values, const D3D11_RECT* rects, UINT count) {
+    InvalidateView(view); g->clear_views[I].original(ctx, view, values, rects, count);
+}
+template<int I> void STDMETHODCALLTYPE DiscardView1(ID3D11DeviceContext1* ctx, ID3D11View* view, const D3D11_RECT* rects, UINT count) {
+    InvalidateView(view); g->discard_views1[I].original(ctx, view, rects, count);
+}
 template<int I> HRESULT STDMETHODCALLTYPE Map(ID3D11DeviceContext* ctx, ID3D11Resource* res, UINT sub,
     D3D11_MAP type, UINT flags, D3D11_MAPPED_SUBRESOURCE* result) {
     // Never read a native write-combined mapped pointer. Even a failed Map
@@ -400,15 +444,20 @@ template<int I> void STDMETHODCALLTYPE Execute(ID3D11DeviceContext* ctx, ID3D11C
     g->executions[I].original(ctx, list, restore);
 }
 // Conservative invalidation for compute writes to previously tagged inputs.
-// Clear/Draw/Resolve/Discard and external writes are NOT covered; logs explicitly
+// Graphics Draw/OM UAV and external writes are NOT covered; logs explicitly
 // refuse to certify source contents or authorize replacement from these stamps.
 void InvalidateComputeOutputs(ID3D11DeviceContext* ctx) {
     Com<ID3D11Device> device; ctx->GetDevice(device.Put()); DeviceTag tag;
     if (!ReadTag(device.p, kDeviceTag, tag)) return;
     Com<ID3D11ComputeShader> shader; ctx->CSGetShader(shader.Put(), nullptr, nullptr);
     uint32_t id = 0; ReadTag(shader.p, kShaderTag, id);
-    for (UINT i = 0; i != D3D11_PS_CS_UAV_REGISTER_COUNT; ++i) {
-        Com<ID3D11UnorderedAccessView> view; ctx->CSGetUnorderedAccessViews(i, 1, view.Put());
+    const UINT count = device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_1 ? D3D11_1_UAV_SLOT_COUNT : D3D11_PS_CS_UAV_REGISTER_COUNT;
+    std::array<ID3D11UnorderedAccessView*, D3D11_1_UAV_SLOT_COUNT> raw{};
+    std::array<Com<ID3D11UnorderedAccessView>, D3D11_1_UAV_SLOT_COUNT> views;
+    ctx->CSGetUnorderedAccessViews(0, count, raw.data());
+    for (UINT i = 0; i != count; ++i) views[i].p = raw[i];
+    for (UINT i = 0; i != count; ++i) {
+        const auto& view = views[i];
         if (!view.p) continue;
         Com<ID3D11Resource> resource; view->GetResource(resource.Put());
         SourceWriteObservation prior;
@@ -416,6 +465,15 @@ void InvalidateComputeOutputs(ID3D11DeviceContext* ctx) {
         if (id == 254 && i == 0) resource->SetPrivateData(kSourceTag, 0, nullptr);
         else Invalidate(resource.p);
     }
+}
+template<int I> void STDMETHODCALLTYPE Indirect(ID3D11DeviceContext* ctx, ID3D11Buffer* args, UINT offset) {
+    if (g->active.load() && !t_dispatch) {
+        InvalidateComputeOutputs(ctx);
+        // Indirect dimensions are GPU data; never infer source continuity.
+        Com<ID3D11Device> device; ctx->GetDevice(device.Put()); DeviceTag tag;
+        if (ReadTag(device.p, kDeviceTag, tag)) ++g->source_invalidation_epoch;
+    }
+    g->indirects[I].original(ctx, args, offset);
 }
 template<int I> void STDMETHODCALLTYPE Dispatch(ID3D11DeviceContext* ctx, UINT x, UINT y, UINT z) {
     const auto original = g->dispatches[I].original;
@@ -450,22 +508,38 @@ template<class Fn, int... I> std::array<void*, kHookLimit> Detours(std::integer_
     else if constexpr (std::is_same_v<Fn, UpdateFn>) return {reinterpret_cast<void*>(&Update<I>)...};
     else if constexpr (std::is_same_v<Fn, Region1Fn>) return {reinterpret_cast<void*>(&Region1<I>)...};
     else if constexpr (std::is_same_v<Fn, Update1Fn>) return {reinterpret_cast<void*>(&Update1<I>)...};
+    else if constexpr (std::is_same_v<Fn, IndirectFn>) return {reinterpret_cast<void*>(&Indirect<I>)...};
+    else if constexpr (std::is_same_v<Fn, ResolveFn>) return {reinterpret_cast<void*>(&Resolve<I>)...};
+    else if constexpr (std::is_same_v<Fn, ClearUintFn>) return {reinterpret_cast<void*>(&ClearUint<I>)...};
+    else if constexpr (std::is_same_v<Fn, ClearFloatFn>) return {reinterpret_cast<void*>(&ClearFloat<I>)...};
+    else if constexpr (std::is_same_v<Fn, DiscardResourceFn>) return {reinterpret_cast<void*>(&DiscardResource<I>)...};
+    else if constexpr (std::is_same_v<Fn, DiscardViewFn>) return {reinterpret_cast<void*>(&DiscardView<I>)...};
+    else if constexpr (std::is_same_v<Fn, ClearViewFn>) return {reinterpret_cast<void*>(&ClearView<I>)...};
+    else if constexpr (std::is_same_v<Fn, DiscardView1Fn>) return {reinterpret_cast<void*>(&DiscardView1<I>)...};
     else return {reinterpret_cast<void*>(&Execute<I>)...};
 }
 
 bool InstallContext(ID3D11DeviceContext* ctx) {
     void** table = *reinterpret_cast<void***>(ctx);
     bool complete = Install(g->dispatches, table[41]);
+    complete &= Install(g->indirects, table[42]);
     complete &= Install(g->maps, table[14]);
     complete &= Install(g->copies, table[47]);
     complete &= Install(g->regions, table[46]);
     complete &= Install(g->updates, table[48]);
     complete &= Install(g->executions, table[58]);
+    complete &= Install(g->resolves, table[57]);
+    complete &= Install(g->clear_uints, table[51]);
+    complete &= Install(g->clear_floats, table[52]);
     Com<ID3D11DeviceContext1> ctx1;
     if (SUCCEEDED(ctx->QueryInterface(__uuidof(ID3D11DeviceContext1), reinterpret_cast<void**>(ctx1.Put())))) {
         void** extended = *reinterpret_cast<void***>(ctx1.p);
         complete &= Install(g->regions1, extended[115]);
         complete &= Install(g->updates1, extended[116]);
+        complete &= Install(g->discard_resources, extended[117]);
+        complete &= Install(g->discard_views, extended[118]);
+        complete &= Install(g->clear_views, extended[132]);
+        complete &= Install(g->discard_views1, extended[133]);
     }
     return complete;
 }
@@ -856,6 +930,11 @@ int NativeObservationSelfTest() {
     // Known kernel writing the same object twice cannot establish distinct sources.
     update(1); synthesize(2, 1);
     if (!g->records.TryPop(first) || !g->records.TryPop(synthesis) || synthesis.pair_matches_observed_updates) return 1;
+    update(2); synthesize(1, 2);
+    if (!g->records.TryPop(first) || !g->records.TryPop(synthesis) || !synthesis.pair_matches_observed_updates) return 1;
+    const FLOAT clear[4]{}; ctx->ClearUnorderedAccessViewFloat(outputs[1].p, clear);
+    synthesize(1, 2);
+    if (!g->records.TryPop(synthesis) || synthesis.pair_matches_observed_updates) { std::cerr << "pair survived UAV clear\n"; return 1; }
 #ifdef LS_WITH_NGX
     Com<ID3D11Device5> dev5; Com<ID3D11DeviceContext4> ctx4; Com<ID3D11Fence> fence;
     if (FAILED(dev->QueryInterface(__uuidof(ID3D11Device5), reinterpret_cast<void**>(dev5.Put()))) ||

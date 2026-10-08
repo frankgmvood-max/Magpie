@@ -550,13 +550,14 @@ bool NativeBackend::Source(ID3D11Texture2D* current, const SourceWriteObservatio
 bool NativeBackend::Composite(const DispatchObservation& slot, ID3D11UnorderedAccessView* destination) {
     if (!state_ || !destination) return false;
     auto& s = *state_; std::unique_lock<std::mutex> lock(s.mutex, std::try_to_lock); if (!lock.owns_lock()) return false;
-    if (s.failed || !s.initialized || !slot.pair_matches_observed_updates || !slot.constants_known || slot.phase_bits != 0x3f000000u ||
+    if (s.failed || !s.initialized) return false;
+    if (!slot.pair_matches_observed_updates || !slot.constants_known || slot.phase_bits != 0x3f000000u ||
         slot.output.mip || slot.output.width != s.extent.width || slot.output.height != s.extent.height ||
-        slot.output.samples != 1 || slot.output.array_size != 1 || !FormatSupported(static_cast<DXGI_FORMAT>(slot.output.view_format))) return false;
+        slot.output.samples != 1 || slot.output.array_size != 1 || !FormatSupported(static_cast<DXGI_FORMAT>(slot.output.view_format))) { ++s.counters.ineligible; return false; }
     D3D11_UNORDERED_ACCESS_VIEW_DESC view_desc{}; destination->GetDesc(&view_desc);
     ComPtr<ID3D11UnorderedAccessView> bound;
     s.native_context->CSGetUnorderedAccessViews(0, 1, &bound);
-    if (!Same(bound.Get(), destination)) return false;
+    if (!Same(bound.Get(), destination)) { ++s.counters.destination_rejected; return false; }
     ComPtr<ID3D11Resource> resource; destination->GetResource(&resource); ComPtr<ID3D11Device> device; resource->GetDevice(&device);
     if (!Same(device.Get(), s.native_device.Get()) || view_desc.ViewDimension != D3D11_UAV_DIMENSION_TEXTURE2D || view_desc.Texture2D.MipSlice != 0) return false;
     ComPtr<ID3D11Texture2D> texture; D3D11_TEXTURE2D_DESC desc{};
@@ -567,7 +568,10 @@ bool NativeBackend::Composite(const DispatchObservation& slot, ID3D11UnorderedAc
     State::Job* job = nullptr;
     for (UINT i = 0; i != s.slots; ++i) {
         auto& j = s.jobs[i];
-        if (j.ready && !j.consumed && !j.warmup && SameSourceWrite(j.previous, slot.previous_write) && SameSourceWrite(j.current, slot.current_write)) { job = &j; break; }
+        if (j.ready && !j.consumed && SameSourceWrite(j.previous, slot.previous_write) && SameSourceWrite(j.current, slot.current_write)) {
+            if (j.warmup) { ++s.counters.warmup; return false; }
+            job = &j; break;
+        }
     }
     if (!job) { ++s.counters.mismatched; return false; }
     auto& j = *job;
