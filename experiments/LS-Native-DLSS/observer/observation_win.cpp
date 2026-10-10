@@ -164,7 +164,9 @@ struct State {
 #ifdef LS_WITH_NGX
     std::atomic<bool> runtime_modules_written{false};
     struct Session {
-        uint64_t context = 0;
+        uint64_t context = 0, adapter_luid = 0, last_source_ms = 0, reattachments = 0;
+        uint64_t last_attempt_context = 0, last_attempt_ms = 0;
+        bool initialized = false;
         TextureObservation extent;
         std::unique_ptr<NativeBackend> backend;
     };
@@ -174,9 +176,12 @@ struct State {
     std::array<Session, 4> sessions;
     std::ofstream backend_log;
     std::atomic<uint64_t> source_calls{0}, slots_seen{0}, profile_revision{0}, backend_busy{0}, session_limit{0};
+    std::atomic<uint64_t> session_reused{0}, reattach_pending{0}, reattach_failed{0};
+    std::atomic<uint64_t> latest_source_context{0}, selected_context{0};
+    std::atomic<uint32_t> selection{0}; // 0 none, 1 selected, 2 capacity, 3 controller busy, 4 GPU pending, 5 init failed.
     std::atomic<int> profile_type{0}, profile_mode{0}, profile_hdr{0};
     std::atomic<float> profile_multiplier{0};
-    std::atomic<uint32_t> backend_phase{0}; // 0 idle, 1 Initialize, 2 Source, 3 Composite.
+    std::atomic<uint32_t> backend_phase{0}; // 0 idle, 1 Initialize, 2 Source, 3 Composite, 4 Reattach.
     bool backend_writer_started = false; // Startup thread only.
 #endif
 };
@@ -235,6 +240,7 @@ const char* BackendPhaseName(uint32_t phase) {
     case 1: return "initializing";
     case 2: return "source";
     case 3: return "composite";
+    case 4: return "reattaching";
     default: return "idle";
     }
 }
@@ -251,29 +257,72 @@ State::Session* FindSession(uint64_t context, const TextureObservation& extent) 
             session.extent.height == extent.height && session.extent.format == extent.format) return &session;
     return nullptr;
 }
+const char* SelectionName(uint32_t value) {
+    switch (value) {
+    case 1: return "session_available";
+    case 2: return "no_session_capacity";
+    case 3: return "controller_busy";
+    case 4: return "reattach_pending";
+    case 5: return "initialization_failed";
+    default: return "none";
+    }
+}
 void BackendSource(ID3D11DeviceContext* ctx, ID3D11Resource* source, const SourceWriteObservation& write) {
     if (!BackendEnabled() || !SourceWriteValid(write)) return;
     ++g->source_calls;
+    g->latest_source_context.store(write.context);
     std::unique_lock<std::mutex> lock(g->backend_mutex, std::try_to_lock);
-    if (!lock.owns_lock()) { ++g->backend_busy; ++g->source_invalidation_epoch; return; }
+    if (!lock.owns_lock()) {
+        ++g->backend_busy; ++g->source_invalidation_epoch;
+        g->selected_context.store(0); g->selection.store(3); return;
+    }
     BackendActivity activity;
     g->backend_phase.store(2);
     Com<ID3D11Texture2D> texture;
     if (!source || FAILED(source->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(texture.Put())))) return;
     auto* session = FindSession(write.context, write.texture);
+    const uint64_t now = GetTickCount64();
+    bool pending = false;
+    if (!session) for (auto& candidate : g->sessions) {
+        // GPU retirement alone does not imply inactivity. Keep concurrently
+        // producing contexts and incompatible extents/adapters in their slots.
+        if (!candidate.backend || !candidate.initialized || candidate.adapter_luid != write.adapter_luid ||
+            candidate.extent.width != write.texture.width || candidate.extent.height != write.texture.height ||
+            candidate.extent.format != write.texture.format || now < candidate.last_source_ms ||
+            now - candidate.last_source_ms < 1000) continue;
+        if (candidate.last_attempt_context == write.context && now - candidate.last_attempt_ms < 250) continue;
+        g->backend_phase.store(4);
+        const HRESULT hr = candidate.backend->Reattach(ctx, write.texture);
+        g->backend_phase.store(2);
+        if (hr == S_OK) {
+            candidate.context = write.context; candidate.extent = write.texture;
+            candidate.last_attempt_context = candidate.last_attempt_ms = 0;
+            ++candidate.reattachments; ++g->session_reused;
+            session = &candidate; break;
+        }
+        if (hr == S_FALSE) { pending = true; ++g->reattach_pending; }
+        else {
+            ++g->reattach_failed; candidate.last_attempt_context = write.context; candidate.last_attempt_ms = now;
+        }
+    }
     if (!session) for (auto& candidate : g->sessions) {
         if (candidate.backend) continue;
-        candidate.context = write.context; candidate.extent = write.texture;
+        candidate.context = write.context; candidate.extent = write.texture; candidate.adapter_luid = write.adapter_luid;
         candidate.backend = std::make_unique<NativeBackend>();
         // One startup allocation on the native owning thread. No LS device is
         // touched by the logger, including SINGLETHREADED devices.
         g->backend_phase.store(1);
-        candidate.backend->Initialize(ctx, write.texture, g->options, g->folder);
+        candidate.initialized = SUCCEEDED(candidate.backend->Initialize(ctx, write.texture, g->options, g->folder));
         g->backend_phase.store(2);
         session = &candidate; break;
     }
-    if (session) session->backend->Source(texture.p, write);
-    else ++g->session_limit;
+    if (session) {
+        session->last_source_ms = GetTickCount64();
+        g->selected_context.store(session->context); g->selection.store(session->initialized ? 1 : 5);
+        session->backend->Source(texture.p, write);
+    } else {
+        ++g->session_limit; g->selected_context.store(0); g->selection.store(pending ? 4 : 2);
+    }
 }
 void BackendComposite(ID3D11DeviceContext* ctx, const DispatchObservation& record) {
     if (!BackendEnabled() || !record.pair_matches_observed_updates) return;
@@ -337,7 +386,7 @@ void PrepareSm86(std::ostream& out, const std::filesystem::path& folder) {
 }
 void WriteBackendDiagnostics(std::ostream& out) {
     struct SessionSnapshot {
-        uint64_t context = 0;
+        uint64_t context = 0, last_source_ms = 0, reattachments = 0;
         TextureObservation extent;
         NativeBackend* backend = nullptr;
         BackendDiagnostics diagnostics;
@@ -351,6 +400,8 @@ void WriteBackendDiagnostics(std::ostream& out) {
         if (controller_sampled) {
             for (size_t i = 0; i != snapshots.size(); ++i) {
                 snapshots[i].context = g->sessions[i].context;
+                snapshots[i].last_source_ms = g->sessions[i].last_source_ms;
+                snapshots[i].reattachments = g->sessions[i].reattachments;
                 snapshots[i].extent = g->sessions[i].extent;
                 snapshots[i].backend = g->sessions[i].backend.get();
             }
@@ -367,6 +418,10 @@ void WriteBackendDiagnostics(std::ostream& out) {
         << " controller_busy=" << g->backend_busy.load() << " session_limit=" << g->session_limit.load()
         << " backend_phase=" << BackendPhaseName(g->backend_phase.load())
         << " diagnostics_busy=" << !controller_sampled << "\n";
+    out << "routing latest_source_context=" << g->latest_source_context.load()
+        << " selected_context=" << g->selected_context.load() << " selection=" << SelectionName(g->selection.load())
+        << " session_reused=" << g->session_reused.load() << " reattach_pending=" << g->reattach_pending.load()
+        << " reattach_failed=" << g->reattach_failed.load() << '\n';
     const auto stop = g->stop_event.load(), failure = g->hook_failure.load();
     const auto hook_stage = static_cast<uint32_t>(failure >> 32) & 0xffff;
     out << "observer uptime_ms=" << GetTickCount64() - g->started_ms << " active=" << g->active.load()
@@ -385,7 +440,12 @@ void WriteBackendDiagnostics(std::ostream& out) {
         out << "session=" << snapshot.context << " " << snapshot.extent.width << 'x' << snapshot.extent.height;
         if (!snapshot.sampled) { out << " diagnostics_busy=1\n"; continue; }
         const auto& d = snapshot.diagnostics; const auto& c = d.counters;
+        // A reattachment can occur after the controller snapshot but before
+        // sampling. Do not attribute the new graph binding to the old context.
+        if (d.reattachments != snapshot.reattachments) { out << " diagnostics_stale=1\n"; continue; }
         out << " step=" << d.step << " code=0x" << std::hex << d.code << std::dec
+            << " reattachments=" << d.reattachments << " reattach_code=0x" << std::hex << d.reattach_code << std::dec
+            << " source_age_ms=" << GetTickCount64() - snapshot.last_source_ms
             << " analysis=" << d.analysis_width << 'x' << d.analysis_height
             << " analysis_format=" << d.analysis_format << " flow_grid=" << d.grid
             << " submitted=" << c.submitted << " composite_queued=" << c.composite_queued
@@ -962,7 +1022,7 @@ void StartNativeObservation(HMODULE native, HMODULE proxy, const std::filesystem
         if (backend) {
             g->backend_log.open(folder / L"logs" / (L"native-dlss-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(start.QuadPart) + L".log"));
             if (!g->backend_log) return;
-            g->backend_log << "NativeDLSS 0.1.3 experimental. Present owner: LS. Full source coverage / real RTX3080 acceptance: unverified.\n"
+            g->backend_log << "NativeDLSS 0.1.4 experimental. Present owner: LS. Full source coverage / real RTX3080 acceptance: unverified.\n"
                 << "OpticalFlow=" << g->options.optical_flow << " Quality=" << g->options.quality
                 << " AnalysisPercent=" << g->options.analysis_percent << " GPUOrdered=" << g->options.gpu_ordered
                 << " Slots=" << g->options.slots << "\n";
@@ -1271,6 +1331,92 @@ int NativeObservationSelfTest() {
     source(0xff00008c, 2); synthesize(1, 2);
     if (!pixels(0xffff00ff)) { std::cerr << "unsupported profile was replaced\n"; return 1; }
     std::cout << "End-to-end native hooks: original Dispatch, warmup fallback, GPU midpoint replacement and profile gate passed\n";
+    // Simulate idle elapsed time directly; the production policy uses the same
+    // monotonic clock. No wall-clock sleeps are needed for nine LS restarts.
+    SetNativeProfile(1, 0, 2.0f, false);
+    const auto reused_before = g->session_reused.load(), limit_before = g->session_limit.load();
+    for (uint64_t cycle = 0; cycle != 9; ++cycle) {
+        Com<ID3D11Device> restart_device; Com<ID3D11DeviceContext> restart_context;
+        if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION,
+            restart_device.Put(), nullptr, restart_context.Put()))) return 1;
+        Attach(restart_device.p, restart_context.p);
+        Com<ID3D11Device5> restart_device5; Com<ID3D11DeviceContext4> restart_context4;
+        Com<ID3D11Fence> restart_fence;
+        if (FAILED(restart_device->QueryInterface(__uuidof(ID3D11Device5), reinterpret_cast<void**>(restart_device5.Put()))) ||
+            FAILED(restart_context->QueryInterface(__uuidof(ID3D11DeviceContext4), reinterpret_cast<void**>(restart_context4.Put()))) ||
+            FAILED(restart_device5->CreateFence(0, D3D11_FENCE_FLAG_NONE, __uuidof(ID3D11Fence), reinterpret_cast<void**>(restart_fence.Put())))) return 1;
+        Com<ID3D11ComputeShader> restart_copy, restart_synth;
+        if (FAILED(restart_device->CreateComputeShader(g->input_shader.data(), g->input_shader.size(), nullptr, restart_copy.Put())) ||
+            FAILED(restart_device->CreateComputeShader(g->shader.data(), g->shader.size(), nullptr, restart_synth.Put()))) return 1;
+        std::array<Com<ID3D11Texture2D>, 4> restart_images;
+        std::array<Com<ID3D11ShaderResourceView>, 4> restart_views;
+        std::array<Com<ID3D11UnorderedAccessView>, 4> restart_outputs;
+        for (size_t i = 0; i != restart_images.size(); ++i)
+            if (FAILED(restart_device->CreateTexture2D(&td, nullptr, restart_images[i].Put())) ||
+                FAILED(restart_device->CreateShaderResourceView(restart_images[i].p, nullptr, restart_views[i].Put())) ||
+                FAILED(restart_device->CreateUnorderedAccessView(restart_images[i].p, nullptr, restart_outputs[i].Put()))) return 1;
+        Com<ID3D11Buffer> restart_phase;
+        if (FAILED(restart_device->CreateBuffer(&desc, &initial, restart_phase.Put()))) return 1;
+        restart_context->CSSetConstantBuffers(0, 1, &restart_phase.p);
+        const uint64_t now_ms = GetTickCount64();
+        if (now_ms < 1000) return 1;
+        for (auto& session : g->sessions) if (session.backend) session.last_source_ms = now_ms - 1000;
+        uint64_t restart_completion = 0;
+        auto restart_unbind = [&] {
+            ID3D11ShaderResourceView* nulls[5]{}; ID3D11UnorderedAccessView* null_output = nullptr;
+            restart_context->CSSetShaderResources(0, 5, nulls);
+            restart_context->CSSetUnorderedAccessViews(0, 1, &null_output, nullptr);
+        };
+        auto restart_source = [&](uint32_t color, size_t target) {
+            restart_unbind(); std::vector<uint32_t> data(256, color);
+            restart_context->UpdateSubresource(restart_images[0].p, 0, nullptr, data.data(), 64, 0);
+            restart_context->CSSetShader(restart_copy.p, nullptr, 0);
+            restart_context->CSSetShaderResources(0, 1, &restart_views[0].p);
+            restart_context->CSSetUnorderedAccessViews(0, 1, &restart_outputs[target].p, nullptr);
+            restart_context->Dispatch(2, 2, 1); restart_unbind();
+        };
+        auto restart_synthesize = [&](size_t previous, size_t current) {
+            restart_unbind(); restart_context->CSSetShader(restart_synth.p, nullptr, 0);
+            ID3D11ShaderResourceView* bindings[]{restart_views[previous].p, restart_views[current].p};
+            restart_context->CSSetShaderResources(0, 2, bindings);
+            restart_context->CSSetUnorderedAccessViews(0, 1, &restart_outputs[3].p, nullptr);
+            restart_context->Dispatch(1, 1, 1); restart_unbind();
+        };
+        auto restart_drain = [&] {
+            if (FAILED(restart_context4->Signal(restart_fence.p, ++restart_completion))) return false;
+            restart_context->Flush(); // TEST ONLY
+            HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            if (!event) return false;
+            const HRESULT hr = restart_fence->SetEventOnCompletion(restart_completion, event);
+            const DWORD result = SUCCEEDED(hr) ? WaitForSingleObject(event, 15000) : WAIT_FAILED;
+            CloseHandle(event); return result == WAIT_OBJECT_0;
+        };
+        auto restart_pixels = [&](uint32_t expected) {
+            if (!restart_drain()) return false;
+            auto read_desc = td; read_desc.BindFlags = 0; read_desc.Usage = D3D11_USAGE_STAGING;
+            read_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ; Com<ID3D11Texture2D> read;
+            if (FAILED(restart_device->CreateTexture2D(&read_desc, nullptr, read.Put()))) return false;
+            restart_context->CopyResource(read.p, restart_images[3].p); if (!restart_drain()) return false;
+            D3D11_MAPPED_SUBRESOURCE pixels{};
+            if (FAILED(restart_context->Map(read.p, 0, D3D11_MAP_READ, 0, &pixels))) return false;
+            bool valid = true;
+            for (UINT y = 0; y != 16; ++y) for (UINT x = 0; x != 16; ++x) {
+                uint32_t pixel = 0; std::memcpy(&pixel, static_cast<const uint8_t*>(pixels.pData) + y * pixels.RowPitch + x * 4, 4);
+                valid &= pixel == expected;
+            }
+            restart_context->Unmap(read.p, 0); return valid;
+        };
+        restart_source(0xff000014, 1); restart_source(0xff00003c, 2); restart_synthesize(1, 2);
+        if (!restart_pixels(0xffff00ff)) { std::cerr << "restart hook warmup\n"; return 1; }
+        restart_source(0xff000064, 1); restart_synthesize(2, 1);
+        if (!restart_pixels(0xff000050) || g->selected_context.load() != ObjectId(restart_context.p) ||
+            g->selection.load() != 1) { std::cerr << "restart hook replacement/routing\n"; return 1; }
+    }
+    size_t graph_count = 0; for (const auto& session : g->sessions) graph_count += session.backend ? 1 : 0;
+    if (graph_count != 1 || g->session_reused.load() != reused_before + 9 || g->session_limit.load() != limit_before) {
+        std::cerr << "restart controller retained lifetime-only session limit\n"; return 1;
+    }
+    std::cout << "Nine real hooked device restarts retain one graph, warm up and replace midpoint pixels without session_limit\n";
     // An Initialize call can hold the controller lock for a long time. The
     // heartbeat must still report that phase instead of producing an empty log.
     std::ostringstream contended;

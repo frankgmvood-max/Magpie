@@ -36,6 +36,8 @@ struct BackendDiagnostics {
     NgxDiagnostics ngx;
     const char* step = "not initialized";
     uint32_t code = 0, analysis_width = 0, analysis_height = 0, grid = 0, analysis_format = 0;
+    uint64_t reattachments = 0;
+    uint32_t reattach_code = 0;
 };
 // Initial experimental Fixed x2 SDR path. LS still executes its original
 // synthesis. GPU-side conditional stores replace only a matched midpoint and
@@ -47,6 +49,11 @@ public:
     ~NativeBackend();
     HRESULT Initialize(ID3D11DeviceContext* context, const TextureObservation& source,
                        const BackendOptions& options, const std::filesystem::path& folder);
+    // Native owning thread only, after the controller has observed inactivity.
+    // Reopens the retained graph on a same-adapter, same-extent D3D11 device.
+    // S_FALSE means GPU work/another callback has not retired; never CPU-waits.
+    // Failure leaves the previous binding and its GPU resources intact.
+    HRESULT Reattach(ID3D11DeviceContext* context, const TextureObservation& source);
     bool Source(ID3D11Texture2D* current, const SourceWriteObservation& write);
     bool Composite(const DispatchObservation& slot, ID3D11UnorderedAccessView* destination);
     // Worker only. Reads four bytes only after a completed D3D12 fence.

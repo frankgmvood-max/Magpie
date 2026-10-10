@@ -20,7 +20,7 @@ $ini = [IO.Path]::GetFullPath((Join-Path $LSFolder 'NativeDLSS.ini'))
 if (!(Test-Path -LiteralPath $ini)) { [System.Windows.Forms.MessageBox]::Show('NativeDLSS.ini not found. Run Install.cmd first.') | Out-Null; exit 1 }
 [System.Windows.Forms.Application]::EnableVisualStyles()
 $form = New-Object System.Windows.Forms.Form
-$form.Text = 'Native DLSS for Lossless Scaling — experimental 0.1.3'
+$form.Text = 'Native DLSS for Lossless Scaling — experimental 0.1.4'
 $form.ClientSize = New-Object System.Drawing.Size(600, 510)
 $form.FormBorderStyle = 'FixedDialog'; $form.MaximizeBox = $false; $form.StartPosition = 'CenterScreen'
 function Label([string]$text, [int]$y) {

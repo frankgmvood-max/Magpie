@@ -137,7 +137,7 @@ void Test(bool disabled) {
     std::cout << "GPU transport, exact-pair gate, " << (disabled ? "disable flag fallback" : "pixel replacement") << ", state restoration and reset passed\n";
 }
 void TestRetirement(bool ordered) {
-    Fixture f; NativeBackend backend; BackendOptions options;
+    Fixture f, replacement; NativeBackend backend; BackendOptions options;
     options.enabled = options.synthetic_test = true; options.slots = 2; options.gpu_ordered = ordered;
     Hr(backend.Initialize(f.context.Get(), f.extent, options, L"."), "retirement backend");
     auto a = f.Source(0, 20); backend.Source(f.images[0].Get(), a);
@@ -189,11 +189,47 @@ void TestRetirement(bool ordered) {
     std::cout << "retirement: acquiring third ring source; forced=" << release.forced.load() << '\n';
     Require(!backend.Source(f.images[2].Get(), e), "completed output is still leased until native retirement");
     Require(backend.PollCounters().busy > 0, "bounded ring busy fallback");
+    Require(backend.Reattach(replacement.context.Get(), replacement.extent) == S_FALSE,
+        "reattachment rejects unfinished old GPU work without waiting");
     Require(!release.forced.load(), "WARP blocked host while native fence was held");
     release.Release(); f.Pixels(ordered ? 60 : 255);
     auto next = f.Source(1, 140); Require(backend.Source(f.images[1].Get(), next), "retired ring reusable");
     f.Native(); Require(!backend.Composite(f.Slot(e, next), f.outputs[3].Get()), "dropped evaluation resets history"); f.Pixels(255);
     std::cout << "Held native retirement, bounded ring reuse and " << (ordered ? "GPU ordering" : "ready-only fallback") << " passed\n";
+}
+void TestReattachment() {
+    auto current = std::make_unique<Fixture>(); NativeBackend backend; BackendOptions options;
+    options.enabled = options.synthetic_test = true;
+    Hr(backend.Initialize(current->context.Get(), current->extent, options, L"."), "restart backend");
+    auto exercise = [&](Fixture& f) {
+        const auto a = f.Source(0, 20); Require(!backend.Source(f.images[0].Get(), a), "restart first source fallback");
+        const auto b = f.Source(1, 40); Require(backend.Source(f.images[1].Get(), b), "restart warmup submission");
+        f.Native(); Require(!backend.Composite(f.Slot(a, b), f.outputs[3].Get()), "restart warmup fallback"); f.Pixels(255);
+        const auto c = f.Source(0, 80); Require(backend.Source(f.images[0].Get(), c), "restart source submission");
+        f.Native(); Require(backend.Composite(f.Slot(b, c), f.outputs[3].Get()), "restart replacement queued");
+        f.Bindings(); f.Pixels(60);
+    };
+    exercise(*current);
+    for (uint64_t cycle = 1; cycle <= 9; ++cycle) {
+        auto next = std::make_unique<Fixture>();
+        auto wrong = next->extent; ++wrong.width;
+        Require(backend.Reattach(next->context.Get(), wrong) == E_INVALIDARG, "incompatible extent rejected");
+        BackendDiagnostics before; Require(backend.TryPollDiagnostics(before), "restart diagnostics before");
+        const auto old_write = current->Source(1, 100);
+        Require(backend.Source(current->images[1].Get(), old_write), "rejected reattachment preserves old binding");
+        current->Native();
+        // Drain both queue sides through a valid composite before rebinding.
+        auto last = current->Source(0, 120); Require(backend.Source(current->images[0].Get(), last), "old graph final source");
+        current->Native(); Require(backend.Composite(current->Slot(old_write, last), current->outputs[3].Get()), "old graph final composite");
+        current->Pixels(110);
+        Require(backend.Reattach(next->context.Get(), next->extent) == S_OK, "same-adapter new device reattachment");
+        Require(!backend.Source(current->images[0].Get(), last), "old native device rejected after reattachment");
+        BackendDiagnostics after; Require(backend.TryPollDiagnostics(after), "restart diagnostics after");
+        Require(after.reattachments == cycle && after.counters.submitted == before.counters.submitted + 2,
+            "same graph cumulative counters survive restarts");
+        current = std::move(next); exercise(*current);
+    }
+    std::cout << "Nine new D3D11 devices reuse one graph, reject old inputs, reset history and replace real pixels\n";
 }
 void TestDriverLog() {
     NgxLogMessage m;
@@ -213,5 +249,5 @@ void TestDriverLog() {
     std::cout << "NGX callback ownership, truncation, concurrent producers and bounded output passed\n";
 }
 }
-int main() { std::cout << std::unitbuf; try { TestDriverLog(); Test(false); Test(true); TestRetirement(true); TestRetirement(false); return 0; }
+int main() { std::cout << std::unitbuf; try { TestDriverLog(); Test(false); Test(true); TestRetirement(true); TestRetirement(false); TestReattachment(); return 0; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; } }

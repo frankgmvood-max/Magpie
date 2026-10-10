@@ -11,6 +11,7 @@
 #include <cmath>
 #include <limits>
 #include <mutex>
+#include <utility>
 #include <vector>
 
 namespace ls_native {
@@ -75,10 +76,15 @@ bool FormatSupported(DXGI_FORMAT f) {
 }
 
 struct NativeBackend::State {
+    struct SharedHandle {
+        HANDLE value = nullptr;
+        ~SharedHandle() { if (value) CloseHandle(value); }
+    };
     struct Job {
         ComPtr<ID3D11Texture2D> inputs11[2], output11, flag11;
         ComPtr<ID3D12Resource> inputs12[2], output12, flag12, analysis[2], coarse, motion, depth, disabled, readback;
         ComPtr<ID3D11ShaderResourceView> output_view, flag_view;
+        SharedHandle inputs_handle[2], output_handle, flag_handle;
         ComPtr<ID3D12DescriptorHeap> heap, cpu, targets;
         ComPtr<ID3D12CommandAllocator> prepare_alloc, generate_alloc;
         ComPtr<ID3D12GraphicsCommandList> prepare, generate;
@@ -95,13 +101,15 @@ struct NativeBackend::State {
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<ID3D11Fence> producer11, ready11, copied11;
-    ComPtr<ID3D12Fence> producer12, ready12, converted, flow_done, registered_done;
+    ComPtr<ID3D12Fence> producer12, ready12, copied12, converted, flow_done, registered_done;
+    SharedHandle producer_handle, ready_handle, copied_handle;
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12PipelineState> input_pso, dense_pso, flag_pso;
 #ifdef LS_NATIVE_TEST
     ComPtr<ID3D12PipelineState> synthetic_pso;
 #endif
     ComPtr<ID3D11ComputeShader> composite_shader;
+    ComPtr<ID3DBlob> composite_bytecode;
     std::array<Job, 4> jobs;
     SourceWriteObservation last_write;
     ComPtr<ID3D11Texture2D> last_source;
@@ -114,6 +122,8 @@ struct NativeBackend::State {
     DXGI_FORMAT analysis_format = DXGI_FORMAT_B8G8R8A8_UNORM;
     uint64_t producer_value = 0, ready_value = 0, converted_value = 0, flow_value = 0, register_value = 0;
     uint64_t copy_value = 0, last_evaluated_epoch = 0, last_evaluated_generation = 0, frame_id = 0;
+    uint64_t reattachments = 0;
+    uint32_t reattach_code = 0;
     BackendCounters counters;
     NgxDiagnostics ngx;
     const char* step = "not initialized";
@@ -149,26 +159,26 @@ struct NativeBackend::State {
         return device->CreateCommittedResource(&h, D3D12_HEAP_FLAG_NONE, &d, state, nullptr, IID_PPV_ARGS(out));
     }
     HRESULT SharedTexture(uint32_t w, uint32_t h, DXGI_FORMAT format, UINT bind,
-                          ID3D11Texture2D** a, ID3D12Resource** b) {
+                          ID3D11Texture2D** a, ID3D12Resource** b, SharedHandle& handle) {
         D3D11_TEXTURE2D_DESC d{}; d.Width = w; d.Height = h; d.Format = format;
         d.MipLevels = d.ArraySize = d.SampleDesc.Count = 1; d.BindFlags = bind;
         d.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
         HRESULT hr = native_device->CreateTexture2D(&d, nullptr, a); if (FAILED(hr)) return hr;
         ComPtr<IDXGIResource1> r; if (FAILED(hr = (*a)->QueryInterface(IID_PPV_ARGS(&r)))) return hr;
-        HANDLE handle = nullptr;
-        if (FAILED(hr = r->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &handle))) return hr;
-        hr = device->OpenSharedHandle(handle, IID_PPV_ARGS(b)); CloseHandle(handle); return hr;
+        if (FAILED(hr = r->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &handle.value))) return hr;
+        return device->OpenSharedHandle(handle.value, IID_PPV_ARGS(b));
     }
     HRESULT Fences() {
         HRESULT hr = native_device->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&producer11));
         if (FAILED(hr)) return hr;
-        HANDLE h = nullptr;
-        if (FAILED(hr = producer11->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &h))) return hr;
-        hr = device->OpenSharedHandle(h, IID_PPV_ARGS(&producer12)); CloseHandle(h); if (FAILED(hr)) return hr;
+        if (FAILED(hr = producer11->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &producer_handle.value))) return hr;
+        if (FAILED(hr = device->OpenSharedHandle(producer_handle.value, IID_PPV_ARGS(&producer12)))) return hr;
         if (FAILED(hr = device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&ready12)))) return hr;
-        if (FAILED(hr = device->CreateSharedHandle(ready12.Get(), nullptr, GENERIC_ALL, nullptr, &h))) return hr;
-        hr = native_device->OpenSharedFence(h, IID_PPV_ARGS(&ready11)); CloseHandle(h); if (FAILED(hr)) return hr;
-        if (FAILED(hr = native_device->CreateFence(0, D3D11_FENCE_FLAG_NONE, IID_PPV_ARGS(&copied11)))) return hr;
+        if (FAILED(hr = device->CreateSharedHandle(ready12.Get(), nullptr, GENERIC_ALL, nullptr, &ready_handle.value))) return hr;
+        if (FAILED(hr = native_device->OpenSharedFence(ready_handle.value, IID_PPV_ARGS(&ready11)))) return hr;
+        if (FAILED(hr = native_device->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&copied11)))) return hr;
+        if (FAILED(hr = copied11->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &copied_handle.value))) return hr;
+        if (FAILED(hr = device->OpenSharedHandle(copied_handle.value, IID_PPV_ARGS(&copied12)))) return hr;
         if (FAILED(hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&converted)))) return hr;
         if (FAILED(hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&flow_done)))) return hr;
         return device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&registered_done));
@@ -200,6 +210,7 @@ struct NativeBackend::State {
         if (FAILED(hr = Compile(shaders::input, "vs", "vs_5_0", &vs)) || FAILED(hr = Compile(shaders::input, "ps", "ps_5_0", &ps)) ||
             FAILED(hr = Compile(shaders::composite, "main", "cs_5_0", &cs))) return hr;
         if (FAILED(hr = native_device->CreateComputeShader(cs->GetBufferPointer(), cs->GetBufferSize(), nullptr, &composite_shader))) return hr;
+        composite_bytecode = cs;
         D3D12_GRAPHICS_PIPELINE_STATE_DESC p{}; p.pRootSignature = root.Get();
         p.VS = {vs->GetBufferPointer(), vs->GetBufferSize()}; p.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
         p.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
@@ -283,11 +294,11 @@ struct NativeBackend::State {
         HRESULT hr;
         const auto format = static_cast<DXGI_FORMAT>(extent.format);
         for (UINT i = 0; i != 2; ++i) {
-            if (FAILED(hr = SharedTexture(extent.width, extent.height, format, D3D11_BIND_SHADER_RESOURCE, &j.inputs11[i], &j.inputs12[i]))) return hr;
+            if (FAILED(hr = SharedTexture(extent.width, extent.height, format, D3D11_BIND_SHADER_RESOURCE, &j.inputs11[i], &j.inputs12[i], j.inputs_handle[i]))) return hr;
             if (FAILED(hr = PrivateTexture(analysis_width, analysis_height, analysis_format, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, &j.analysis[i]))) return hr;
         }
-        if (FAILED(hr = SharedTexture(extent.width, extent.height, format, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS, &j.output11, &j.output12)) ||
-            FAILED(hr = SharedTexture(1, 1, DXGI_FORMAT_R32_UINT, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS, &j.flag11, &j.flag12)) ||
+        if (FAILED(hr = SharedTexture(extent.width, extent.height, format, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS, &j.output11, &j.output12, j.output_handle)) ||
+            FAILED(hr = SharedTexture(1, 1, DXGI_FORMAT_R32_UINT, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS, &j.flag11, &j.flag12, j.flag_handle)) ||
             FAILED(hr = native_device->CreateShaderResourceView(j.output11.Get(), nullptr, &j.output_view)) ||
             FAILED(hr = native_device->CreateShaderResourceView(j.flag11.Get(), nullptr, &j.flag_view))) return hr;
         if (FAILED(hr = PrivateTexture((analysis_width + grid - 1) / grid, (analysis_height + grid - 1) / grid, DXGI_FORMAT_R16G16_SINT, D3D12_RESOURCE_FLAG_NONE, &j.coarse)) ||
@@ -556,6 +567,74 @@ HRESULT NativeBackend::Initialize(ID3D11DeviceContext* context, const TextureObs
     if (!synthetic && !s.NgxInit(folder)) return E_FAIL;
     s.initialized = true; s.step = "ready"; return S_OK;
 }
+HRESULT NativeBackend::Reattach(ID3D11DeviceContext* context, const TextureObservation& source) {
+    if (!state_ || !context) return E_INVALIDARG;
+    auto& s = *state_; std::unique_lock<std::mutex> lock(s.mutex, std::try_to_lock);
+    if (!lock.owns_lock()) return S_FALSE;
+    const auto result = [&](HRESULT hr) { s.reattach_code = static_cast<uint32_t>(hr); return hr; };
+    if (!s.initialized || s.failed) return result(E_FAIL);
+    if (context->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE || source.width != s.extent.width ||
+        source.height != s.extent.height || source.format != s.extent.format || source.view_format != source.format ||
+        source.mip || source.samples != 1 || source.array_size != 1) return result(E_INVALIDARG);
+    ComPtr<ID3D11Device> native; ComPtr<ID3D11Device5> target;
+    ComPtr<ID3D11DeviceContext4> target_context;
+    context->GetDevice(&native); HRESULT hr = native.As(&target);
+    if (FAILED(hr) || FAILED(hr = context->QueryInterface(IID_PPV_ARGS(&target_context)))) return result(hr);
+    ComPtr<IDXGIDevice> dxgi; ComPtr<IDXGIAdapter> adapter; DXGI_ADAPTER_DESC ad{};
+    if (FAILED(hr = native.As(&dxgi)) || FAILED(hr = dxgi->GetAdapter(&adapter)) || FAILED(hr = adapter->GetDesc(&ad))) return result(hr);
+    if (Luid(ad.AdapterLuid) != Luid(s.device->GetAdapterLuid())) return result(E_INVALIDARG);
+    // Query D3D12 fence mirrors, never the previous device/context. This also
+    // works when LS created the old D3D11 device with SINGLETHREADED.
+    const auto retired = [](ID3D12Fence* fence, uint64_t value) {
+        const uint64_t completed = fence->GetCompletedValue();
+        return completed == UINT64_MAX ? DXGI_ERROR_DEVICE_REMOVED : completed >= value ? S_OK : S_FALSE;
+    };
+    for (const auto& point : std::array<std::pair<ID3D12Fence*, uint64_t>, 6>{{
+        {s.producer12.Get(), s.producer_value}, {s.ready12.Get(), s.ready_value},
+        {s.copied12.Get(), s.copy_value}, {s.converted.Get(), s.converted_value},
+        {s.flow_done.Get(), s.flow_value}, {s.registered_done.Get(), s.register_value}}}) {
+        hr = retired(point.first, point.second); if (hr != S_OK) return result(hr);
+    }
+    struct NativeJob {
+        ComPtr<ID3D11Texture2D> inputs[2], output, flag;
+        ComPtr<ID3D11ShaderResourceView> output_view, flag_view;
+    };
+    std::array<NativeJob, 4> rebound;
+    ComPtr<ID3D11Fence> producer, ready, copied;
+    ComPtr<ID3D11ComputeShader> shader;
+    // Prepare everything locally. Any import/create failure leaves the old
+    // graph usable; no NGX feature or NVOF registration is destroyed/recreated.
+    if (FAILED(hr = target->OpenSharedFence(s.producer_handle.value, IID_PPV_ARGS(&producer))) ||
+        FAILED(hr = target->OpenSharedFence(s.ready_handle.value, IID_PPV_ARGS(&ready))) ||
+        FAILED(hr = target->OpenSharedFence(s.copied_handle.value, IID_PPV_ARGS(&copied))) ||
+        FAILED(hr = target->CreateComputeShader(s.composite_bytecode->GetBufferPointer(),
+            s.composite_bytecode->GetBufferSize(), nullptr, &shader))) return result(hr);
+    for (UINT i = 0; i != s.slots; ++i) {
+        auto& j = s.jobs[i]; auto& n = rebound[i];
+        for (UINT input = 0; input != 2; ++input)
+            if (FAILED(hr = target->OpenSharedResource1(j.inputs_handle[input].value, IID_PPV_ARGS(&n.inputs[input])))) return result(hr);
+        if (FAILED(hr = target->OpenSharedResource1(j.output_handle.value, IID_PPV_ARGS(&n.output))) ||
+            FAILED(hr = target->OpenSharedResource1(j.flag_handle.value, IID_PPV_ARGS(&n.flag))) ||
+            FAILED(hr = target->CreateShaderResourceView(n.output.Get(), nullptr, &n.output_view)) ||
+            FAILED(hr = target->CreateShaderResourceView(n.flag.Get(), nullptr, &n.flag_view))) return result(hr);
+    }
+    // Unpolled diagnostic samples may be dropped here; no CPU readback occurs
+    // on the native thread. Cumulative counters remain attached to the graph.
+    for (UINT i = 0; i != s.slots; ++i) {
+        auto& j = s.jobs[i]; auto& n = rebound[i];
+        for (UINT input = 0; input != 2; ++input) j.inputs11[input] = std::move(n.inputs[input]);
+        j.output11 = std::move(n.output); j.flag11 = std::move(n.flag);
+        j.output_view = std::move(n.output_view); j.flag_view = std::move(n.flag_view);
+        j.previous = {}; j.current = {}; j.ready = j.copied = j.polled = 0;
+        j.consumed = false; j.warmup = true;
+    }
+    s.last_source.Reset(); s.last_write = {}; s.last_evaluated_epoch = s.last_evaluated_generation = 0;
+    s.native_context = std::move(target_context); s.native_device = std::move(target);
+    s.producer11 = std::move(producer); s.ready11 = std::move(ready); s.copied11 = std::move(copied);
+    s.composite_shader = std::move(shader); s.extent = source;
+    // Fence values and NGX frame IDs stay monotonic across native restarts.
+    ++s.reattachments; return result(S_OK);
+}
 bool NativeBackend::Source(ID3D11Texture2D* current, const SourceWriteObservation& write) {
     if (!state_) return false;
     auto& s = *state_; std::unique_lock<std::mutex> lock(s.mutex, std::try_to_lock);
@@ -572,7 +651,7 @@ bool NativeBackend::Source(ID3D11Texture2D* current, const SourceWriteObservatio
     auto previous = s.last_write; ComPtr<ID3D11Texture2D> previous_source = s.last_source;
     s.last_write = write; s.last_source = current;
     if (!pair) return false;
-    const auto ready = s.ready12->GetCompletedValue(), copied = s.copied11->GetCompletedValue();
+    const auto ready = s.ready12->GetCompletedValue(), copied = s.copied12->GetCompletedValue();
     if (ready == UINT64_MAX || copied == UINT64_MAX) return s.Fail("device removed while acquiring job");
     State::Job* job = nullptr;
     for (UINT i = 0; i != s.slots; ++i) {
@@ -650,6 +729,7 @@ bool NativeBackend::TryPollDiagnostics(BackendDiagnostics& diagnostics) {
     diagnostics.analysis_width = s.analysis_width; diagnostics.analysis_height = s.analysis_height;
     diagnostics.grid = s.options.optical_flow ? s.grid : 0;
     diagnostics.analysis_format = static_cast<uint32_t>(s.analysis_format);
+    diagnostics.reattachments = s.reattachments; diagnostics.reattach_code = s.reattach_code;
     return true;
 }
 bool NativeBackend::TryPopNgxLog(NgxLogMessage& message) { return ngx_logs.TryPop(message); }
