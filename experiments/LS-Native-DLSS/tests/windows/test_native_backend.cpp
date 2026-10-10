@@ -94,8 +94,12 @@ struct Fixture {
         for (UINT y = 0; y != td.Height; ++y) for (UINT x = 0; x != td.Width; ++x) {
             const auto* p = static_cast<const uint8_t*>(m.pData) + y * m.RowPitch + x * 4;
             const uint8_t color = x < protected_columns ? protected_color : expected;
-            if (color == 255) valid &= p[0] == 255 && p[1] == 0 && p[2] == 255 && p[3] == 255;
-            else valid &= p[0] == color + (y * td.Width + x) % 8 && p[1] == color && p[2] == 0 && p[3] == 255;
+            const bool pixel_valid = color == 255 ? p[0] == 255 && p[1] == 0 && p[2] == 255 && p[3] == 255 :
+                p[0] == color + (y * td.Width + x) % 8 && p[1] == color && p[2] == 0 && p[3] == 255;
+            if (valid && !pixel_valid) std::cerr << "first mismatch at " << x << ',' << y << ": expected base "
+                << unsigned(color) << ", got RGBA " << unsigned(p[0]) << ',' << unsigned(p[1]) << ','
+                << unsigned(p[2]) << ',' << unsigned(p[3]) << '\n';
+            valid &= pixel_valid;
         }
         context->Unmap(read.Get(), 0); Require(valid, "conditional replacement pixels");
     }
@@ -260,7 +264,8 @@ void TestHudAndFilters() {
     auto a = f.Source(0,20); backend.Source(f.images[0].Get(),a);
     auto b = f.Source(1,40); Require(backend.Source(f.images[1].Get(),b), "HUD warmup"); f.Drain();
     auto c = f.Source(0,80); Require(backend.Source(f.images[0].Get(),c), "HUD pair"); f.Native(); BindCurrent(f,0);
-    Require(backend.Composite(f.Slot(b,c),f.outputs[3].Get()), "HUD composite"); f.Pixels(60,80,f.extent.width/2);
+    // With an odd width, column 9 of 19 begins below the 50% edge and is protected.
+    Require(backend.Composite(f.Slot(b,c),f.outputs[3].Get()), "HUD composite"); f.Pixels(60,80,(f.extent.width+1)/2);
     policy.hud = {}; policy.mode = RenderMode::Economy; policy.duplicate_filter = true;
     Require(backend.SetPolicy(policy), "duplicate policy");
     auto d = f.Source(1,80); Require(backend.Source(f.images[1].Get(),d), "duplicate pair");

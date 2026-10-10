@@ -396,7 +396,9 @@ void BackendSource(ID3D11DeviceContext* ctx, ID3D11Resource* source, const Sourc
         if (!session->backend->SetPolicy(policy)) return;
         const auto prior = static_cast<RenderMode>(session->render_mode.exchange(static_cast<uint32_t>(policy.mode)));
         if (prior != policy.mode) {
-            ++g->source_invalidation_epoch;
+            // The control event invalidates history before this source stamp is
+            // captured. Invalidating again here would discard the next source
+            // and prolong warmup by an additional frame on every mode change.
             if (prior == RenderMode::Economy) session->prime.store(2);
         }
         if (policy.mode != RenderMode::Economy && session->prime.load()) --session->prime;
