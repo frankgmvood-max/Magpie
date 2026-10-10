@@ -103,11 +103,12 @@ $profile.Text=ReadIni 'NativeDLSS' 'ActiveProfile' 'Общий'; if(!$profile.Te
 Label $form 'Качество и активный профиль: полный перезапуск LS. Режим, HUD и фильтры: сохранение + Ctrl+Alt+F8. G-SYNC настраивается вашим профилем драйвера.' 604 56 | Out-Null
 $save=New-Object Windows.Forms.Button; $save.Text='Сохранить'; $save.Location=New-Object Drawing.Point(570,637); $save.Size=New-Object Drawing.Size(160,30); $form.Controls.Add($save)
 function SaveProfile {
+    if (!$rects.EndEdit()) { throw 'Не удалось завершить ввод координат HUD' }
     $section=SelectedSection; $regions=@()
     for($i=0;$i -lt 8;$i++) {
         $values=@($rects.Rows[$i].Cells | ForEach-Object { ([string]$_.Value).Trim() }); $filled=@($values | Where-Object {$_}).Count
         if(!$filled){$regions+= '';continue}; if($filled -ne 4){throw "Заполни все 4 координаты области $($i+1)"}
-        $numbers=@();foreach($value in $values){$n=0m; if(![decimal]::TryParse($value,[ref]$n) -or $n -lt 0 -or $n -gt 100){throw 'Координаты HUD должны быть от 0 до 100'};$numbers += [int][Math]::Round($n*100)}
+        $numbers=@();foreach($value in $values){$n=[decimal]0; if(![decimal]::TryParse($value,[ref]$n) -or $n -lt 0 -or $n -gt 100){throw 'Координаты HUD должны быть от 0 до 100'};$numbers += [int][Math]::Round($n*100)}
         if($numbers[0] -ge $numbers[2] -or $numbers[1] -ge $numbers[3]){throw "Неверные границы области $($i+1)"};$regions+=($numbers -join ',')
     }
     $settings=@{Mode=$mode.SelectedIndex;DuplicateFilter=[int]$duplicate.Checked;SceneCut=[int]$cut.Checked;DuplicateDelta=$delta.Value;CutDelta=$cutdelta.Value;CutPercent=$cutpercent.Value;FlowPreset=$preset.SelectedIndex+1;FlowGrid=4;AnalysisPercent=$scale.Value;Slots=$slots.Value;OpticalFlow=[int]$flow.Checked;GPUOrdered=[int]$ordered.Checked}
