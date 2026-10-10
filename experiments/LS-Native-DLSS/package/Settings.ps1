@@ -102,7 +102,7 @@ $load.Add_Click({try{LoadProfile}catch{[Windows.Forms.MessageBox]::Show($_.Excep
 $profile.Text=ReadIni 'NativeDLSS' 'ActiveProfile' 'Общий'; if(!$profile.Text){$profile.Text='Общий'}; LoadProfile
 Label $form 'Качество и активный профиль: полный перезапуск LS. Режим, HUD и фильтры: сохранение + Ctrl+Alt+F8. G-SYNC настраивается вашим профилем драйвера.' 604 56 | Out-Null
 $save=New-Object Windows.Forms.Button; $save.Text='Сохранить'; $save.Location=New-Object Drawing.Point(570,637); $save.Size=New-Object Drawing.Size(160,30); $form.Controls.Add($save)
-$save.Add_Click({try {
+function SaveProfile {
     $section=SelectedSection; $regions=@()
     for($i=0;$i -lt 8;$i++) {
         $values=@($rects.Rows[$i].Cells | ForEach-Object { ([string]$_.Value).Trim() }); $filled=@($values | Where-Object {$_}).Count
@@ -115,6 +115,9 @@ $save.Add_Click({try {
     foreach($key in $settings.Keys){WriteIni $section $key $settings[$key].ToString()}; for($i=0;$i -lt 8;$i++){WriteIni $section "HUD$($i+1)" $regions[$i]}
     WriteIni 'NativeDLSS' 'Enabled' ([int]$enabled.Checked).ToString(); $active='';if($section -ne 'NativeDLSS'){$active=$profile.Text.Trim()};WriteIni 'NativeDLSS' 'ActiveProfile' $active
     if($active -and !$profile.Items.Contains($active)){[void]$profile.Items.Add($active)}
+}
+$save.Add_Click({try {
+    SaveProfile
     [Windows.Forms.MessageBox]::Show('Сохранено. Качество и профиль требуют полного перезапуска LS. Режим, HUD и фильтры можно перечитать через Ctrl+Alt+F8.')|Out-Null
 } catch {[Windows.Forms.MessageBox]::Show($_.Exception.Message)|Out-Null}})
 $timer=New-Object Windows.Forms.Timer; $timer.Interval=1000

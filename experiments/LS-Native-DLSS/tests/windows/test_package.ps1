@@ -53,6 +53,47 @@ try {
     }
     if (@(Get-ChildItem $unzip -File -Recurse -Filter '*.dll').Count -or (Test-Path (Join-Path $unzip 'logs/unrelated.txt'))) { throw 'Unrequested binaries/files collected' }
     if ([IO.File]::ReadAllText((Join-Path $ls 'NativeDLSS.ini')) -ne 'old ini') { throw 'Collector changed settings' }
+    # Construct the actual WinForms controls and exercise profile load/save in
+    # a separate Windows PowerShell process. Only the modal loop is replaced;
+    # the distributed script keeps no hidden validation mode or test switch.
+    $uiFolder = Join-Path $root 'ui'; New-Item -ItemType Directory -Path $uiFolder | Out-Null
+    $uiIni = Join-Path $uiFolder 'NativeDLSS.ini'
+    $uiConfig = @'
+[NativeDLSS]
+Enabled=1
+Mode=2
+Quality=5
+HUD1=0,0,5000,10000
+ActiveProfile=WoW.exe
+[Profile:WoW.exe]
+Mode=1
+AnalysisPercent=75
+HUD1=
+'@
+    [IO.File]::WriteAllText($uiIni,$uiConfig,[Text.UnicodeEncoding]::new($false,$true))
+    $uiChecks = @'
+$form.CreateControl()
+if ($tabs.TabPages.Count -ne 4 -or $rects.Rows.Count -ne 8) { throw 'Settings controls missing' }
+if ($mode.SelectedIndex -ne 1 -or $preset.SelectedIndex -ne 2 -or $grid.SelectedIndex -ne 1 -or $scale.Value -ne 75) { throw 'Profile inheritance or legacy quality migration failed' }
+if ([string]$rects.Rows[0].Cells[0].Value) { throw 'Empty HUD profile override was not preserved' }
+$profile.Text='NewGame.exe';$mode.SelectedIndex=2;$preset.SelectedIndex=0;$grid.SelectedIndex=0;$scale.Value=50
+$rects.Rows[0].Cells[0].Value='10';$rects.Rows[0].Cells[1].Value='20';$rects.Rows[0].Cells[2].Value='30';$rects.Rows[0].Cells[3].Value='40'
+SaveProfile
+if ((ReadIni 'NativeDLSS' 'ActiveProfile' '') -ne 'NewGame.exe' -or (ReadIni 'Profile:NewGame.exe' 'HUD1' '') -ne '1000,2000,3000,4000') { throw 'UI profile/HUD save failed' }
+LoadProfile
+if ($mode.SelectedIndex -ne 2 -or $preset.SelectedIndex -ne 0 -or $grid.SelectedIndex -ne 0 -or $rects.Rows[0].Cells[0].Value -ne '10') { throw 'UI saved profile round trip failed' }
+$rects.Rows[0].Cells[2].Value='5';$rejected=$false
+try { SaveProfile } catch { $rejected=$true }
+if (!$rejected -or (ReadIni 'Profile:NewGame.exe' 'HUD1' '') -ne '1000,2000,3000,4000') { throw 'Invalid HUD was saved' }
+Write-Host 'Actual Settings controls, inherited profile, legacy migration, HUD round trip and invalid input rejection passed.'
+'@
+    $uiScript = [IO.File]::ReadAllText((Join-Path $project 'package/Settings.ps1'))
+    if (!$uiScript.Contains('[void]$form.ShowDialog()')) { throw 'UI fixture cannot locate modal loop' }
+    $uiScript = $uiScript.Replace('[void]$form.ShowDialog()',$uiChecks)
+    $uiPath = Join-Path $root 'Settings-fixture.ps1'
+    [IO.File]::WriteAllText($uiPath,$uiScript,[Text.UTF8Encoding]::new($true))
+    & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $uiPath -LSFolder $uiFolder
+    if ($LASTEXITCODE -ne 0) { throw 'Settings UI execution failed' }
     [IO.File]::WriteAllText($original,'unsupported original')
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Install.ps1') -LSFolder $ls
     if ($LASTEXITCODE -ne 1 -or [IO.File]::ReadAllText((Join-Path $ls 'Lossless.dll')) -ne 'old manager proxy') { throw 'Unsupported original was not rejected safely' }
