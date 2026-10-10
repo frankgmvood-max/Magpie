@@ -15,8 +15,10 @@ void Check(bool good, const char* message) { if (!good) throw std::runtime_error
 void Hr(HRESULT hr, const char* message) { Check(SUCCEEDED(hr), message); }
 ComPtr<ID3DBlob> Compile(const char* shader, const char* entry, const char* target) {
     ComPtr<ID3DBlob> result, error;
-    Hr(D3DCompile(shader, std::strlen(shader), nullptr, nullptr, nullptr, entry, target,
-        D3DCOMPILE_ENABLE_STRICTNESS, 0, &result, &error), "flow shader compile"); return result;
+    const HRESULT hr=D3DCompile(shader, std::strlen(shader), nullptr, nullptr, nullptr, entry, target,
+        D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &result, &error);
+    if (FAILED(hr) && error) std::cerr.write(static_cast<const char*>(error->GetBufferPointer()), static_cast<std::streamsize>(error->GetBufferSize()));
+    Hr(hr, "flow shader compile"); return result;
 }
 float Half(uint16_t h) {
     const float sign = h & 0x8000 ? -1.0f : 1.0f;
@@ -25,6 +27,9 @@ float Half(uint16_t h) {
 }
 }
 int main() { try {
+    std::cout << "Compile GPU decision flag\n"; Compile(ls_native::shaders::flag,"main","cs_5_0");
+    std::cout << "Compile full-image comparison\n"; Compile(ls_native::shaders::compare,"main","cs_5_0");
+    std::cout << "Compile economy/HUD compositor\n"; Compile(ls_native::shaders::composite,"main","cs_5_0");
     ComPtr<ID3D11Device> device; ComPtr<ID3D11DeviceContext> ctx;
     Hr(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION,
         &device, nullptr, &ctx), "flow WARP");

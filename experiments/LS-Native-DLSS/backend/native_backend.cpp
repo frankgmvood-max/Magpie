@@ -67,8 +67,14 @@ D3D12_RESOURCE_BARRIER Barrier(ID3D12Resource* r, D3D12_RESOURCE_STATES from, D3
 }
 HRESULT Compile(const char* text, const char* entry, const char* target, ID3DBlob** output) {
     ComPtr<ID3DBlob> error;
-    return D3DCompile(text, std::strlen(text), "NativeDLSS own shader", nullptr, nullptr, entry, target,
+    const HRESULT hr = D3DCompile(text, std::strlen(text), "NativeDLSS own shader", nullptr, nullptr, entry, target,
         D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, output, &error);
+    if (FAILED(hr) && error) {
+        std::array<char,1024> message{};
+        std::memcpy(message.data(), error->GetBufferPointer(), std::min(error->GetBufferSize(),message.size()-1));
+        NgxLog(message.data(),NVSDK_NGX_LOGGING_LEVEL_VERBOSE,NVSDK_NGX_Feature_FrameGeneration);
+    }
+    return hr;
 }
 bool FormatSupported(DXGI_FORMAT f) {
     return f == DXGI_FORMAT_R8G8B8A8_UNORM || f == DXGI_FORMAT_B8G8R8A8_UNORM || f == DXGI_FORMAT_R16G16B16A16_FLOAT;

@@ -61,7 +61,7 @@ cbuffer Policy : register(b0) {uint economy;uint repeat;uint2 pad;uint4 hud[8];}
  bool protectedPixel=false;
  for(uint i=0;i<8;i++) {
   uint2 q=p.xy*10000;uint4 r=hud[i];
-  protectedPixel|=q.x>=r.x*w && q.x<r.z*w && q.y>=r.y*h && q.y<r.w*h;
+  protectedPixel=protectedPixel || (q.x>=r.x*w && q.x<r.z*w && q.y>=r.y*h && q.y<r.w*h);
  }
  uint flags=repeat!=0?1:disabled.Load(int3(0,0,0));
  if(repeat!=0 || protectedPixel || (flags&6)!=0 || (economy!=0 && flags!=0)) {

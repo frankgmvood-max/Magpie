@@ -284,6 +284,41 @@ void TestHudAndFilters() {
     Require(backend.PollCounters().scene_resets > 0, "scene cut resets history");
     std::cout << "HUD pixel regions, exact duplicates, one-pixel rejection, cut suppression and history reset passed\n";
 }
+void TestQueuedSceneGuard() {
+    Fixture f; NativeBackend backend; BackendOptions options; options.enabled = options.synthetic_test = true;
+    Hr(backend.Initialize(f.context.Get(),f.extent,options,L"."),"queued cut backend");
+    RenderPolicy policy; policy.mode=RenderMode::Economy;policy.scene_cut=true;
+    Require(backend.SetPolicy(policy),"queued cut policy");
+    auto a=f.Source(0,20);backend.Source(f.images[0].Get(),a);
+    auto b=f.Source(1,40);Require(backend.Source(f.images[1].Get(),b),"queued cut warmup");f.Drain();
+    // Upload future inputs before holding WARP's queue (test CPU uploads may synchronize).
+    auto cut=f.Source(0,200),after=f.Source(2,210);f.Drain();
+    ComPtr<IDXGIDevice> dxgi;ComPtr<IDXGIAdapter> adapter;ComPtr<ID3D12Device> gate_device;
+    Hr(f.device.As(&dxgi),"cut gate DXGI");Hr(dxgi->GetAdapter(&adapter),"cut gate adapter");
+    Hr(D3D12CreateDevice(adapter.Get(),D3D_FEATURE_LEVEL_11_0,IID_PPV_ARGS(&gate_device)),"cut gate device");
+    ComPtr<ID3D12Fence> gate12;ComPtr<ID3D11Fence> gate11;HANDLE handle=nullptr;
+    Hr(gate_device->CreateFence(0,D3D12_FENCE_FLAG_SHARED,IID_PPV_ARGS(&gate12)),"cut gate fence");
+    Hr(gate_device->CreateSharedHandle(gate12.Get(),nullptr,GENERIC_ALL,nullptr,&handle),"cut gate handle");
+    const HRESULT opened=f.device5->OpenSharedFence(handle,IID_PPV_ARGS(&gate11));CloseHandle(handle);Hr(opened,"cut gate import");
+    struct Gate {
+        ID3D12Fence* fence;HANDLE event=CreateEventW(nullptr,TRUE,FALSE,nullptr);std::atomic<bool> forced{false};std::thread thread;
+        explicit Gate(ID3D12Fence* value):fence(value),thread([this]{if(WaitForSingleObject(event,3000)!=WAIT_OBJECT_0){forced=true;fence->Signal(1);}}){}
+        ~Gate(){SetEvent(event);fence->Signal(1);thread.join();CloseHandle(event);}
+        void Release(){SetEvent(event);fence->Signal(1);}
+    } gate(gate12.Get());
+    Hr(f.context4->Wait(gate11.Get(),1),"hold cut queue");
+    Require(backend.Source(f.images[0].Get(),cut),"queue cut before status is available");
+    Require(backend.Source(f.images[2].Get(),after),"queue following pair before status is available");
+    f.Native(false);BindCurrent(f,0);Require(backend.Composite(f.Slot(b,cut),f.outputs[3].Get()),"queue cut composite");
+    f.Native(false);BindCurrent(f,2);Require(backend.Composite(f.Slot(cut,after),f.outputs[3].Get()),"queue post-cut composite");
+    Require(!gate.forced.load(),"queued scene guard blocked host");gate.Release();f.Pixels(210);
+    const auto counts=backend.PollCounters();Require(counts.scene_cut_samples==1,"GPU quarantine is distinct from another cut event");
+    auto reset=f.Source(1,220);Require(backend.Source(f.images[1].Get(),reset),"quarantine reset source");
+    f.Native(false);Require(backend.Composite(f.Slot(after,reset),f.outputs[3].Get()),"reset warmup repeat");f.Pixels(220);
+    auto resumed=f.Source(0,240);Require(backend.Source(f.images[0].Get(),resumed),"post-quarantine source");
+    f.Native(false);BindCurrent(f,0);Require(backend.Composite(f.Slot(reset,resumed),f.outputs[3].Get()),"post-quarantine generated output");f.Pixels(230);
+    std::cout<<"GPU-only scene quarantine covers already queued pairs, clears on reset and never host-waits\n";
+}
 void TestDriverLog() {
     NgxLogMessage m;
     std::string input(1500, 'x'); input[5] = '\n';
@@ -302,5 +337,5 @@ void TestDriverLog() {
     std::cout << "NGX callback ownership, truncation, concurrent producers and bounded output passed\n";
 }
 }
-int main() { std::cout << std::unitbuf; try { TestDriverLog(); Test(false); Test(true); TestRetirement(true); TestRetirement(false); TestReattachment(); TestEconomy(false); TestEconomy(true); TestHudAndFilters(); return 0; }
+int main() { std::cout << std::unitbuf; try { TestDriverLog(); Test(false); Test(true); TestRetirement(true); TestRetirement(false); TestReattachment(); TestEconomy(false); TestEconomy(true); TestHudAndFilters(); TestQueuedSceneGuard(); return 0; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; } }
