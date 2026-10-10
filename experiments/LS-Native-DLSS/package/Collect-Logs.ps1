@@ -18,7 +18,7 @@ try {
     $stage = Join-Path ([IO.Path]::GetTempPath()) ('native-logs-' + [Guid]::NewGuid())
     New-Item -ItemType Directory -Path $stage | Out-Null
     $inventory = @()
-    foreach ($name in @('Lossless.dll','Lossless_original.dll','version.dll','dxgi.dll','native-runtime/nvngx_dlssg.dll','addons/LS_DLSSFG/runtime/nvngx_dlssg.dll','nvngx_dlssg.dll')) {
+    foreach ($name in @('LosslessScaling.exe','LosslessScaling.dll','NativeDLSS.UI.dll','LosslessScaling.runtimeconfig.json','LosslessScaling.deps.json','Lossless.dll','Lossless_original.dll','version.dll','dxgi.dll','native-runtime/nvngx_dlssg.dll','addons/LS_DLSSFG/runtime/nvngx_dlssg.dll','nvngx_dlssg.dll')) {
         $path = Join-Path $LSFolder $name
         if (Test-Path -LiteralPath $path -PathType Leaf) {
             $file = Get-Item -LiteralPath $path
@@ -35,7 +35,8 @@ try {
         $base = Join-Path $LSFolder $dir
         if (!(Test-Path -LiteralPath $base -PathType Container)) { continue }
         $files = @(Get-ChildItem -LiteralPath $base -File -Recurse | Where-Object {
-            $_.Extension -in @('.log','.jsonl','.txt') -and ($dir -ne 'logs' -or $_.Name -like 'native-dlss-*.log' -or $_.Name -eq 'native-ui.log')
+            ($_.Extension -in @('.log','.jsonl','.txt') -or $_.Name -eq 'native-startup-result.json') -and
+            ($dir -ne 'logs' -or $_.Name -like 'native-dlss-*.log' -or $_.Name -eq 'native-ui.log' -or $_.Name -like 'native-startup-*.log' -or $_.Name -eq 'native-startup-result.json')
         } | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 40)
         foreach ($file in $files) {
             $relative = $file.FullName.Substring($LSFolder.TrimEnd('\').Length + 1)

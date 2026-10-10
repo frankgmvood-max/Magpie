@@ -2,7 +2,7 @@ param([Parameter(Mandatory=$true)][string]$ManagedBuild)
 $ErrorActionPreference = 'Stop'
 $ManagedBuild = [IO.Path]::GetFullPath($ManagedBuild)
 $project = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
-foreach ($name in @('Install.ps1','Settings.ps1','Collect-Logs.ps1')) {
+foreach ($name in @('Install.ps1','Settings.ps1','Collect-Logs.ps1','Start-Diagnostics.ps1')) {
     $errors = $null; $tokens = $null
     # Windows PowerShell defaults BOM-less files to ANSI. Read source as UTF-8;
     # the distributed scripts receive a UTF-8 BOM during packaging.
@@ -85,6 +85,34 @@ exit 1
     if ([IO.File]::ReadAllText((Join-Path $ls 'NativeDLSS.ini')) -ne 'old ini') { throw 'Upgrade overwrote existing settings and profiles' }
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Install.ps1') -LSFolder $ls
     if ($LASTEXITCODE -ne 0) { throw 'Repeated install failed' }
+    # The identical initialization event must fail with shipped 0.3.0 source.
+    # This is a controlled WPF replay, not execution of commercial LS.
+    $oldRun = Join-Path $root 'startup-negative'; New-Item -ItemType Directory -Path $oldRun | Out-Null
+    Copy-Item (Join-Path $ManagedBuild 'fixture/*') $oldRun
+    Copy-Item -LiteralPath (Join-Path $ManagedBuild 'startup-baseline/ui/NativeDLSS.UI.dll') -Destination $oldRun -Force
+    Copy-Item -LiteralPath (Join-Path $ManagedBuild '../native-observer/Release/Lossless.dll') -Destination $oldRun
+    $patchProbe = @'
+param([string]$InputAssembly,[string]$OutputAssembly,[string]$Helper,[string]$Cecil,[string]$Source)
+$ErrorActionPreference = 'Stop'
+[void][Reflection.Assembly]::LoadFrom($Cecil)
+Add-Type -TypeDefinition ([IO.File]::ReadAllText($Source)) -ReferencedAssemblies @($Cecil,'System.Core','System')
+[NativeDLSS.Install.Patcher]::PatchFixture($InputAssembly,$OutputAssembly,$Helper)
+'@
+    $patchPath = Join-Path $root 'Patch-StartupBaseline.ps1'
+    [IO.File]::WriteAllText($patchPath,$patchProbe,[Text.UTF8Encoding]::new($true))
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $patchPath -InputAssembly (Join-Path $ManagedBuild 'fixture/NativeUIFixture.dll') -OutputAssembly (Join-Path $oldRun 'NativeUIFixture.dll') -Helper (Join-Path $oldRun 'NativeDLSS.UI.dll') -Cecil (Join-Path $package 'Mono.Cecil.dll') -Source (Join-Path $package 'UI-Patcher.cs')
+    if ($LASTEXITCODE -ne 0) { throw 'Startup negative-control patch failed' }
+    $probeStart = New-Object Diagnostics.ProcessStartInfo
+    $probeStart.FileName = 'dotnet'; $probeStart.Arguments = '"' + (Join-Path $oldRun 'NativeUIFixture.dll') + '"'
+    $probeStart.WorkingDirectory = $oldRun; $probeStart.UseShellExecute = $false
+    $probeStart.RedirectStandardOutput = $true; $probeStart.RedirectStandardError = $true
+    $probe = New-Object Diagnostics.Process; $probe.StartInfo = $probeStart; [void]$probe.Start()
+    $oldOut = $probe.StandardOutput.ReadToEndAsync(); $oldErr = $probe.StandardError.ReadToEndAsync()
+    if (!$probe.WaitForExit(30000)) { $probe.Kill(); throw 'Startup negative-control fixture timed out' }
+    $oldLog = $oldOut.Result + $oldErr.Result
+    if ($probe.ExitCode -eq 0 -or !$oldLog.Contains('InvalidOperationException') -or !$oldLog.Contains('NativeDLSS.UI.Controls.HandleType')) { throw "Old helper did not reproduce the early SelectionChanged crash: $oldLog" }
+    $probe.Dispose()
+    Write-Host 'Shipped 0.3.0 helper source reproduces early WPF SelectionChanged startup exception.'
     # Same patcher and installed managed payload, executed with actual WPF.
     $uiRun = Join-Path $root 'wpf-run'; New-Item -ItemType Directory -Path $uiRun | Out-Null
     Copy-Item (Join-Path $ManagedBuild 'fixture/*') $uiRun
@@ -123,6 +151,9 @@ exit 1
     New-Item -ItemType Directory -Path (Join-Path $ls 'logs'),(Join-Path $ls 'native-dlss-cache/nested'),(Join-Path $ls 'dlssg_sm86/logs') -Force | Out-Null
     [IO.File]::WriteAllText((Join-Path $ls 'logs/native-dlss-fixture.log'),'native log')
     [IO.File]::WriteAllText((Join-Path $ls 'logs/native-ui.log'),'managed UI diagnostic')
+    New-Item -ItemType Directory -Path (Join-Path $ls 'logs/startup-fixture') -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $ls 'logs/startup-fixture/native-startup-stderr.log'),'startup exception')
+    [IO.File]::WriteAllText((Join-Path $ls 'logs/startup-fixture/native-startup-result.json'),'{"ExitCode":1}')
     [IO.File]::WriteAllText((Join-Path $ls 'native-dlss-cache/nested/ngx.log'),'NGX log')
     [IO.File]::WriteAllText((Join-Path $ls 'dlssg_sm86/logs/backend_fixture.jsonl'),'SM86 log')
     [IO.File]::WriteAllText((Join-Path $ls 'logs/unrelated.txt'),'must not collect')
@@ -132,7 +163,7 @@ exit 1
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Collect-Logs.ps1') -LSFolder $ls -Output $zip
     if ($LASTEXITCODE -ne 0) { throw 'Collector failed' }
     $unzip = Join-Path $root 'unpacked'; Expand-Archive -LiteralPath $zip -DestinationPath $unzip
-    foreach ($name in @('logs/native-dlss-fixture.log','logs/native-ui.log','native-dlss-cache/nested/ngx.log','dlssg_sm86/logs/backend_fixture.jsonl','runtime-inventory.json','NativeDLSS.ini')) {
+    foreach ($name in @('logs/native-dlss-fixture.log','logs/native-ui.log','logs/startup-fixture/native-startup-stderr.log','logs/startup-fixture/native-startup-result.json','native-dlss-cache/nested/ngx.log','dlssg_sm86/logs/backend_fixture.jsonl','runtime-inventory.json','NativeDLSS.ini')) {
         if (!(Test-Path -LiteralPath (Join-Path $unzip $name))) { throw "Missing collected file: $name" }
     }
     if (@(Get-ChildItem $unzip -File -Recurse -Filter '*.dll').Count -or (Test-Path (Join-Path $unzip 'logs/unrelated.txt'))) { throw 'Unrequested binaries/files collected' }
@@ -178,6 +209,22 @@ Write-Host 'Actual Settings controls, inherited profile, legacy migration, HUD r
     [IO.File]::WriteAllText($uiPath,$uiScript,[Text.UTF8Encoding]::new($true))
     & powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File $uiPath -LSFolder $uiFolder
     if ($LASTEXITCODE -ne 0) { throw 'Settings UI execution failed' }
+    # Exercise the diagnostic launcher against a source-owned failing process.
+    $diagLs = Join-Path $root 'diagnostic-LS'; New-Item -ItemType Directory -Path $diagLs | Out-Null
+    $diagExe = Join-Path $diagLs 'LosslessScaling.exe'
+    Add-Type -TypeDefinition 'using System; public class DiagnosticStartupFixture { public static int Main() { Console.WriteLine("diagnostic-stdout-marker"); Console.Error.WriteLine("diagnostic-error-marker"); Console.WriteLine(Environment.GetEnvironmentVariable("COREHOST_TRACE")); Console.WriteLine(Environment.CurrentDirectory); return 7; } }' -OutputAssembly $diagExe -OutputType ConsoleApplication
+    $diagScript = Join-Path $root 'Start-Diagnostics.ps1'
+    [IO.File]::WriteAllText($diagScript,[IO.File]::ReadAllText((Join-Path $project 'package/Start-Diagnostics.ps1')),[Text.UTF8Encoding]::new($true))
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $diagScript -LSFolder $diagLs
+    if ($LASTEXITCODE -ne 0) { throw 'Startup diagnostic launcher failed' }
+    $diagResult = @(Get-ChildItem -LiteralPath (Join-Path $diagLs 'logs') -Recurse -Filter 'native-startup-result.json')
+    if ($diagResult.Count -ne 1) { throw 'Startup diagnostic result missing' }
+    $diagMeta = Get-Content -LiteralPath $diagResult[0].FullName -Raw | ConvertFrom-Json
+    $diagFolder = $diagResult[0].DirectoryName
+    $diagOut = [IO.File]::ReadAllText((Join-Path $diagFolder 'native-startup-stdout.log'))
+    $diagErr = [IO.File]::ReadAllText((Join-Path $diagFolder 'native-startup-stderr.log'))
+    if ($diagMeta.ExitCode -ne 7 -or !$diagOut.Contains('diagnostic-stdout-marker') -or !$diagOut.Contains($diagLs) -or !$diagErr.Contains('diagnostic-error-marker')) { throw 'Startup diagnostics lost output, working directory or failing exit code' }
+    Write-Host 'Startup diagnostic launcher captures actual child stdout, stderr and failing exit code.'
     $managedBytes = [IO.File]::ReadAllBytes((Join-Path $ls 'LosslessScaling.dll'))
     [IO.File]::WriteAllText((Join-Path $ls 'LosslessScaling.dll'),'unsupported managed UI')
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Install.ps1') -LSFolder $ls

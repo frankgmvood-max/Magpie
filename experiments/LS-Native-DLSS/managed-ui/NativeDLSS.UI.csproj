@@ -4,7 +4,7 @@
     <UseWPF>true</UseWPF>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <AssemblyName>NativeDLSS.UI</AssemblyName>
-    <Version>0.3.0</Version>
+    <Version>0.3.1</Version>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
   <ItemGroup><Compile Include="NativeControls.cs" /></ItemGroup>

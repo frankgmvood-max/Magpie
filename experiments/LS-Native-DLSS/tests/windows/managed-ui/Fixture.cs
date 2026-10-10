@@ -47,6 +47,10 @@ public class ProfilePage : Page {
         FrameGeneration = new ComboBox();
         foreach (string name in new[] { "Off", "LSFG3", "LSFG2", "LSFG1" }) FrameGeneration.Items.Add(new ComboBoxItem { Content = name });
         FrameGeneration.SelectionChanged += FrameGeneration_SelectionChanged;
+        // Real BAML can select an initial item while InitializeComponent is
+        // still constructing the page, before the injected Attach hook runs.
+        // Our old fixture never raised this startup event.
+        FrameGeneration.SelectedIndex = 0;
         LSFG2Container = new StackPanel(); LSFG3Container = new StackPanel(); LSFGFlowScaleContainer = new Grid(); LSFGPerformanceContainer = new Grid();
         var panel = new StackPanel(); panel.Children.Add(FrameGeneration); panel.Children.Add(LSFG2Container); panel.Children.Add(LSFG3Container); panel.Children.Add(LSFGFlowScaleContainer); panel.Children.Add(LSFGPerformanceContainer);
         FrameGenerationCard = new Border { Child = panel }; Content = FrameGenerationCard;

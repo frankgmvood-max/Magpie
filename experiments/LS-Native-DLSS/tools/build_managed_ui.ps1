@@ -17,3 +17,20 @@ if ($LASTEXITCODE -ne 0) { throw 'Managed UI build failed.' }
 dotnet build (Join-Path $project 'tests/windows/managed-ui/NativeUIFixture.csproj') -c Release -o (Join-Path $OutputRoot 'fixture')
 if ($LASTEXITCODE -ne 0) { throw 'Managed UI fixture build failed.' }
 Copy-Item -LiteralPath (Join-Path $OutputRoot 'ui/NativeDLSS.UI.dll') -Destination $OutputRoot
+# Controlled negative replay of the actually shipped 0.3.0 helper source.
+# Same new WPF fixture must fail with this helper, then pass with the fix.
+$baselineCommit = '74fcdc811d099baf6635c316d488e690b6f9acd2'
+$sourceSpec = $baselineCommit + ':experiments/LS-Native-DLSS/managed-ui/NativeControls.cs'
+git -C $project cat-file -e $sourceSpec 2>$null
+if ($LASTEXITCODE -ne 0) {
+    git -C $project fetch --depth=1 origin $baselineCommit
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch pinned 0.3.0 startup regression source.' }
+}
+$baseline = Join-Path $OutputRoot 'startup-baseline'
+New-Item -ItemType Directory -Path $baseline -Force | Out-Null
+$oldSource = git -C $project show $sourceSpec
+if ($LASTEXITCODE -ne 0) { throw 'Cannot read pinned 0.3.0 helper.' }
+[IO.File]::WriteAllText((Join-Path $baseline 'NativeControls.cs'), (($oldSource -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
+Copy-Item -LiteralPath (Join-Path $project 'managed-ui/NativeDLSS.UI.csproj') -Destination $baseline
+dotnet build (Join-Path $baseline 'NativeDLSS.UI.csproj') -c Release -o (Join-Path $baseline 'ui')
+if ($LASTEXITCODE -ne 0) { throw 'Startup negative-control helper build failed.' }

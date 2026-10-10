@@ -109,7 +109,10 @@ public static class Controls {
     }
     public static void EndProfile(object page) { var v = Views.GetValue(page, p => throw new InvalidOperationException()); v.Loading = false; v.Visibility(); }
     public static bool HandleType(object page) {
-        var v = Views.GetValue(page, p => throw new InvalidOperationException());
+        // BAML wires SelectionChanged, then assigns SelectedIndex=0 inside
+        // InitializeComponent. Attach runs only when that call returns.
+        // Preserve the original handler's IsLoaded guard for this early event.
+        if (!Views.TryGetValue(page, out var v)) return false;
         if (v.Loading) return true;
         v.Visibility();
         if (v.Combo.SelectedIndex != v.Index) return false;
