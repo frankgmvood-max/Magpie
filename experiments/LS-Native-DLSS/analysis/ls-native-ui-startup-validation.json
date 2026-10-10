@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "package": {
+    "name": "LS-Native-DLSS-0.3.1.zip",
+    "bytes": 496551,
+    "sha256": "c1eff34ab7aa6c98cdd9e295c58caa7ad6751321a076180148652a65a32c2515",
+    "functional_commit": "9fd3627560743f965e90f3278fa916d421af241d",
+    "workflow_run_id": 38085112616,
+    "windows_job_id": 114309895224,
+    "artifact_id": 11682655455
+  },
+  "rea": {
+    "version": "6.3.0",
+    "provider": "rea-dotnet-static",
+    "evidence_ids": {
+      "original-artifact": "ev_dcd04232e6763c376b3e74b0d96cf0041e17c95f77afd8b920cf799f59453251",
+      "original-members": "ev_fcf726fe9f208bc83f70bd68383e4964f1b74914069604ea4958c79554f54f4e",
+      "final-helper-artifact": "ev_cbe6b76beadf1647dc91bbfeb8015548b07c32970c0cb0fb90e0dedd8b3ecb98",
+      "final-helper-members": "ev_b5199c9ff8ba9ffe83d582657de743c8fb7a20258a678cd2e16aa3e66c5f05c3"
+    },
+    "final_helper_version": "0.3.1.0",
+    "artifact_coverage": "complete",
+    "member_coverage": "partial; static analysis only",
+    "final_helper_HandleType_body_sha256": "da9ffbb4f077ce332173b432a769eee00ea2126dbc42030265b931d9232f6e1a",
+    "final_helper_calls_TryGetValue": true
+  },
+  "windows_validation": {
+    "shipped_0_3_0_source_reproduces_early_selection_exception": true,
+    "corrected_wpf_fixture_dotnet": [
+      "8.0.31",
+      "9.0.20"
+    ],
+    "downloaded_dll_0x80131515_reproduced_and_fixed": true,
+    "installation_reinstallation_rollback": true,
+    "startup_diagnostics_capture_stdout_stderr_exit_code": true,
+    "native_ctest_passed": 10,
+    "commercial_application_full_startup": false,
+    "physical_nvidia_sm86_vrr": false
+  },
+  "private_originals_and_cil_distributed": false
+}
