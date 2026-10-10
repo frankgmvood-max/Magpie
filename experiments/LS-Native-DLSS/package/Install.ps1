@@ -91,6 +91,15 @@ try {
         if (!$originals.Count) { throw 'Original managed UI backup not found.' }
         $managedInput = Join-Path $originals[0].FullName 'LosslessScaling.dll'
     }
+    # Explorer can propagate the downloaded ZIP's Mark of the Web to DLLs.
+    # Windows PowerShell 5.1 then rejects Cecil LoadFrom with 0x80131515.
+    # Only unblock the three shipped DLLs, after checking the LS version and
+    # before loading Cecil or copying the UI helper. Leave LS/SM86 files alone.
+    foreach ($name in @('Mono.Cecil.dll','NativeDLSS.UI.dll','Lossless.dll')) {
+        $path = Join-Path $PSScriptRoot $name
+        try { Unblock-File -LiteralPath $path -ErrorAction Stop }
+        catch { throw "Cannot unblock package file ${name}. Open the downloaded ZIP's Properties, select Unblock, extract it again, and rerun Install.cmd. $($_.Exception.Message)" }
+    }
     $stage = Join-Path $LSFolder ('native-dlss-stage-' + [Guid]::NewGuid())
     New-Item -ItemType Directory -Path $stage | Out-Null
     $cecil = Join-Path $PSScriptRoot 'Mono.Cecil.dll'

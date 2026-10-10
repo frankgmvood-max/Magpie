@@ -32,8 +32,55 @@ try {
     [IO.File]::WriteAllText((Join-Path $ls 'dxgi.dll'),'existing working SM86 proxy')
     [IO.File]::WriteAllText((Join-Path $package 'Lossless.dll'),'new native proxy')
     [IO.File]::WriteAllText((Join-Path $package 'NativeDLSS.ini'),'new ini')
+    # Reproduce Explorer's downloaded ZIP extraction, using real NTFS streams
+    # and the same Windows PowerShell/.NET Framework loader as Install.cmd.
+    $payloadHashes = @{}
+    foreach ($name in @('Mono.Cecil.dll','NativeDLSS.UI.dll','Lossless.dll')) {
+        $path = Join-Path $package $name
+        $payloadHashes[$name] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+        Set-Content -LiteralPath $path -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding Ascii
+    }
+    $unrelated = Join-Path $package 'unrelated-download.dll'
+    [IO.File]::WriteAllText($unrelated,'unrelated download must stay blocked')
+    foreach ($path in @($unrelated,(Join-Path $ls 'dxgi.dll'))) {
+        Set-Content -LiteralPath $path -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding Ascii
+    }
+    $loadProbe = @'
+param([string]$AssemblyPath)
+$ErrorActionPreference = 'Stop'
+try {
+    [void][Reflection.Assembly]::LoadFrom($AssemblyPath)
+} catch {
+    $failure = $_.Exception
+    while ($failure) {
+        if ($failure.HResult -eq -2146233067) {
+            Write-Host 'Downloaded Cecil reproduces LoadFrom failure 0x80131515.'
+            exit 0
+        }
+        $failure = $failure.InnerException
+    }
+    Write-Host $_.Exception.ToString()
+    exit 1
+}
+Write-Host 'Expected downloaded Cecil to be blocked before installation.'
+exit 1
+'@
+    $probePath = Join-Path $root 'Probe-DownloadedCecil.ps1'
+    [IO.File]::WriteAllText($probePath,$loadProbe,[Text.UTF8Encoding]::new($true))
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $probePath -AssemblyPath (Join-Path $package 'Mono.Cecil.dll')
+    if ($LASTEXITCODE -ne 0) { throw 'Downloaded DLL reproduction failed' }
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Install.ps1') -LSFolder $ls
     if ($LASTEXITCODE -ne 0) { throw 'Install failed' }
+    foreach ($name in $payloadHashes.Keys) {
+        $path = Join-Path $package $name
+        if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $payloadHashes[$name]) { throw "Unblocking altered DLL bytes: $name" }
+        if (Get-Item -LiteralPath $path -Stream Zone.Identifier -ErrorAction SilentlyContinue) { throw "Package DLL still blocked: $name" }
+    }
+    if (Get-Item -LiteralPath (Join-Path $ls 'NativeDLSS.UI.dll') -Stream Zone.Identifier -ErrorAction SilentlyContinue) { throw 'Installed UI helper retained Mark of the Web' }
+    foreach ($path in @($unrelated,(Join-Path $ls 'dxgi.dll'))) {
+        if (!(Get-Item -LiteralPath $path -Stream Zone.Identifier -ErrorAction SilentlyContinue)) { throw 'Installer unblocked an unrelated file' }
+    }
+    Write-Host 'Downloaded package installs; DLL bytes unchanged; unrelated download and SM86 marks preserved.'
     if ([IO.File]::ReadAllText((Join-Path $ls 'Lossless.dll')) -ne 'new native proxy') { throw 'Wrong installed DLL' }
     if ([IO.File]::ReadAllText((Join-Path $ls 'NativeDLSS.ini')) -ne 'old ini') { throw 'Upgrade overwrote existing settings and profiles' }
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Install.ps1') -LSFolder $ls
