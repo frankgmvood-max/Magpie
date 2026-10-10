@@ -287,7 +287,7 @@ void BackendComposite(ID3D11DeviceContext* ctx, const DispatchObservation& recor
     if (session) session->backend->Composite(record, destination.p);
 }
 void WriteRuntimeModules(std::ostream& out) {
-    // Read only our own modules on the diagnostics worker; never load a module
+    // Read only our own modules at startup/on the worker; never load a module
     // merely to inspect it. Include SM86/NGX, not unrelated process inventory.
     const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
     if (snapshot == INVALID_HANDLE_VALUE) {

@@ -23,7 +23,7 @@ LoadLibrary interception, including the load-order sensitivity of dxgi/d3d12.
 Replacing the addon manager removes its import dependencies. Automatic utility
 DLL loading also depends on the modules already loaded by .NET. This is a
 plausible integration defect; the 0.1.2 log does not establish which proxy was
-loaded. Before hook installation and all native NGX calls, the observer worker
+loaded. Before hook installation and all native NGX calls, the observer startup
 hashes the local utility proxy and explicitly loads this recognized version by
 absolute path with DLL-load-directory/System32 dependency resolution. It pins
 the resulting load reference and logs the actual module path and marker export.
@@ -36,7 +36,7 @@ SM86's own install/runtime_redirect/backend_install logs are needed for that.
 
 - Startup reports existence/SHA256 of the three runtime candidates and local
   version/dxgi/SM86 INI. NGX's documented search path list remains unchanged.
-- Own-process module snapshots run only on the worker before NGX and after the
+- Own-process module snapshots run at startup before NGX and on the worker after the
   first completed initialization attempt. They print only relevant NGX/SM86 and
   D3D loader paths. No diagnostic-only DLL loading or foreign-process inspection.
 - Each session reports Init/GetCapabilityParameters and five individual GetI
