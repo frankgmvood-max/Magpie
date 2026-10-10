@@ -21,6 +21,7 @@
 #ifdef LS_OBSERVER_TEST
 #include <iostream>
 #include <condition_variable>
+#include <sstream>
 #include <d3dcompiler.h>
 #endif
 
@@ -110,7 +111,16 @@ using DiscardView1Fn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext1*, ID3D11Vie
 struct ConstantTag { ConstantBytes bytes; uint64_t command_epoch = 0; uint32_t usage = 0; };
 template<class Fn> struct Hook { void* target = nullptr; Fn original = nullptr; };
 constexpr int kHookLimit = 12;
-template<class Fn> bool Install(Hook<Fn>(&hooks)[kHookLimit], void* target);
+enum class HookKind : uint32_t {
+    None, Dispatch, Indirect, Map, Copy, Region, Update, Execute, Resolve,
+    ClearUint, ClearFloat, Region1, Update1, DiscardResource, DiscardView,
+    ClearView, DiscardView1, Buffer, Shader
+};
+enum class StopReason : uint32_t {
+    None, MissingCreate, MissingImport, MinHookInit, PatchImport, DeviceTag,
+    HookInstall, CreateException, StartupException, TraceComplete, RecordLimit
+};
+template<class Fn> bool Install(Hook<Fn>(&hooks)[kHookLimit], void* target, HookKind kind);
 
 // Pinned, process-lifetime observer. Hooks and trampolines are never freed while
 // a native thread could be returning through them. No shutdown work in DllMain.
@@ -118,6 +128,11 @@ struct State {
     std::atomic<bool> active{false};
     std::atomic<bool> tracing{false}, eligible{false};
     std::atomic<uint64_t> serial{0}, seen{0}, untagged{0}, busy{0}, tagged_shaders{0}, tagged_buffers{0}, callbacks{0};
+    // Packed records keep reason/code coherent without taking a render lock.
+    std::atomic<uint64_t> stop_event{0}, hook_failure{0}, hook_failures{0};
+    std::atomic<uint64_t> create_calls{0}, attached_devices{0}, dispatch_calls{0};
+    std::atomic<uint32_t> create_hr{0};
+    const uint64_t started_ms = GetTickCount64();
     std::mutex capture_mutex, install_mutex;
     ObservationQueue<DispatchObservation, 512> records;
     std::vector<uint8_t> shader, input_shader;
@@ -159,9 +174,72 @@ struct State {
     std::atomic<uint64_t> source_calls{0}, slots_seen{0}, profile_revision{0}, backend_busy{0}, session_limit{0};
     std::atomic<int> profile_type{0}, profile_mode{0}, profile_hdr{0};
     std::atomic<float> profile_multiplier{0};
+    std::atomic<uint32_t> backend_phase{0}; // 0 idle, 1 Initialize, 2 Source, 3 Composite.
+    bool backend_writer_started = false; // Startup thread only.
 #endif
 };
 State* g = nullptr;
+void StopObservation(StopReason reason, uint32_t code = 0) {
+    uint64_t empty = 0;
+    const uint64_t event = uint64_t(static_cast<uint32_t>(reason)) << 32 | code;
+    g->stop_event.compare_exchange_strong(empty, event); // Retain the first stop cause.
+    g->active.store(false);
+}
+void RecordHookFailure(HookKind kind, uint32_t stage, uint32_t code) {
+    g->hook_failure.store(uint64_t(static_cast<uint32_t>(kind)) << 48 | uint64_t(stage) << 32 | code);
+    ++g->hook_failures;
+}
+#ifdef LS_WITH_NGX
+const char* HookName(HookKind kind) {
+    switch (kind) {
+    case HookKind::Dispatch: return "Dispatch";
+    case HookKind::Indirect: return "DispatchIndirect";
+    case HookKind::Map: return "Map";
+    case HookKind::Copy: return "CopyResource";
+    case HookKind::Region: return "CopySubresourceRegion";
+    case HookKind::Update: return "UpdateSubresource";
+    case HookKind::Execute: return "ExecuteCommandList";
+    case HookKind::Resolve: return "ResolveSubresource";
+    case HookKind::ClearUint: return "ClearUnorderedAccessViewUint";
+    case HookKind::ClearFloat: return "ClearUnorderedAccessViewFloat";
+    case HookKind::Region1: return "CopySubresourceRegion1";
+    case HookKind::Update1: return "UpdateSubresource1";
+    case HookKind::DiscardResource: return "DiscardResource";
+    case HookKind::DiscardView: return "DiscardView";
+    case HookKind::ClearView: return "ClearView";
+    case HookKind::DiscardView1: return "DiscardView1";
+    case HookKind::Buffer: return "CreateBuffer";
+    case HookKind::Shader: return "CreateComputeShader";
+    default: return "none";
+    }
+}
+const char* StopName(StopReason reason) {
+    switch (reason) {
+    case StopReason::MissingCreate: return "missing_d3d11_create";
+    case StopReason::MissingImport: return "missing_delay_import";
+    case StopReason::MinHookInit: return "minhook_initialize";
+    case StopReason::PatchImport: return "delay_import_patch";
+    case StopReason::DeviceTag: return "device_tag";
+    case StopReason::HookInstall: return "hook_install";
+    case StopReason::CreateException: return "device_create_exception";
+    case StopReason::StartupException: return "startup_exception";
+    case StopReason::TraceComplete: return "trace_complete";
+    case StopReason::RecordLimit: return "record_limit";
+    default: return "none";
+    }
+}
+const char* BackendPhaseName(uint32_t phase) {
+    switch (phase) {
+    case 1: return "initializing";
+    case 2: return "source";
+    case 3: return "composite";
+    default: return "idle";
+    }
+}
+struct BackendActivity {
+    ~BackendActivity() { g->backend_phase.store(0); }
+};
+#endif
 thread_local bool t_dispatch = false, t_shader = false, t_buffer = false;
 #ifdef LS_WITH_NGX
 bool BackendEnabled() { return g->options.enabled && g->eligible.load(); }
@@ -176,6 +254,8 @@ void BackendSource(ID3D11DeviceContext* ctx, ID3D11Resource* source, const Sourc
     ++g->source_calls;
     std::unique_lock<std::mutex> lock(g->backend_mutex, std::try_to_lock);
     if (!lock.owns_lock()) { ++g->backend_busy; ++g->source_invalidation_epoch; return; }
+    BackendActivity activity;
+    g->backend_phase.store(2);
     Com<ID3D11Texture2D> texture;
     if (!source || FAILED(source->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(texture.Put())))) return;
     auto* session = FindSession(write.context, write.texture);
@@ -185,7 +265,9 @@ void BackendSource(ID3D11DeviceContext* ctx, ID3D11Resource* source, const Sourc
         candidate.backend = std::make_unique<NativeBackend>();
         // One startup allocation on the native owning thread. No LS device is
         // touched by the logger, including SINGLETHREADED devices.
+        g->backend_phase.store(1);
         candidate.backend->Initialize(ctx, write.texture, g->options, g->folder);
+        g->backend_phase.store(2);
         session = &candidate; break;
     }
     if (session) session->backend->Source(texture.p, write);
@@ -196,6 +278,8 @@ void BackendComposite(ID3D11DeviceContext* ctx, const DispatchObservation& recor
     ++g->slots_seen;
     std::unique_lock<std::mutex> lock(g->backend_mutex, std::try_to_lock);
     if (!lock.owns_lock()) { ++g->backend_busy; return; }
+    BackendActivity activity;
+    g->backend_phase.store(3);
     auto* session = FindSession(record.context, record.current_write.texture);
     Com<ID3D11UnorderedAccessView> destination; ctx->CSGetUnorderedAccessViews(0, 1, destination.Put());
     if (session) session->backend->Composite(record, destination.p);
@@ -209,13 +293,16 @@ void WriteBackendDiagnostics(std::ostream& out) {
         bool sampled = false;
     };
     std::array<SessionSnapshot, 4> snapshots;
+    bool controller_sampled = false;
     {
         std::unique_lock<std::mutex> lock(g->backend_mutex, std::try_to_lock);
-        if (!lock.owns_lock()) return; // Diagnostics yield to the native frame path.
-        for (size_t i = 0; i != snapshots.size(); ++i) {
-            snapshots[i].context = g->sessions[i].context;
-            snapshots[i].extent = g->sessions[i].extent;
-            snapshots[i].backend = g->sessions[i].backend.get();
+        controller_sampled = lock.owns_lock();
+        if (controller_sampled) {
+            for (size_t i = 0; i != snapshots.size(); ++i) {
+                snapshots[i].context = g->sessions[i].context;
+                snapshots[i].extent = g->sessions[i].extent;
+                snapshots[i].backend = g->sessions[i].backend.get();
+            }
         }
     }
     // Session pointers are process-lifetime pinned. No controller lock during
@@ -226,7 +313,23 @@ void WriteBackendDiagnostics(std::ostream& out) {
         << " mode=" << g->profile_mode.load() << " multiplier=" << g->profile_multiplier.load()
         << " hdr=" << g->profile_hdr.load() << " eligible=" << g->eligible.load()
         << " source=" << g->source_calls.load() << " matched_slots=" << g->slots_seen.load()
-        << " controller_busy=" << g->backend_busy.load() << " session_limit=" << g->session_limit.load() << "\n";
+        << " controller_busy=" << g->backend_busy.load() << " session_limit=" << g->session_limit.load()
+        << " backend_phase=" << BackendPhaseName(g->backend_phase.load())
+        << " diagnostics_busy=" << !controller_sampled << "\n";
+    const auto stop = g->stop_event.load(), failure = g->hook_failure.load();
+    const auto hook_stage = static_cast<uint32_t>(failure >> 32) & 0xffff;
+    out << "observer uptime_ms=" << GetTickCount64() - g->started_ms << " active=" << g->active.load()
+        << " stop=" << StopName(static_cast<StopReason>(stop >> 32))
+        << " stop_code=0x" << std::hex << static_cast<uint32_t>(stop) << std::dec
+        << " create_calls=" << g->create_calls.load() << " create_hr=0x" << std::hex << g->create_hr.load() << std::dec
+        << " attached_devices=" << g->attached_devices.load() << " dispatch_callbacks=" << g->dispatch_calls.load()
+        << " tagged_shaders=" << g->tagged_shaders.load() << " tagged_buffers=" << g->tagged_buffers.load()
+        << " observed_dispatches=" << g->seen.load() << " untagged=" << g->untagged.load()
+        << " hook_failures=" << g->hook_failures.load() << " hook=" << HookName(static_cast<HookKind>(failure >> 48))
+        << " hook_stage=" << (hook_stage == 1 ? "create" : hook_stage == 2 ? "enable" : hook_stage == 3 ? "capacity" : "none")
+        << " hook_code=" << static_cast<int32_t>(failure)
+        << " hook_status=" << (hook_stage == 1 || hook_stage == 2 ? MH_StatusToString(static_cast<MH_STATUS>(static_cast<int32_t>(failure))) : "none")
+        << "\n";
     for (const auto& snapshot : snapshots) if (snapshot.backend) {
         out << "session=" << snapshot.context << " " << snapshot.extent.width << 'x' << snapshot.extent.height;
         if (!snapshot.sampled) { out << " diagnostics_busy=1\n"; continue; }
@@ -241,10 +344,21 @@ void WriteBackendDiagnostics(std::ostream& out) {
     }
     out.flush();
 }
-void BackendWriter() {
-    while (g->active.load()) {
-        WriteBackendDiagnostics(g->backend_log);
+void RunBackendWriter(std::ostream& out) {
+    for (;;) {
+        WriteBackendDiagnostics(out);
+        if (!g->active.load()) {
+            out << "writer=stopped\n"; out.flush();
+            return;
+        }
         std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+}
+void BackendWriter() { RunBackendWriter(g->backend_log); }
+// Startup thread only, before the periodic writer owns this stream.
+void StartupNote(const char* stage) {
+    if (!g->backend_writer_started && g->backend_log) {
+        g->backend_log << "startup=" << stage << "\n"; g->backend_log.flush();
     }
 }
 
@@ -279,9 +393,9 @@ void Observe(ID3D11DeviceContext* ctx, UINT x, UINT y, UINT z, bool after_dispat
     if (g->tracing.load() && sequence > g->max_records) {
         g->tracing.store(false);
 #ifdef LS_WITH_NGX
-        if (!g->options.enabled) g->active.store(false);
+        if (!g->options.enabled) StopObservation(StopReason::RecordLimit);
 #else
-        g->active.store(false);
+        StopObservation(StopReason::RecordLimit);
 #endif
     }
     std::unique_lock<std::mutex> lock(g->capture_mutex, std::try_to_lock);
@@ -503,7 +617,7 @@ template<int I> void STDMETHODCALLTYPE Indirect(ID3D11DeviceContext* ctx, ID3D11
 template<int I> void STDMETHODCALLTYPE Dispatch(ID3D11DeviceContext* ctx, UINT x, UINT y, UINT z) {
     const auto original = g->dispatches[I].original;
     if (t_dispatch) { original(ctx, x, y, z); return; }
-    ++g->callbacks;
+    ++g->callbacks; ++g->dispatch_calls;
     if (g->active.load()) {
         t_dispatch = true;
         DispatchObservation record;
@@ -546,42 +660,46 @@ template<class Fn, int... I> std::array<void*, kHookLimit> Detours(std::integer_
 
 bool InstallContext(ID3D11DeviceContext* ctx) {
     void** table = *reinterpret_cast<void***>(ctx);
-    bool complete = Install(g->dispatches, table[41]);
-    complete &= Install(g->indirects, table[42]);
-    complete &= Install(g->maps, table[14]);
-    complete &= Install(g->copies, table[47]);
-    complete &= Install(g->regions, table[46]);
-    complete &= Install(g->updates, table[48]);
-    complete &= Install(g->executions, table[58]);
-    complete &= Install(g->resolves, table[57]);
-    complete &= Install(g->clear_uints, table[51]);
-    complete &= Install(g->clear_floats, table[52]);
+    bool complete = Install(g->dispatches, table[41], HookKind::Dispatch);
+    complete &= Install(g->indirects, table[42], HookKind::Indirect);
+    complete &= Install(g->maps, table[14], HookKind::Map);
+    complete &= Install(g->copies, table[47], HookKind::Copy);
+    complete &= Install(g->regions, table[46], HookKind::Region);
+    complete &= Install(g->updates, table[48], HookKind::Update);
+    complete &= Install(g->executions, table[58], HookKind::Execute);
+    complete &= Install(g->resolves, table[57], HookKind::Resolve);
+    complete &= Install(g->clear_uints, table[51], HookKind::ClearUint);
+    complete &= Install(g->clear_floats, table[52], HookKind::ClearFloat);
     Com<ID3D11DeviceContext1> ctx1;
     if (SUCCEEDED(ctx->QueryInterface(__uuidof(ID3D11DeviceContext1), reinterpret_cast<void**>(ctx1.Put())))) {
         void** extended = *reinterpret_cast<void***>(ctx1.p);
-        complete &= Install(g->regions1, extended[115]);
-        complete &= Install(g->updates1, extended[116]);
-        complete &= Install(g->discard_resources, extended[117]);
-        complete &= Install(g->discard_views, extended[118]);
-        complete &= Install(g->clear_views, extended[132]);
-        complete &= Install(g->discard_views1, extended[133]);
+        complete &= Install(g->regions1, extended[115], HookKind::Region1);
+        complete &= Install(g->updates1, extended[116], HookKind::Update1);
+        complete &= Install(g->discard_resources, extended[117], HookKind::DiscardResource);
+        complete &= Install(g->discard_views, extended[118], HookKind::DiscardView);
+        complete &= Install(g->clear_views, extended[132], HookKind::ClearView);
+        complete &= Install(g->discard_views1, extended[133], HookKind::DiscardView1);
     }
     return complete;
 }
-template<class Fn> bool Install(Hook<Fn>(&hooks)[kHookLimit], void* target) {
+template<class Fn> bool Install(Hook<Fn>(&hooks)[kHookLimit], void* target, HookKind kind) {
     for (const auto& hook : hooks) if (hook.target == target) return true;
     for (int i = 0; i != kHookLimit; ++i) {
         if (hooks[i].target) continue;
         const auto detours = Detours<Fn>(std::make_integer_sequence<int,kHookLimit>{});
         void* trampoline = nullptr;
-        if (MH_CreateHook(target, detours[i], &trampoline) != MH_OK) return false;
+        const auto created = MH_CreateHook(target, detours[i], &trampoline);
+        if (created != MH_OK) { RecordHookFailure(kind, 1, static_cast<uint32_t>(created)); return false; }
         static_assert(sizeof(trampoline) == sizeof(hooks[i].original), "Windows function pointer ABI");
         std::memcpy(&hooks[i].original, &trampoline, sizeof(trampoline));
         hooks[i].target = target; // Published before any native thread can enter.
-        if (MH_EnableHook(target) == MH_OK) return true;
+        const auto enabled = MH_EnableHook(target);
+        if (enabled == MH_OK) return true;
+        RecordHookFailure(kind, 2, static_cast<uint32_t>(enabled));
         MH_RemoveHook(target); hooks[i] = {};
         return false;
     }
+    RecordHookFailure(kind, 3, ERROR_TOO_MANY_CMDS);
     return false;
 }
 
@@ -595,26 +713,30 @@ void Attach(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
         SUCCEEDED(dxgi->GetAdapter(adapter.Put())) && SUCCEEDED(adapter->GetDesc(&desc))) {
         tag.luid = uint64_t(static_cast<uint32_t>(desc.AdapterLuid.HighPart)) << 32 | desc.AdapterLuid.LowPart;
     }
-    if (FAILED(dev->SetPrivateData(kDeviceTag, sizeof(tag), &tag))) return;
+    const HRESULT tagged = dev->SetPrivateData(kDeviceTag, sizeof(tag), &tag);
+    if (FAILED(tagged)) { ++g->untagged; StopObservation(StopReason::DeviceTag, static_cast<uint32_t>(tagged)); return; }
     void** table = *reinterpret_cast<void***>(dev);
     const bool context_complete = InstallContext(ctx);
-    const bool buffer_complete = Install(g->buffers, table[3]);
-    const bool shader_complete = Install(g->shaders, table[18]);
+    const bool buffer_complete = Install(g->buffers, table[3], HookKind::Buffer);
+    const bool shader_complete = Install(g->shaders, table[18], HookKind::Shader);
     if (!context_complete || !buffer_complete || !shader_complete) {
         ++g->untagged;
-        g->active.store(false); // Incomplete write observation cannot certify phases.
+        StopObservation(StopReason::HookInstall); // Incomplete observation cannot certify phases.
     }
+    else ++g->attached_devices;
 }
 HRESULT WINAPI CreateDevice(IDXGIAdapter* adapter, D3D_DRIVER_TYPE type, HMODULE software, UINT flags,
     const D3D_FEATURE_LEVEL* levels, UINT count, UINT sdk, ID3D11Device** dev,
     D3D_FEATURE_LEVEL* level, ID3D11DeviceContext** ctx) {
+    ++g->create_calls;
     const HRESULT hr = g->create(adapter, type, software, flags, levels, count, sdk, dev, level, ctx);
+    g->create_hr.store(static_cast<uint32_t>(hr));
     try {
         if (g->active.load() && SUCCEEDED(hr) && dev && *dev) {
             if (ctx && *ctx) Attach(*dev, *ctx);
             else { Com<ID3D11DeviceContext> immediate; (*dev)->GetImmediateContext(immediate.Put()); Attach(*dev, immediate.p); }
         }
-    } catch (...) { ++g->untagged; }
+    } catch (...) { ++g->untagged; StopObservation(StopReason::CreateException); }
     return hr;
 }
 
@@ -694,9 +816,9 @@ void Writer() {
     }
     g->tracing.store(false);
 #ifdef LS_WITH_NGX
-    if (!g->options.enabled) g->active.store(false);
+    if (!g->options.enabled) StopObservation(StopReason::TraceComplete);
 #else
-    g->active.store(false);
+    StopObservation(StopReason::TraceComplete);
 #endif
     // Native observation callbacks might already be running: footer is written
     // after their capture critical section has retired, outside the render thread.
@@ -773,22 +895,45 @@ void StartNativeObservation(HMODULE native, HMODULE proxy, const std::filesystem
         if (backend) {
             g->backend_log.open(folder / L"logs" / (L"native-dlss-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(start.QuadPart) + L".log"));
             if (!g->backend_log) return;
-            g->backend_log << "NativeDLSS 0.1.1 experimental. Present owner: LS. Full source coverage / real RTX3080 acceptance: unverified.\n"
+            g->backend_log << "NativeDLSS 0.1.2 experimental. Present owner: LS. Full source coverage / real RTX3080 acceptance: unverified.\n"
                 << "OpticalFlow=" << g->options.optical_flow << " Quality=" << g->options.quality
                 << " AnalysisPercent=" << g->options.analysis_percent << " GPUOrdered=" << g->options.gpu_ordered
                 << " Slots=" << g->options.slots << "\n";
         }
 #endif
+        auto fail_startup = [](StopReason reason, uint32_t code) {
+            StopObservation(reason, code);
+#ifdef LS_WITH_NGX
+            StartupNote("stopped");
+            if (g->backend_log) WriteBackendDiagnostics(g->backend_log);
+#endif
+        };
+#ifdef LS_WITH_NGX
+        StartupNote("resolve_d3d11");
+#endif
         const auto d3d = LoadLibraryExW(L"d3d11.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
         g->create = d3d ? NativeExport<CreateDeviceFn>(d3d, "D3D11CreateDevice") : nullptr;
         void** const slot = DelayDeviceSlot(native);
-        if (!g->create || !slot || MH_Initialize() != MH_OK) return;
+        if (!g->create) { fail_startup(StopReason::MissingCreate, GetLastError()); return; }
+        if (!slot) { fail_startup(StopReason::MissingImport, ERROR_PROC_NOT_FOUND); return; }
+        const auto initialized = MH_Initialize();
+        if (initialized != MH_OK) { fail_startup(StopReason::MinHookInit, static_cast<uint32_t>(initialized)); return; }
+#ifdef LS_WITH_NGX
+        StartupNote("warp_probe_begin");
+#endif
         // Resolve the runtime's normal and multithread-refresh Dispatch entries
         // on a WARP probe; no native LS bindings are changed for probing.
         for (const UINT flags : {0u, UINT(D3D11_CREATE_DEVICE_SINGLETHREADED)}) {
             Com<ID3D11Device> probe; Com<ID3D11DeviceContext> ctx;
-            if (FAILED(g->create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, flags, nullptr, 0,
-                D3D11_SDK_VERSION, probe.Put(), nullptr, ctx.Put()))) continue;
+            const HRESULT probe_hr = g->create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, flags, nullptr, 0,
+                D3D11_SDK_VERSION, probe.Put(), nullptr, ctx.Put());
+#ifdef LS_WITH_NGX
+            if (g->backend_log) {
+                g->backend_log << "probe flags=" << flags << " hr=0x" << std::hex << static_cast<uint32_t>(probe_hr) << std::dec << "\n";
+                g->backend_log.flush();
+            }
+#endif
+            if (FAILED(probe_hr)) continue;
             auto note = [&] {
                 InstallContext(ctx.p);
                 ctx->CSSetShader(nullptr, nullptr, 0);
@@ -799,16 +944,33 @@ void StartNativeObservation(HMODULE native, HMODULE proxy, const std::filesystem
             if (SUCCEEDED(ctx->QueryInterface(__uuidof(ID3D11Multithread), reinterpret_cast<void**>(mt.Put()))))
                 for (const BOOL protect : {TRUE, FALSE, TRUE}) { mt->SetMultithreadProtected(protect); note(); }
         }
-        // Start the writer before enabling observations. Constructor failure
-        // leaves active=false; every installed detour still forwards unchanged.
+#ifdef LS_WITH_NGX
+        StartupNote("warp_probe_complete");
+#endif
+        // The periodic writer also emits a terminal snapshot if activation
+        // fails or a later native device cannot install its complete hooks.
         g->active.store(true);
-        if (!PatchSlot(slot, reinterpret_cast<void*>(&CreateDevice))) g->active.store(false);
+        if (!PatchSlot(slot, reinterpret_cast<void*>(&CreateDevice))) StopObservation(StopReason::PatchImport, GetLastError());
+#ifdef LS_WITH_NGX
+        StartupNote(g->active.load() ? "native_create_hook_ready" : "native_create_hook_failed");
+#endif
         if (tracing) std::thread(Writer).detach();
 #ifdef LS_WITH_NGX
-        if (backend) std::thread(BackendWriter).detach();
+        if (backend) {
+            std::thread writer(BackendWriter);
+            g->backend_writer_started = true;
+            writer.detach();
+        }
 #endif
     } catch (...) {
-        if (g) g->active.store(false);
+        if (g) {
+            StopObservation(StopReason::StartupException);
+#ifdef LS_WITH_NGX
+            if (!g->backend_writer_started && g->backend_log) {
+                StartupNote("exception"); WriteBackendDiagnostics(g->backend_log);
+            }
+#endif
+        }
         OutputDebugStringW(L"Native DLSS observer failed; leaving LS native.\n");
     }
 }
@@ -1041,6 +1203,43 @@ int NativeObservationSelfTest() {
     source(0xff00008c, 2); synthesize(1, 2);
     if (!pixels(0xffff00ff)) { std::cerr << "unsupported profile was replaced\n"; return 1; }
     std::cout << "End-to-end native hooks: original Dispatch, warmup fallback, GPU midpoint replacement and profile gate passed\n";
+    // An Initialize call can hold the controller lock for a long time. The
+    // heartbeat must still report that phase instead of producing an empty log.
+    std::ostringstream contended;
+    std::mutex completed_mutex; std::condition_variable completed_changed;
+    bool completed = false;
+    std::unique_lock<std::mutex> controller(g->backend_mutex);
+    g->backend_phase.store(1);
+    std::thread sampler([&] {
+        WriteBackendDiagnostics(contended);
+        std::lock_guard<std::mutex> lock(completed_mutex); completed = true; completed_changed.notify_all();
+    });
+    bool sampled_while_busy = false;
+    {
+        std::unique_lock<std::mutex> lock(completed_mutex);
+        sampled_while_busy = completed_changed.wait_for(lock, std::chrono::seconds(5), [&] { return completed; });
+    }
+    controller.unlock(); sampler.join(); g->backend_phase.store(0);
+    if (!sampled_while_busy || contended.str().find("backend_phase=initializing diagnostics_busy=1") == std::string::npos ||
+        contended.str().find("observer uptime_ms=") == std::string::npos) {
+        std::cerr << "diagnostics lost heartbeat behind controller lock\n"; return 1;
+    }
+    // Real MinHook rejection, without modifying a runtime method. Even an
+    // observer that has already stopped must persist its failure and footer.
+    Hook<DispatchFn> rejected[kHookLimit]{};
+    if (Install(rejected, reinterpret_cast<void*>(uintptr_t(1)), HookKind::Dispatch)) return 1;
+    StopObservation(StopReason::HookInstall);
+    StopObservation(StopReason::TraceComplete); // The first stop cause wins.
+    std::ostringstream terminal;
+    RunBackendWriter(terminal);
+    const auto terminal_text = terminal.str();
+    if (terminal_text.find("active=0 stop=hook_install") == std::string::npos ||
+        terminal_text.find("hook=Dispatch hook_stage=create") == std::string::npos ||
+        terminal_text.find("hook_status=MH_ERROR_NOT_EXECUTABLE") == std::string::npos ||
+        terminal_text.find("writer=stopped") == std::string::npos) {
+        std::cerr << "terminal observer failure was not persisted\n"; return 1;
+    }
+    std::cout << "Busy-controller heartbeat and terminal MinHook failure diagnostics passed\n";
 #endif
     g->active.store(false);
     std::cout << "WARP creation snapshot, Map invalidation, deferred epoch, source writes, reuse and pair invalidation passed\n";
