@@ -17,6 +17,23 @@ namespace ls_native {
 using Microsoft::WRL::ComPtr;
 namespace {
 std::atomic<bool> driver_exception{false};
+ObservationQueue<NgxLogMessage, 256> ngx_logs;
+std::atomic<uint64_t> ngx_log_calls{0}, ngx_log_limited{0};
+void NVSDK_CONV NgxLog(const char* message, NVSDK_NGX_Logging_Level level, NVSDK_NGX_Feature feature) {
+    // Driver callbacks can run on any thread, including Evaluate. Never do
+    // file I/O or wait on an LS/backend mutex here. Bound total verbose output.
+    if (!message) return;
+    if (ngx_log_calls.fetch_add(1, std::memory_order_relaxed) >= 2048) {
+        ngx_log_limited.fetch_add(1, std::memory_order_relaxed); return;
+    }
+    NgxLogMessage record; record.level = static_cast<uint32_t>(level); record.feature = static_cast<uint32_t>(feature);
+    size_t i = 0;
+    for (; i + 1 < record.text.size() && message[i]; ++i) {
+        const char c = message[i]; record.text[i] = c == '\n' || c == '\r' || c == '\t' ? ' ' : c;
+    }
+    record.truncated = message[i] != 0;
+    ngx_logs.TryPush(record);
+}
 template<class F> NVSDK_NGX_Result Ngx(const F& fn) {
     if (driver_exception.load()) return NVSDK_NGX_Result_FAIL_PlatformError;
 #ifdef _MSC_VER
@@ -98,6 +115,7 @@ struct NativeBackend::State {
     uint64_t producer_value = 0, ready_value = 0, converted_value = 0, flow_value = 0, register_value = 0;
     uint64_t copy_value = 0, last_evaluated_epoch = 0, last_evaluated_generation = 0, frame_id = 0;
     BackendCounters counters;
+    NgxDiagnostics ngx;
     const char* step = "not initialized";
     uint32_t code = 0;
     bool failed = false, initialized = false;
@@ -315,17 +333,29 @@ struct NativeBackend::State {
         if (cache_error) return Fail("NGX cache directory", static_cast<uint32_t>(cache_error.value()));
         const wchar_t* paths[]{runtime.c_str(), old.c_str(), app.c_str()};
         NVSDK_NGX_FeatureCommonInfo info{}; info.PathListInfo.Path = paths; info.PathListInfo.Length = 3;
+        info.LoggingInfo.LoggingCallback = &NgxLog;
+        info.LoggingInfo.MinimumLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_VERBOSE;
+        info.LoggingInfo.DisableOtherLoggingSinks = true;
         auto result = Ngx([&]{return NVSDK_NGX_D3D12_Init_with_ProjectID("eae67294-65c6-4bb7-a34a-51df0b8c95de",
             NVSDK_NGX_ENGINE_TYPE_CUSTOM, "LS-Native-DLSS-0.1", cache.c_str(), device.Get(), &info, NVSDK_NGX_Version_API);});
+        ngx.init = static_cast<uint32_t>(result);
         if (!NVSDK_NGX_SUCCEED(result)) return Fail("NGX init", static_cast<uint32_t>(result));
         result = Ngx([&]{return NVSDK_NGX_D3D12_GetCapabilityParameters(&params);});
+        ngx.parameters = static_cast<uint32_t>(result);
         if (!NVSDK_NGX_SUCCEED(result) || !params) return Fail("NGX capability parameters", static_cast<uint32_t>(result));
-        int available = 0;
-        result = Ngx([&]{return NVSDK_NGX_Parameter_GetI(params, NVSDK_NGX_Parameter_FrameGeneration_Available, &available);});
-        if (!NVSDK_NGX_SUCCEED(result) || !available) {
-            int reason = 0;
-            Ngx([&]{return NVSDK_NGX_Parameter_GetI(params, NVSDK_NGX_Parameter_FrameGeneration_FeatureInitResult, &reason);});
-            return Fail("FG unavailable: compatible runtime required", reason ? static_cast<uint32_t>(reason) : static_cast<uint32_t>(result));
+        auto query = [&](const char* name, NgxValue& value) {
+            value.result = static_cast<uint32_t>(Ngx([&]{return NVSDK_NGX_Parameter_GetI(params, name, &value.value);}));
+        };
+        query(NVSDK_NGX_Parameter_FrameGeneration_Available, ngx.available);
+        query(NVSDK_NGX_Parameter_FrameGeneration_FeatureInitResult, ngx.feature_init);
+        query(NVSDK_NGX_Parameter_FrameGeneration_NeedsUpdatedDriver, ngx.needs_driver);
+        query(NVSDK_NGX_Parameter_FrameGeneration_MinDriverVersionMajor, ngx.min_driver_major);
+        query(NVSDK_NGX_Parameter_FrameGeneration_MinDriverVersionMinor, ngx.min_driver_minor);
+        if (!NVSDK_NGX_SUCCEED(ngx.available.result) || !ngx.available.value) {
+            const uint32_t reason = NVSDK_NGX_SUCCEED(ngx.feature_init.result) && ngx.feature_init.value ?
+                static_cast<uint32_t>(ngx.feature_init.value) : ngx.available.result;
+            return Fail(reason == static_cast<uint32_t>(NVSDK_NGX_Result_FAIL_FeatureNotFound) ?
+                "NGX FG feature not found" : "NGX FG capability unavailable", reason);
         }
         const unsigned unused = NVSDK_NGX_DLSSG_ResourceFlags_HUDLess | NVSDK_NGX_DLSSG_ResourceFlags_UI |
             NVSDK_NGX_DLSSG_ResourceFlags_UIAlpha | NVSDK_NGX_DLSSG_ResourceFlags_BidirectionalDistortionField | NVSDK_NGX_DLSSG_ResourceFlags_OutputReal;
@@ -615,10 +645,16 @@ bool NativeBackend::TryPollDiagnostics(BackendDiagnostics& diagnostics) {
     auto& s = *state_; std::unique_lock<std::mutex> lock(s.mutex, std::try_to_lock);
     if (!lock.owns_lock()) return false;
     diagnostics.counters = s.PollCountersLocked();
+    diagnostics.ngx = s.ngx;
     diagnostics.step = s.step; diagnostics.code = s.code;
     diagnostics.analysis_width = s.analysis_width; diagnostics.analysis_height = s.analysis_height;
     diagnostics.grid = s.options.optical_flow ? s.grid : 0;
     diagnostics.analysis_format = static_cast<uint32_t>(s.analysis_format);
     return true;
 }
+bool NativeBackend::TryPopNgxLog(NgxLogMessage& message) { return ngx_logs.TryPop(message); }
+uint64_t NativeBackend::DroppedNgxLogs() { return ngx_logs.Dropped() + ngx_log_limited.load(std::memory_order_relaxed); }
+#ifdef LS_NATIVE_TEST
+void NativeBackend::TestNgxLog(const char* message) { NgxLog(message, NVSDK_NGX_LOGGING_LEVEL_VERBOSE, NVSDK_NGX_Feature_FrameGeneration); }
+#endif
 } // namespace ls_native

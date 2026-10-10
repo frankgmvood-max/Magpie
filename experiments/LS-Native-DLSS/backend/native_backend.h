@@ -18,8 +18,22 @@ struct BackendCounters {
     uint64_t gpu_disabled = 0, gpu_enabled = 0, failed = 0;
     uint64_t ineligible = 0, destination_rejected = 0, warmup = 0;
 };
+struct NgxValue {
+    uint32_t result = 0;
+    int value = 0;
+};
+struct NgxDiagnostics {
+    uint32_t init = 0, parameters = 0;
+    NgxValue available, feature_init, needs_driver, min_driver_major, min_driver_minor;
+};
+struct NgxLogMessage {
+    uint32_t level = 0, feature = 0;
+    bool truncated = false;
+    std::array<char, 1024> text{};
+};
 struct BackendDiagnostics {
     BackendCounters counters;
+    NgxDiagnostics ngx;
     const char* step = "not initialized";
     uint32_t code = 0, analysis_width = 0, analysis_height = 0, grid = 0, analysis_format = 0;
 };
@@ -39,6 +53,12 @@ public:
     BackendCounters PollCounters();
     // Worker only. Never competes with a frame callback by waiting for its lock.
     bool TryPollDiagnostics(BackendDiagnostics& diagnostics);
+    // Bounded, process-wide driver callback queue. Consumer only performs I/O.
+    static bool TryPopNgxLog(NgxLogMessage& message);
+    static uint64_t DroppedNgxLogs();
+#ifdef LS_NATIVE_TEST
+    static void TestNgxLog(const char* message);
+#endif
     const char* FailureStep() const;
     uint32_t ErrorCode() const;
 private:

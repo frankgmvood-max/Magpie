@@ -195,6 +195,23 @@ void TestRetirement(bool ordered) {
     f.Native(); Require(!backend.Composite(f.Slot(e, next), f.outputs[3].Get()), "dropped evaluation resets history"); f.Pixels(255);
     std::cout << "Held native retirement, bounded ring reuse and " << (ordered ? "GPU ordering" : "ready-only fallback") << " passed\n";
 }
+void TestDriverLog() {
+    NgxLogMessage m;
+    std::string input(1500, 'x'); input[5] = '\n';
+    NativeBackend::TestNgxLog(input.c_str()); input.assign(1500, 'z');
+    Require(NativeBackend::TryPopNgxLog(m), "driver log captured");
+    Require(m.truncated && m.text[5] == ' ' && m.text[1022] == 'x' && m.text[1023] == 0, "bounded owned log copy");
+    std::array<std::thread, 8> writers;
+    for (auto& writer : writers) writer = std::thread([] { for (unsigned i = 0; i != 100; ++i) NativeBackend::TestNgxLog("concurrent"); });
+    for (auto& writer : writers) writer.join();
+    size_t count = 0;
+    while (NativeBackend::TryPopNgxLog(m)) { Require(std::string(m.text.data()) == "concurrent", "concurrent log record intact"); ++count; }
+    Require(count && count <= 256 && count + NativeBackend::DroppedNgxLogs() == 800, "bounded log queue accounts for dropped messages");
+    for (unsigned i = 0; i != 2500; ++i) NativeBackend::TestNgxLog("limited");
+    count = 0; while (NativeBackend::TryPopNgxLog(m)) ++count;
+    Require(count <= 256 && NativeBackend::DroppedNgxLogs() > 2000, "verbose callback total budget");
+    std::cout << "NGX callback ownership, truncation, concurrent producers and bounded output passed\n";
 }
-int main() { std::cout << std::unitbuf; try { Test(false); Test(true); TestRetirement(true); TestRetirement(false); return 0; }
+}
+int main() { std::cout << std::unitbuf; try { TestDriverLog(); Test(false); Test(true); TestRetirement(true); TestRetirement(false); return 0; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; } }

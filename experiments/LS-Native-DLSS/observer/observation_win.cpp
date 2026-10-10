@@ -3,6 +3,7 @@
 #include "../include/source_pair.h"
 #ifdef LS_WITH_NGX
 #include "../backend/native_backend.h"
+#include <tlhelp32.h>
 #endif
 #include <MinHook.h>
 #include <bcrypt.h>
@@ -161,6 +162,7 @@ struct State {
     uint32_t duration = 20, max_records = 4096;
     uint64_t frequency = 0;
 #ifdef LS_WITH_NGX
+    std::atomic<bool> runtime_modules_written{false};
     struct Session {
         uint64_t context = 0;
         TextureObservation extent;
@@ -284,6 +286,55 @@ void BackendComposite(ID3D11DeviceContext* ctx, const DispatchObservation& recor
     Com<ID3D11UnorderedAccessView> destination; ctx->CSGetUnorderedAccessViews(0, 1, destination.Put());
     if (session) session->backend->Composite(record, destination.p);
 }
+void WriteRuntimeModules(std::ostream& out) {
+    // Read only our own modules on the diagnostics worker; never load a module
+    // merely to inspect it. Include SM86/NGX, not unrelated process inventory.
+    const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        out << "runtime_modules_error=" << GetLastError() << '\n'; return;
+    }
+    MODULEENTRY32W module{}; module.dwSize = sizeof(module);
+    if (Module32FirstW(snapshot, &module)) do {
+        bool relevant = false;
+        for (const wchar_t* name : {L"version.dll", L"dxgi.dll", L"d3d12.dll", L"_nvngx.dll", L"nvngx.dll", L"nvngx_dlssg.dll", L"sm86_backend.dll"})
+            relevant |= _wcsicmp(module.szModule, name) == 0;
+        if (relevant) out << "runtime_module=" << std::quoted(std::filesystem::path(module.szExePath).u8string()) << '\n';
+    } while (Module32NextW(snapshot, &module));
+    CloseHandle(snapshot);
+}
+void PrepareSm86(std::ostream& out, const std::filesystem::path& folder) {
+    // The supplied LS archive's utility proxy may have lost automatic loading
+    // when the addon manager was removed. Explicit full-path loading also works
+    // if .NET has already loaded System32/version.dll. Unknown DLLs are only
+    // reported. This is outside DllMain and precedes every native NGX call.
+    constexpr char known_version[] = "c3934a09399f022504227c72df0bf8c0de55f9a08880dddde898c5262cefa838";
+    bool recognized = false;
+    for (const wchar_t* relative : {L"version.dll", L"dxgi.dll", L"dlssg_sm86.ini", L"native-runtime/nvngx_dlssg.dll", L"addons/LS_DLSSFG/runtime/nvngx_dlssg.dll", L"nvngx_dlssg.dll"}) {
+        const auto path = folder / relative;
+        std::error_code error; const bool exists = std::filesystem::is_regular_file(path, error);
+        out << "runtime_file=" << std::quoted(std::filesystem::path(relative).u8string()) << " exists=" << exists;
+        const auto hash = exists ? HashFile(path) : std::string{};
+        if (exists) out << " sha256=" << hash;
+        out << '\n';
+        if (std::wstring(relative) == L"version.dll" && hash == known_version) {
+            recognized = true;
+            const auto absolute = std::filesystem::absolute(path);
+            const HMODULE loaded = LoadLibraryExW(absolute.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+            const DWORD code = loaded ? 0 : GetLastError();
+            out << "sm86_bootstrap=" << (loaded ? "loaded" : "load_failed") << " error=" << code;
+            if (loaded) {
+                wchar_t actual[32768]{};
+                if (GetModuleFileNameW(loaded, actual, 32768)) out << " path=" << std::quoted(std::filesystem::path(actual).u8string());
+                out << " proxy_export=" << (GetProcAddress(loaded, "DlssgProxy_Name") != nullptr);
+                // Keep the load reference until process exit: its hooks and
+                // NVIDIA callbacks must never point into an unloaded module.
+            }
+            out << '\n';
+        }
+    }
+    if (!recognized) out << "sm86_bootstrap=no_recognized_utility_proxy\n";
+    WriteRuntimeModules(out); out.flush();
+}
 void WriteBackendDiagnostics(std::ostream& out) {
     struct SessionSnapshot {
         uint64_t context = 0;
@@ -341,7 +392,23 @@ void WriteBackendDiagnostics(std::ostream& out) {
             << " busy=" << c.busy << " unmatched=" << c.mismatched << " flag_enabled_samples=" << c.gpu_enabled
             << " flag_disabled_samples=" << c.gpu_disabled << " failures=" << c.failed
             << " ineligible=" << c.ineligible << " destination_rejected=" << c.destination_rejected << " warmup=" << c.warmup << "\n";
+        if (d.ngx.init) {
+            const auto& n = d.ngx;
+            out << "ngx session=" << snapshot.context << " init=0x" << std::hex << n.init << " parameters=0x" << n.parameters;
+            const auto value = [&](const char* name, const NgxValue& v) {
+                out << ' ' << name << "_query=0x" << std::hex << v.result << ' ' << name << "=0x" << static_cast<uint32_t>(v.value);
+            };
+            value("available", n.available); value("feature_init", n.feature_init); value("needs_driver", n.needs_driver);
+            value("min_driver_major", n.min_driver_major); value("min_driver_minor", n.min_driver_minor);
+            out << std::dec << '\n';
+            if (!g->runtime_modules_written.exchange(true)) WriteRuntimeModules(out);
+        }
     }
+    NgxLogMessage message;
+    for (size_t i = 0; i != 256 && NativeBackend::TryPopNgxLog(message); ++i)
+        out << "ngx_log level=" << message.level << " feature=" << message.feature << " truncated=" << message.truncated
+            << " message=" << std::quoted(message.text.data()) << '\n';
+    if (const auto dropped = NativeBackend::DroppedNgxLogs()) out << "ngx_log_dropped=" << dropped << '\n';
     out.flush();
 }
 void RunBackendWriter(std::ostream& out) {
@@ -895,10 +962,11 @@ void StartNativeObservation(HMODULE native, HMODULE proxy, const std::filesystem
         if (backend) {
             g->backend_log.open(folder / L"logs" / (L"native-dlss-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(start.QuadPart) + L".log"));
             if (!g->backend_log) return;
-            g->backend_log << "NativeDLSS 0.1.2 experimental. Present owner: LS. Full source coverage / real RTX3080 acceptance: unverified.\n"
+            g->backend_log << "NativeDLSS 0.1.3 experimental. Present owner: LS. Full source coverage / real RTX3080 acceptance: unverified.\n"
                 << "OpticalFlow=" << g->options.optical_flow << " Quality=" << g->options.quality
                 << " AnalysisPercent=" << g->options.analysis_percent << " GPUOrdered=" << g->options.gpu_ordered
                 << " Slots=" << g->options.slots << "\n";
+            PrepareSm86(g->backend_log, folder);
         }
 #endif
         auto fail_startup = [](StopReason reason, uint32_t code) {
@@ -1223,6 +1291,21 @@ int NativeObservationSelfTest() {
     if (!sampled_while_busy || contended.str().find("backend_phase=initializing diagnostics_busy=1") == std::string::npos ||
         contended.str().find("observer uptime_ms=") == std::string::npos) {
         std::cerr << "diagnostics lost heartbeat behind controller lock\n"; return 1;
+    }
+    // An unrelated local utility DLL must remain data: removing the addon
+    // manager does not authorize loading arbitrary version.dll replacements.
+    wchar_t temporary[32768]{};
+    if (!GetTempPathW(32768, temporary)) return 1;
+    const auto probe = std::filesystem::path(temporary) / (L"native-sm86-probe-" + std::to_wstring(GetCurrentProcessId()));
+    std::filesystem::create_directories(probe);
+    { std::ofstream unknown(probe / L"version.dll", std::ios::binary); unknown << "unrecognized fixture, never execute"; }
+    std::ostringstream runtime;
+    PrepareSm86(runtime, probe);
+    std::filesystem::remove_all(probe);
+    if (runtime.str().find("sm86_bootstrap=no_recognized_utility_proxy") == std::string::npos ||
+        runtime.str().find("sm86_bootstrap=loaded") != std::string::npos ||
+        runtime.str().find("runtime_file=\"version.dll\" exists=1 sha256=") == std::string::npos) {
+        std::cerr << "unknown utility proxy bootstrap was not rejected\n"; return 1;
     }
     // Real MinHook rejection, without modifying a runtime method. Even an
     // observer that has already stopped must persist its failure and footer.
