@@ -19,15 +19,55 @@ float2 at(int2 p) {uint w,h;coarse.GetDimensions(w,h);return float2(coarse.Load(
  motion[p.xy]=lerp(lerp(at(cell),at(cell+int2(1,0)),f.x),lerp(at(cell+int2(0,1)),at(cell+int2(1,1)),f.x),f.y)*toPixels;
 })";
 constexpr char flag[] = R"(
-ByteAddressBuffer disabled : register(t0); RWTexture2D<uint> result : register(u0);
-[numthreads(1,1,1)] void main(uint3 p:SV_DispatchThreadID) {result[uint2(0,0)]=disabled.Load(0);}
+ByteAddressBuffer disabled : register(t0); ByteAddressBuffer decision : register(t1);
+RWTexture2D<uint> result : register(u0); RWTexture2D<uint> sceneState : register(u1);
+cbuffer Policy : register(b0) {uint width;uint height;uint duplicate;uint cut;uint delta;uint cutDelta;uint cutPercent;uint reset;};
+[numthreads(1,1,1)] void main(uint3 p:SV_DispatchThreadID) {
+ uint flags=disabled.Load(0)!=0?1:0;
+ if(duplicate!=0 && decision.Load(0)<=delta)flags|=2;
+ if(reset!=0 || cut==0)sceneState[uint2(0,0)]=0;
+ if(cut!=0 && float(decision.Load(4))*100>=float(width)*float(height)*cutPercent){sceneState[uint2(0,0)]=4;flags|=8;}
+ if(cut!=0)flags|=sceneState[uint2(0,0)];
+ result[uint2(0,0)]=flags;
+}
 )";
+constexpr char compare[] = R"(
+Texture2D<float4> previous : register(t0);Texture2D<float4> current : register(t1);
+RWByteAddressBuffer decision : register(u0);
+cbuffer Policy : register(b0) {uint width;uint height;uint duplicate;uint cut;uint delta;uint cutDelta;uint cutPercent;uint pad;};
+groupshared uint maxima[256];groupshared uint changes[256];
+[numthreads(16,16,1)] void main(uint3 p:SV_DispatchThreadID,uint index:SV_GroupIndex) {
+ uint d=0,c=0;
+ if(p.x<width && p.y<height) {
+  uint3 a=uint3(round(saturate(previous.Load(int3(p.xy,0)).rgb)*255));
+  uint3 b=uint3(round(saturate(current.Load(int3(p.xy,0)).rgb)*255));
+  uint3 v=uint3(abs(int3(a)-int3(b)));d=max(v.x,max(v.y,v.z));c=d>=cutDelta?1:0;
+ }
+ maxima[index]=d;changes[index]=c;GroupMemoryBarrierWithGroupSync();
+ for(uint s=128;s>0;s>>=1) {
+  if(index<s){maxima[index]=max(maxima[index],maxima[index+s]);changes[index]+=changes[index+s];}
+  GroupMemoryBarrierWithGroupSync();
+ }
+ if(index==0){uint ignored;decision.InterlockedMax(0,maxima[0],ignored);decision.InterlockedAdd(4,changes[0],ignored);}
+})";
 constexpr char composite[] = R"(
 Texture2D<float4> generated : register(t0); Texture2D<uint> disabled : register(t1);
+Texture2D<float4> current : register(t2);
 RWTexture2D<float4> nativeOutput : register(u0);
+cbuffer Policy : register(b0) {uint economy;uint repeat;uint2 pad;uint4 hud[8];};
 [numthreads(16,16,1)] void main(uint3 p:SV_DispatchThreadID) {
  uint w,h;nativeOutput.GetDimensions(w,h);
- if(p.x>=w||p.y>=h||disabled.Load(int3(0,0,0))!=0)return;
+ if(p.x>=w||p.y>=h)return;
+ bool protectedPixel=false;
+ for(uint i=0;i<8;i++) {
+  uint2 q=p.xy*10000;uint4 r=hud[i];
+  protectedPixel|=q.x>=r.x*w && q.x<r.z*w && q.y>=r.y*h && q.y<r.w*h;
+ }
+ uint flags=repeat!=0?1:disabled.Load(int3(0,0,0));
+ if(repeat!=0 || protectedPixel || (flags&6)!=0 || (economy!=0 && flags!=0)) {
+  nativeOutput[p.xy]=current.Load(int3(p.xy,0));return;
+ }
+ if(flags!=0)return;
  nativeOutput[p.xy]=generated.Load(int3(p.xy,0));
 })";
 #ifdef LS_NATIVE_TEST

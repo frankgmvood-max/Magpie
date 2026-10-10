@@ -55,7 +55,10 @@ try {
     @{ InstalledHash = $hash; NativeHash = $reference; Folder = $LSFolder } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $backup 'manifest.json') -Encoding UTF8
     try {
         Copy-Item -LiteralPath $sourceDLL -Destination $installed -Force
-        Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'NativeDLSS.ini') -Destination (Join-Path $LSFolder 'NativeDLSS.ini') -Force
+        # Preserve all existing quality values, application profiles and HUD settings.
+        if (!(Test-Path -LiteralPath (Join-Path $LSFolder 'NativeDLSS.ini'))) {
+            Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'NativeDLSS.ini') -Destination (Join-Path $LSFolder 'NativeDLSS.ini')
+        }
         if ((Hash $installed) -ne $hash) { throw 'Installed DLL checksum mismatch.' }
     } catch {
         foreach ($name in @('Lossless.dll', 'NativeDLSS.ini')) {

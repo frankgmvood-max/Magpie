@@ -1,0 +1,309 @@
+{
+  "schema": "ls-rea-dispatch-contract-v1",
+  "target_sha256": "626b196d799606cd4250b7b29e04228692ab70cf56a5d1bbb56d748c8219f0eb",
+  "rea": "6.3.0",
+  "ghidra": "12.1.4",
+  "adapter": "rea-headless-file-batch-v1",
+  "bridge_sha256": "f846f430fb225f2dd839699a25b6b59cc5338733cf212e1ca5fb8e396eeba590",
+  "responses_sha256": "3b8f8f668a56e0af153c28c560c41ddc43b2d83ba0270c82c973737ab6949ce2",
+  "request_count": 23,
+  "analysis_complete": true,
+  "static_only": true,
+  "upstream_mcp_ledger": false,
+  "calls": [
+    {
+      "function": "source",
+      "call_rva": 131987,
+      "return_rva": 131993,
+      "role": "keep_source",
+      "shader_slot": 4392,
+      "resource_ids": [
+        254
+      ]
+    },
+    {
+      "function": "source",
+      "call_rva": 132222,
+      "return_rva": 132228,
+      "role": "bypass_analysis",
+      "shader_slot": 4400,
+      "resource_ids": [
+        255
+      ]
+    },
+    {
+      "function": "source",
+      "call_rva": 132714,
+      "return_rva": 132720,
+      "role": "bypass_analysis",
+      "shader_slot": 4408,
+      "resource_ids": [
+        267,
+        290
+      ]
+    },
+    {
+      "function": "source",
+      "call_rva": 133136,
+      "return_rva": 133142,
+      "role": "bypass_analysis",
+      "shader_slot": 4416,
+      "resource_ids": [
+        268,
+        291
+      ]
+    },
+    {
+      "function": "source",
+      "call_rva": 133696,
+      "return_rva": 133702,
+      "role": "bypass_analysis",
+      "shader_slot": 4424,
+      "resource_ids": [
+        269,
+        292
+      ]
+    },
+    {
+      "function": "source",
+      "call_rva": 134403,
+      "return_rva": 134409,
+      "role": "bypass_analysis",
+      "shader_slot": 4432,
+      "resource_ids": [
+        270,
+        293
+      ]
+    },
+    {
+      "function": "prepare",
+      "call_rva": 135954,
+      "return_rva": 135960,
+      "role": "bypass_analysis",
+      "shader_slot": 4552,
+      "resource_ids": [
+        275,
+        298
+      ]
+    },
+    {
+      "function": "prepare",
+      "call_rva": 136344,
+      "return_rva": 136350,
+      "role": "bypass_analysis",
+      "shader_slot": 4560,
+      "resource_ids": [
+        276,
+        299
+      ]
+    },
+    {
+      "function": "prepare",
+      "call_rva": 136723,
+      "return_rva": 136729,
+      "role": "bypass_analysis",
+      "shader_slot": 4568,
+      "resource_ids": [
+        277,
+        300
+      ]
+    },
+    {
+      "function": "prepare",
+      "call_rva": 137087,
+      "return_rva": 137093,
+      "role": "bypass_analysis",
+      "shader_slot": 4576,
+      "resource_ids": [
+        278,
+        301
+      ]
+    },
+    {
+      "function": "prepare",
+      "call_rva": 137403,
+      "return_rva": 137409,
+      "role": "bypass_analysis",
+      "shader_slot": 4584,
+      "resource_ids": [
+        279,
+        302
+      ]
+    },
+    {
+      "function": "synthesis",
+      "call_rva": 139038,
+      "return_rva": 139044,
+      "role": "bypass_analysis",
+      "shader_slot": 4536,
+      "resource_ids": [
+        257,
+        280
+      ]
+    },
+    {
+      "function": "synthesis",
+      "call_rva": 139586,
+      "return_rva": 139592,
+      "role": "bypass_analysis",
+      "shader_slot": 4440,
+      "resource_ids": [
+        259,
+        282
+      ]
+    },
+    {
+      "function": "synthesis",
+      "call_rva": 140205,
+      "return_rva": 140211,
+      "role": "bypass_analysis",
+      "shader_slot": 4448,
+      "resource_ids": [
+        260,
+        283
+      ]
+    },
+    {
+      "function": "synthesis",
+      "call_rva": 140824,
+      "return_rva": 140830,
+      "role": "bypass_analysis",
+      "shader_slot": 4456,
+      "resource_ids": [
+        261,
+        284
+      ]
+    },
+    {
+      "function": "synthesis",
+      "call_rva": 141458,
+      "return_rva": 141464,
+      "role": "bypass_analysis",
+      "shader_slot": 4464,
+      "resource_ids": [
+        262,
+        285
+      ]
+    },
+    {
+      "function": "synthesis",
+      "call_rva": 142628,
+      "return_rva": 142634,
+      "role": "bypass_analysis",
+      "shader_slot": 4536,
+      "resource_ids": [
+        257,
+        280
+      ]
+    },
+    {
+      "function": "synthesis",
+      "call_rva": 143238,
+      "return_rva": 143244,
+      "role": "bypass_analysis",
+      "shader_slot": 4472,
+      "resource_ids": [
+        263,
+        286
+      ]
+    },
+    {
+      "function": "synthesis",
+      "call_rva": 143925,
+      "return_rva": 143931,
+      "role": "bypass_analysis",
+      "shader_slot": 4480,
+      "resource_ids": [
+        264,
+        287
+      ]
+    },
+    {
+      "function": "synthesis",
+      "call_rva": 144612,
+      "return_rva": 144618,
+      "role": "bypass_analysis",
+      "shader_slot": 4488,
+      "resource_ids": [
+        265,
+        288
+      ]
+    },
+    {
+      "function": "synthesis",
+      "call_rva": 145304,
+      "return_rva": 145310,
+      "role": "bypass_analysis",
+      "shader_slot": 4496,
+      "resource_ids": [
+        266,
+        289
+      ]
+    },
+    {
+      "function": "synthesis",
+      "call_rva": 146548,
+      "return_rva": 146554,
+      "role": "bypass_analysis",
+      "shader_slot": 4544,
+      "resource_ids": [
+        258,
+        281
+      ]
+    },
+    {
+      "function": "synthesis",
+      "call_rva": 147080,
+      "return_rva": 147086,
+      "role": "bypass_analysis",
+      "shader_slot": 4504,
+      "resource_ids": [
+        271,
+        294
+      ]
+    },
+    {
+      "function": "synthesis",
+      "call_rva": 147549,
+      "return_rva": 147555,
+      "role": "bypass_analysis",
+      "shader_slot": 4512,
+      "resource_ids": [
+        272,
+        295
+      ]
+    },
+    {
+      "function": "synthesis",
+      "call_rva": 148018,
+      "return_rva": 148024,
+      "role": "bypass_analysis",
+      "shader_slot": 4520,
+      "resource_ids": [
+        273,
+        296
+      ]
+    },
+    {
+      "function": "synthesis",
+      "call_rva": 148501,
+      "return_rva": 148507,
+      "role": "bypass_analysis",
+      "shader_slot": 4528,
+      "resource_ids": [
+        274,
+        297
+      ]
+    },
+    {
+      "function": "synthesis",
+      "call_rva": 148941,
+      "return_rva": 148947,
+      "role": "replace_synthesis",
+      "shader_slot": 4592,
+      "resource_ids": [
+        256
+      ]
+    }
+  ]
+}

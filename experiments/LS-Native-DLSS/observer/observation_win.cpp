@@ -3,6 +3,12 @@
 #include "../include/source_pair.h"
 #ifdef LS_WITH_NGX
 #include "../backend/native_backend.h"
+#include "policy_config.h"
+#include "../include/ls_dispatch_contract.h"
+#include <d3dcompiler.h>
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
 #include <tlhelp32.h>
 #endif
 #include <MinHook.h>
@@ -31,6 +37,7 @@ using namespace ls_native;
 constexpr char kDllHash[] = "626b196d799606cd4250b7b29e04228692ab70cf56a5d1bbb56d748c8219f0eb";
 constexpr char kShaderHash[] = "3af0031e97f43a9372c23749ebbbe91506119268d84e869ba715ffe71bb9d45a";
 constexpr char kInputShaderHash[] = "214a8ad496c0ffff58e9739d4be085a450d82eaaf23e2ad21dea8b251872880f";
+constexpr GUID kSessionTag = {0x85697408,0xdd49,0x4383,{0x85,0xfb,0x4b,0x1e,0x43,0x5d,0x36,0x2d}};
 constexpr GUID kSourceTag = {0x50df9543,0x14a1,0x4bbd,{0x92,0xa4,0x17,0x2b,0x6e,0x9c,0x41,0x25}};
 constexpr GUID kHistoryTag = {0x672e5e3c,0x0a87,0x4e53,{0xbb,0xa6,0x9c,0xe6,0xdf,0x13,0x26,0x6b}};
 constexpr GUID kShaderTag = {0x31cc6f57,0xb3af,0x46b2,{0x83,0x5a,0x15,0xa7,0xd3,0x1d,0x68,0x08}};
@@ -137,6 +144,8 @@ struct State {
     std::mutex capture_mutex, install_mutex;
     ObservationQueue<DispatchObservation, 512> records;
     std::vector<uint8_t> shader, input_shader;
+    std::vector<std::pair<uint32_t, std::vector<uint8_t>>> analysis_shaders;
+    uintptr_t native_base = 0;
     std::atomic<uint64_t> source_invalidation_epoch{1};
     std::ofstream log;
     Hook<CreateShaderFn> shaders[kHookLimit];
@@ -167,10 +176,22 @@ struct State {
         uint64_t context = 0, adapter_luid = 0, last_source_ms = 0, reattachments = 0;
         uint64_t last_attempt_context = 0, last_attempt_ms = 0;
         bool initialized = false;
+        std::atomic<uint64_t> binding_context{0};
+        std::atomic<uint32_t> render_mode{1}, prime{0};
+        std::atomic<bool> final_verified{false};
+        Com<ID3D11ComputeShader> repeat_shader;
         TextureObservation extent;
         std::unique_ptr<NativeBackend> backend;
     };
     BackendOptions options;
+    RenderPolicy policy;
+    std::mutex policy_mutex;
+    std::atomic<uint32_t> requested_mode{1};
+    std::atomic<uint64_t> analysis_skipped{0}, synthesis_skipped{0}, repeat_queued{0}, bypass_rejected{0}, unknown_analysis_call{0};
+    std::atomic<uint32_t> hotkeys{0};
+#ifdef LS_OBSERVER_TEST
+    uint32_t test_return_rva = 0; // Synthetic fixture only; absent from the DLL.
+#endif
     std::filesystem::path folder;
     std::mutex backend_mutex;
     std::array<Session, 4> sessions;
@@ -267,10 +288,53 @@ const char* SelectionName(uint32_t value) {
     default: return "none";
     }
 }
+template<class T> uint64_t ObjectId(T* object);
+State::Session* BoundSession(ID3D11DeviceContext* ctx) {
+    State::Session* session = nullptr;
+    if (!ReadTag(ctx, kSessionTag, session) || !session) return nullptr;
+    // Reattachment publishes its identity last; an old native context cannot
+    // use a graph now bound to a newer context.
+    Com<ID3D11Device> device; ctx->GetDevice(device.Put());
+    return session->binding_context.load() == ObjectId(ctx) ? session : nullptr;
+}
+bool RepeatNative(ID3D11DeviceContext* ctx, State::Session& session) {
+    if (!session.repeat_shader.p) return false;
+    Com<ID3D11ShaderResourceView> view; ctx->CSGetShaderResources(1, 1, view.Put());
+    Com<ID3D11UnorderedAccessView> output; ctx->CSGetUnorderedAccessViews(0, 1, output.Put());
+    if (!view.p || !output.p) return false;
+    D3D11_SHADER_RESOURCE_VIEW_DESC vd{}; view->GetDesc(&vd);
+    D3D11_UNORDERED_ACCESS_VIEW_DESC od{}; output->GetDesc(&od);
+    Com<ID3D11Resource> source, destination; view->GetResource(source.Put()); output->GetResource(destination.Put());
+    Com<ID3D11Texture2D> a, b;
+    if (source.p == destination.p || FAILED(source->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(a.Put()))) ||
+        FAILED(destination->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(b.Put())))) return false;
+    D3D11_TEXTURE2D_DESC ad{}, bd{}; a->GetDesc(&ad); b->GetDesc(&bd);
+    if (vd.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D || od.ViewDimension != D3D11_UAV_DIMENSION_TEXTURE2D ||
+        vd.Texture2D.MostDetailedMip != 0 || vd.Texture2D.MipLevels != 1 || od.Texture2D.MipSlice != 0 ||
+        ad.Width != bd.Width || ad.Height != bd.Height || ad.Format != bd.Format || vd.Format != ad.Format || od.Format != bd.Format ||
+        ad.MipLevels != 1 || bd.MipLevels != 1 || ad.ArraySize != 1 || bd.ArraySize != 1 || ad.SampleDesc.Count != 1 || bd.SampleDesc.Count != 1) return false;
+    Com<ID3D11ComputeShader> shader; UINT classes = 0; ctx->CSGetShader(shader.Put(), nullptr, &classes); if (classes) return false;
+    ctx->CSSetShader(session.repeat_shader.p, nullptr, 0);
+    ctx->Dispatch((bd.Width + 15) / 16, (bd.Height + 15) / 16, 1);
+    ctx->CSSetShader(shader.p, nullptr, 0); ++g->repeat_queued; return true;
+}
+bool PrepareRepeat(ID3D11DeviceContext* ctx, State::Session& session) {
+    // Independent per-binding fallback. Logger locks cannot prevent filling a
+    // midpoint after native analysis was bypassed. No frame buffers or waits.
+    constexpr char code[] = "Texture2D<float4> source:register(t1);RWTexture2D<float4> output:register(u0);"
+        "[numthreads(16,16,1)]void main(uint3 p:SV_DispatchThreadID){uint w,h;output.GetDimensions(w,h);"
+        "if(p.x<w && p.y<h)output[p.xy]=source.Load(int3(p.xy,0));}";
+    Com<ID3DBlob> bytes, error;
+    if (FAILED(D3DCompile(code, sizeof(code), nullptr, nullptr, nullptr, "main", "cs_5_0", D3DCOMPILE_ENABLE_STRICTNESS, 0, bytes.Put(), error.Put()))) return false;
+    Com<ID3D11Device> device; ctx->GetDevice(device.Put());
+    if (session.repeat_shader.p) { session.repeat_shader.p->Release(); session.repeat_shader.p = nullptr; }
+    return SUCCEEDED(device->CreateComputeShader(bytes->GetBufferPointer(), bytes->GetBufferSize(), nullptr, session.repeat_shader.Put()));
+}
 void BackendSource(ID3D11DeviceContext* ctx, ID3D11Resource* source, const SourceWriteObservation& write) {
     if (!BackendEnabled() || !SourceWriteValid(write)) return;
     ++g->source_calls;
     g->latest_source_context.store(write.context);
+    if (g->requested_mode.load() == 0 && !BoundSession(ctx)) return;
     std::unique_lock<std::mutex> lock(g->backend_mutex, std::try_to_lock);
     if (!lock.owns_lock()) {
         ++g->backend_busy; ++g->source_invalidation_epoch;
@@ -298,7 +362,9 @@ void BackendSource(ID3D11DeviceContext* ctx, ID3D11Resource* source, const Sourc
             candidate.context = write.context; candidate.extent = write.texture;
             candidate.last_attempt_context = candidate.last_attempt_ms = 0;
             ++candidate.reattachments; ++g->session_reused;
-            session = &candidate; break;
+            session = &candidate; PrepareRepeat(ctx, candidate);
+            candidate.final_verified.store(false); candidate.binding_context.store(write.context);
+            ctx->SetPrivateData(kSessionTag, sizeof(session), &session); break;
         }
         if (hr == S_FALSE) { pending = true; ++g->reattach_pending; }
         else {
@@ -313,27 +379,55 @@ void BackendSource(ID3D11DeviceContext* ctx, ID3D11Resource* source, const Sourc
         // touched by the logger, including SINGLETHREADED devices.
         g->backend_phase.store(1);
         candidate.initialized = SUCCEEDED(candidate.backend->Initialize(ctx, write.texture, g->options, g->folder));
+        if (candidate.initialized) PrepareRepeat(ctx, candidate);
+        candidate.final_verified.store(false); candidate.binding_context.store(write.context);
+        auto* binding = &candidate; ctx->SetPrivateData(kSessionTag, sizeof(binding), &binding);
         g->backend_phase.store(2);
         session = &candidate; break;
     }
     if (session) {
         session->last_source_ms = GetTickCount64();
         g->selected_context.store(session->context); g->selection.store(session->initialized ? 1 : 5);
-        session->backend->Source(texture.p, write);
+        RenderPolicy policy;
+        { std::unique_lock<std::mutex> settings(g->policy_mutex, std::try_to_lock);
+          if (!settings.owns_lock()) return;
+          policy = g->policy; }
+        policy.mode = static_cast<RenderMode>(g->requested_mode.load());
+        if (!session->backend->SetPolicy(policy)) return;
+        const auto prior = static_cast<RenderMode>(session->render_mode.exchange(static_cast<uint32_t>(policy.mode)));
+        if (prior != policy.mode) {
+            ++g->source_invalidation_epoch;
+            if (prior == RenderMode::Economy) session->prime.store(2);
+        }
+        if (policy.mode != RenderMode::Economy && session->prime.load()) --session->prime;
+        if (policy.mode != RenderMode::Native) session->backend->Source(texture.p, write);
     } else {
         ++g->session_limit; g->selected_context.store(0); g->selection.store(pending ? 4 : 2);
     }
 }
-void BackendComposite(ID3D11DeviceContext* ctx, const DispatchObservation& record) {
-    if (!BackendEnabled() || !record.pair_matches_observed_updates) return;
+bool BackendComposite(ID3D11DeviceContext* ctx, const DispatchObservation& record, bool before) {
+    if (!BackendEnabled()) return false;
+    auto* session = BoundSession(ctx); if (!session || !session->initialized) return false;
+    const auto mode = static_cast<RenderMode>(session->render_mode.load());
+    const bool fill = mode == RenderMode::Economy || session->prime.load() != 0;
+    if (before != fill || (!fill && mode == RenderMode::Native)) return false;
     ++g->slots_seen;
-    std::unique_lock<std::mutex> lock(g->backend_mutex, std::try_to_lock);
-    if (!lock.owns_lock()) { ++g->backend_busy; return; }
-    BackendActivity activity;
-    g->backend_phase.store(3);
-    auto* session = FindSession(record.context, record.current_write.texture);
+    BackendActivity activity; g->backend_phase.store(3);
     Com<ID3D11UnorderedAccessView> destination; ctx->CSGetUnorderedAccessViews(0, 1, destination.Put());
-    if (session) session->backend->Composite(record, destination.p);
+    if (session->backend->Composite(record, destination.p, session->prime.load() != 0)) return true;
+    if (fill && RepeatNative(ctx, *session)) return true;
+    if (fill) ++g->bypass_rejected;
+    return false;
+}
+bool BypassAnalysis(ID3D11DeviceContext* ctx, uint32_t rva) {
+    if (!BackendEnabled()) return false;
+    auto* session = BoundSession(ctx);
+    if (!session || !session->initialized || !session->repeat_shader.p ||
+        session->render_mode.load() != static_cast<uint32_t>(RenderMode::Economy) || !session->final_verified.load()) return false;
+    Com<ID3D11ComputeShader> shader; ctx->CSGetShader(shader.Put(), nullptr, nullptr);
+    uint32_t id = 0; if (!ReadTag(shader.p, kShaderTag, id) || !IsAnalysisResource(id)) return false;
+    if (!IsAnalysisReturn(rva)) { ++g->unknown_analysis_call; return false; }
+    ++g->analysis_skipped; return true;
 }
 void WriteRuntimeModules(std::ostream& out) {
     // Read only our own modules at startup/on the worker; never load a module
@@ -416,6 +510,10 @@ void WriteBackendDiagnostics(std::ostream& out) {
         << " hdr=" << g->profile_hdr.load() << " eligible=" << g->eligible.load()
         << " source=" << g->source_calls.load() << " matched_slots=" << g->slots_seen.load()
         << " controller_busy=" << g->backend_busy.load() << " session_limit=" << g->session_limit.load()
+        << " requested_mode=" << RenderModeName(static_cast<RenderMode>(g->requested_mode.load()))
+        << " analysis_skipped=" << g->analysis_skipped.load() << " synthesis_skipped=" << g->synthesis_skipped.load()
+        << " repeat_queued=" << g->repeat_queued.load() << " bypass_rejected=" << g->bypass_rejected.load()
+        << " unknown_analysis_call=" << g->unknown_analysis_call.load() << " hotkeys=" << g->hotkeys.load()
         << " backend_phase=" << BackendPhaseName(g->backend_phase.load())
         << " diagnostics_busy=" << !controller_sampled << "\n";
     out << "routing latest_source_context=" << g->latest_source_context.load()
@@ -447,10 +545,15 @@ void WriteBackendDiagnostics(std::ostream& out) {
             << " reattachments=" << d.reattachments << " reattach_code=0x" << std::hex << d.reattach_code << std::dec
             << " source_age_ms=" << GetTickCount64() - snapshot.last_source_ms
             << " analysis=" << d.analysis_width << 'x' << d.analysis_height
-            << " analysis_format=" << d.analysis_format << " flow_grid=" << d.grid
+            << " adapter_luid=0x" << std::hex << d.adapter_luid << std::dec
+            << " adapter=" << std::quoted(std::filesystem::path(d.adapter_name.data()).u8string())
+            << " render_mode=" << RenderModeName(d.mode) << " analysis_format=" << d.analysis_format << " flow_grid=" << d.grid
             << " submitted=" << c.submitted << " composite_queued=" << c.composite_queued
             << " busy=" << c.busy << " unmatched=" << c.mismatched << " flag_enabled_samples=" << c.gpu_enabled
             << " flag_disabled_samples=" << c.gpu_disabled << " failures=" << c.failed
+            << " repeat_queued=" << c.repeat_queued << " duplicate_samples=" << c.duplicate_samples << " scene_cut_samples=" << c.scene_cut_samples
+            << " scene_resets=" << c.scene_resets << " timing_samples=" << d.timing_samples
+            << " conversion_gpu_ms=" << d.conversion_ms << " flow_dependency_gpu_ms=" << d.flow_dependency_ms << " generation_gpu_ms=" << d.generation_ms
             << " ineligible=" << c.ineligible << " destination_rejected=" << c.destination_rejected << " warmup=" << c.warmup << "\n";
         if (d.ngx.init) {
             const auto& n = d.ngx;
@@ -471,7 +574,7 @@ void WriteBackendDiagnostics(std::ostream& out) {
     if (const auto dropped = NativeBackend::DroppedNgxLogs()) out << "ngx_log_dropped=" << dropped << '\n';
     out.flush();
 }
-void RunBackendWriter(std::ostream& out) {
+[[maybe_unused]] void RunBackendWriter(std::ostream& out) {
     for (;;) {
         WriteBackendDiagnostics(out);
         if (!g->active.load()) {
@@ -481,7 +584,35 @@ void RunBackendWriter(std::ostream& out) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 }
-void BackendWriter() { RunBackendWriter(g->backend_log); }
+void BackendWriter() {
+    // All D3D11 work remains on LS's owning thread. This thread only posts policy
+    // changes and writes completed D3D12 diagnostic metadata.
+    uint32_t registered = 0;
+    for (int i = 0; i != 3; ++i)
+        if (RegisterHotKey(nullptr, 0x4c50 + i, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_F6 + static_cast<UINT>(i))) registered |= 1u << i;
+    g->hotkeys.store(registered);
+    uint64_t next = 0;
+    while (g->active.load()) {
+        MSG message{};
+        while (PeekMessageW(&message, nullptr, WM_HOTKEY, WM_HOTKEY, PM_REMOVE)) {
+            if (message.wParam == 0x4c50) {
+                g->requested_mode.store((g->requested_mode.load() + 1) % 3); ++g->source_invalidation_epoch;
+            } else if (message.wParam == 0x4c51) ++g->source_invalidation_epoch;
+            else if (message.wParam == 0x4c52) {
+                const auto config = ReadPolicyConfig(g->folder / L"NativeDLSS.ini");
+                { std::lock_guard<std::mutex> lock(g->policy_mutex); g->policy = config.policy; }
+                g->requested_mode.store(static_cast<uint32_t>(config.policy.mode)); ++g->source_invalidation_epoch;
+                g->backend_log << "control=reload profile=" << std::quoted(std::filesystem::path(config.profile).u8string())
+                    << " requested_mode=" << RenderModeName(config.policy.mode) << " gpu_quality_requires_restart=1\n";
+            }
+        }
+        const auto now = GetTickCount64();
+        if (now >= next) { WriteBackendDiagnostics(g->backend_log); next = now + 1000; }
+        MsgWaitForMultipleObjects(0, nullptr, FALSE, 50, QS_ALLINPUT);
+    }
+    for (int i = 0; i != 3; ++i) if (registered & (1u << i)) UnregisterHotKey(nullptr, 0x4c50+i);
+    WriteBackendDiagnostics(g->backend_log); g->backend_log << "writer=stopped\n"; g->backend_log.flush();
+}
 // Startup thread only, before the periodic writer owns this stream.
 void StartupNote(const char* stage) {
     if (!g->backend_writer_started && g->backend_log) {
@@ -616,6 +747,8 @@ template<int I> HRESULT STDMETHODCALLTYPE Shader(ID3D11Device* dev, const void* 
         uint32_t id = 0;
         if (size == g->shader.size() && std::memcmp(bytes, g->shader.data(), size) == 0) id = 256;
         else if (size == g->input_shader.size() && std::memcmp(bytes, g->input_shader.data(), size) == 0) id = 254;
+        else for (const auto& analysis : g->analysis_shaders)
+            if (size == analysis.second.size() && std::memcmp(bytes, analysis.second.data(), size) == 0) { id = analysis.first; break; }
         if (id && SUCCEEDED((*result)->SetPrivateData(kShaderTag, sizeof(id), &id))) ++g->tagged_shaders;
     }
     t_shader = false;
@@ -743,18 +876,43 @@ template<int I> void STDMETHODCALLTYPE Indirect(ID3D11DeviceContext* ctx, ID3D11
 }
 template<int I> void STDMETHODCALLTYPE Dispatch(ID3D11DeviceContext* ctx, UINT x, UINT y, UINT z) {
     const auto original = g->dispatches[I].original;
+#ifdef LS_WITH_NGX
+#ifdef _MSC_VER
+    const auto caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
+#else
+    const auto caller = reinterpret_cast<uintptr_t>(__builtin_return_address(0));
+#endif
+    uint32_t rva = caller >= g->native_base && caller - g->native_base < 0x379ff ? static_cast<uint32_t>(caller - g->native_base) : 0;
+#ifdef LS_OBSERVER_TEST
+    if (g->test_return_rva) rva = g->test_return_rva;
+#endif
+#endif
     if (t_dispatch) { original(ctx, x, y, z); return; }
     ++g->callbacks; ++g->dispatch_calls;
     if (g->active.load()) {
         t_dispatch = true;
+        #ifdef LS_WITH_NGX
+        if (BypassAnalysis(ctx, rva)) { t_dispatch = false; --g->callbacks; return; }
+#endif
         DispatchObservation record;
         try { InvalidateComputeOutputs(ctx); Observe(ctx, x, y, z, false, &record); }
         catch (...) { ++g->untagged; ++g->source_invalidation_epoch; }
-        original(ctx, x, y, z); // Exactly once. Native output is always produced.
+        bool replaced = false;
+#ifdef LS_WITH_NGX
+        // Only the exact REA-confirmed final call may be replaced before LS work.
+        if (rva == kSynthesisReturn) {
+            try { replaced = BackendComposite(ctx, record, true); } catch (...) { ++g->bypass_rejected; }
+            if (auto* session = BoundSession(ctx)) session->final_verified.store(replaced);
+        }
+#endif
+        if (!replaced) original(ctx, x, y, z);
+#ifdef LS_WITH_NGX
+        else ++g->synthesis_skipped;
+#endif
         try {
             if (g->active.load()) {
 #ifdef LS_WITH_NGX
-                BackendComposite(ctx, record);
+                if (!replaced) BackendComposite(ctx, record, false);
 #endif
                 Observe(ctx, x, y, z, true);
             }
@@ -993,12 +1151,17 @@ void StartNativeObservation(HMODULE native, HMODULE proxy, const std::filesystem
         g = new State; // Deliberate process-lifetime storage; no loader-lock teardown.
         g->tracing.store(tracing);
 #ifdef LS_WITH_NGX
-        g->options.enabled = backend; g->folder = folder;
-        g->options.optical_flow = GetPrivateProfileIntW(L"NativeDLSS", L"OpticalFlow", 1, ini.c_str()) == 1;
-        g->options.gpu_ordered = GetPrivateProfileIntW(L"NativeDLSS", L"GPUOrdered", 1, ini.c_str()) == 1;
-        g->options.quality = std::clamp(GetPrivateProfileIntW(L"NativeDLSS", L"Quality", 2, ini.c_str()), 1u, 5u);
-        g->options.analysis_percent = std::clamp(GetPrivateProfileIntW(L"NativeDLSS", L"AnalysisPercent", 50, ini.c_str()), 10u, 100u);
-        g->options.slots = std::clamp(GetPrivateProfileIntW(L"NativeDLSS", L"Slots", 3, ini.c_str()), 2u, 4u);
+        g->folder = folder;
+        const auto config = ReadPolicyConfig(ini); g->options = config.backend; g->options.enabled = backend;
+        g->policy = config.policy; g->requested_mode.store(static_cast<uint32_t>(config.policy.mode));
+        g->native_base = reinterpret_cast<uintptr_t>(native);
+        for (uint32_t id = 255; id <= 302; ++id) {
+            if (!IsAnalysisResource(id)) continue;
+            const auto item = FindResourceW(native, MAKEINTRESOURCEW(id), MAKEINTRESOURCEW(10));
+            const auto count = item ? SizeofResource(native, item) : 0;
+            const auto data = item ? static_cast<const uint8_t*>(LockResource(LoadResource(native, item))) : nullptr;
+            if (data && count) g->analysis_shaders.emplace_back(id, std::vector<uint8_t>(data, data + count));
+        }
 #endif
         g->shader.assign(bytes, bytes + size);
         g->input_shader.assign(input_bytes, input_bytes + input_size);
@@ -1022,10 +1185,11 @@ void StartNativeObservation(HMODULE native, HMODULE proxy, const std::filesystem
         if (backend) {
             g->backend_log.open(folder / L"logs" / (L"native-dlss-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(start.QuadPart) + L".log"));
             if (!g->backend_log) return;
-            g->backend_log << "NativeDLSS 0.1.4 experimental. Present owner: LS. Full source coverage / real RTX3080 acceptance: unverified.\n"
+            g->backend_log << "NativeDLSS 0.2.0 experimental. Present owner: LS. Full source coverage / real RTX3080 acceptance: unverified.\n"
                 << "OpticalFlow=" << g->options.optical_flow << " Quality=" << g->options.quality
                 << " AnalysisPercent=" << g->options.analysis_percent << " GPUOrdered=" << g->options.gpu_ordered
-                << " Slots=" << g->options.slots << "\n";
+                << " Slots=" << g->options.slots << " FlowPreset=" << g->options.flow_preset << " FlowGrid=" << g->options.flow_grid
+                << " requested_mode=" << RenderModeName(config.policy.mode) << " profile=" << std::quoted(std::filesystem::path(config.profile).u8string()) << "\n";
             PrepareSm86(g->backend_log, folder);
         }
 #endif
@@ -1327,6 +1491,58 @@ int NativeObservationSelfTest() {
         std::cerr << "blocked diagnostic output disrupted source history or composite\n"; return 1;
     }
     std::cout << "Blocked diagnostic output preserves source generations and GPU midpoint replacement\n";
+    // Synthetic call-site injection exists only in this test translation unit.
+    // It proves our bypass dispatcher and pixels, not the actual LS caller ABI.
+    g->requested_mode.store(2); ++g->source_invalidation_epoch;
+    g->test_return_rva = kSourceReturn;
+    source(0xff000014,1); source(0xff00003c,2);
+    g->test_return_rva = kSynthesisReturn; synthesize(1,2);
+    if (!pixels(0xff00003c)) { std::cerr << "economy warmup source fill\n"; return 1; }
+    g->test_return_rva = kSourceReturn; source(0xff000064,1);
+    g->test_return_rva = kSynthesisReturn; synthesize(2,1);
+    if (!pixels(0xff000050)) { std::cerr << "economy generated midpoint\n"; return 1; }
+    const auto native_skipped = g->synthesis_skipped.load();
+    std::vector<uint8_t> analysis_bytes;
+    const char* analysis_code = "RWTexture2D<float4> O:register(u0);"
+        "[numthreads(16,16,1)]void main(uint3 p:SV_DispatchThreadID){O[p.xy]=float4(0,1,0,1);}";
+    Com<ID3D11ComputeShader> untagged_analysis, analysis_shader;
+    if (!compile(analysis_code,analysis_bytes,untagged_analysis.Put())) return 1;
+    g->analysis_shaders.emplace_back(255,analysis_bytes);
+    if (FAILED(dev->CreateComputeShader(analysis_bytes.data(),analysis_bytes.size(),nullptr,analysis_shader.Put()))) return 1;
+    auto analyze = [&] {
+        unbind(); ctx->CSSetShader(analysis_shader.p,nullptr,0);
+        ctx->CSSetUnorderedAccessViews(0,1,&outputs[5].p,nullptr);ctx->Dispatch(1,1,1);unbind();
+    };
+    const auto skipped_before = g->analysis_skipped.load();
+    g->test_return_rva = kAnalysisReturns[0]; analyze();
+    if (g->analysis_skipped.load() != skipped_before+1 || !pixels(0xff000050)) {
+        std::cerr << "exact analysis bypass executed original shader\n"; return 1;
+    }
+    g->test_return_rva = kAnalysisReturns[0]+1; analyze();
+    if (g->analysis_skipped.load() != skipped_before+1 || !pixels(0xff00ff00) || !g->unknown_analysis_call.load()) {
+        std::cerr << "unknown call site did not preserve original Dispatch\n"; return 1;
+    }
+    // Force diagnostic lock contention; independent source-fill fallback must
+    // still work after native analysis has been skipped.
+    g->test_return_rva=kSourceReturn; source(0xff00008c,2);
+    auto* bound = BoundSession(ctx.p); if (!bound) return 1;
+    const auto repeats_before=g->repeat_queued.load();
+    {
+        std::lock_guard<std::mutex> hold(g->backend_mutex);
+        t_dispatch=true; unbind();ctx->CSSetShader(synth_shader.p,nullptr,0);
+        ID3D11ShaderResourceView* bindings[]{views[1].p,views[2].p};ctx->CSSetShaderResources(0,2,bindings);
+        ctx->CSSetUnorderedAccessViews(0,1,&outputs[5].p,nullptr);
+        if (!RepeatNative(ctx.p,*bound)) return 1;
+        t_dispatch=false; unbind();
+    }
+    if(g->repeat_queued.load()!=repeats_before+1 || !pixels(0xff00008c) || native_skipped<2) return 1;
+    g->requested_mode.store(1); ++g->source_invalidation_epoch;
+    g->test_return_rva=kSourceReturn; source(0xff0000a0,1);
+    g->test_return_rva=kSynthesisReturn; synthesize(2,1);
+    if(!pixels(0xff0000a0)) { std::cerr << "economy to hybrid recovery slot\n";return 1; }
+    g->test_return_rva=0; source(0xff0000b4,2); synthesize(1,2);
+    if(!pixels(0xffff00ff)) { std::cerr << "hybrid source warmup did not preserve native pixels\n";return 1; }
+    std::cout << "Synthetic verified call sites: analysis/synthesis bypass, unknown-site rejection, source fallback and mode recovery passed\n";
     SetNativeProfile(1, 1, 2.0f, false); // Adaptive stays native.
     source(0xff00008c, 2); synthesize(1, 2);
     if (!pixels(0xffff00ff)) { std::cerr << "unsupported profile was replaced\n"; return 1; }

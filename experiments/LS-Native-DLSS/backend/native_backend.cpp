@@ -86,6 +86,8 @@ struct NativeBackend::State {
         ComPtr<ID3D11ShaderResourceView> output_view, flag_view;
         SharedHandle inputs_handle[2], output_handle, flag_handle;
         ComPtr<ID3D12DescriptorHeap> heap, cpu, targets;
+        ComPtr<ID3D12Resource> decision;
+        ComPtr<ID3D12QueryHeap> timestamps;
         ComPtr<ID3D12CommandAllocator> prepare_alloc, generate_alloc;
         ComPtr<ID3D12GraphicsCommandList> prepare, generate;
         NvOFGPUBufferHandle registered[3]{};
@@ -104,11 +106,21 @@ struct NativeBackend::State {
     ComPtr<ID3D12Fence> producer12, ready12, copied12, converted, flow_done, registered_done;
     SharedHandle producer_handle, ready_handle, copied_handle;
     ComPtr<ID3D12RootSignature> root;
-    ComPtr<ID3D12PipelineState> input_pso, dense_pso, flag_pso;
+    ComPtr<ID3D12Resource> scene_state;
+    bool scene_state_initialized = false;
+    ComPtr<ID3D12PipelineState> input_pso, dense_pso, flag_pso, compare_pso;
 #ifdef LS_NATIVE_TEST
     ComPtr<ID3D12PipelineState> synthetic_pso;
 #endif
     ComPtr<ID3D11ComputeShader> composite_shader;
+    std::array<ComPtr<ID3D11Buffer>, 2> composite_constants;
+    std::array<std::array<uint32_t,36>, 2> uploaded_constants{};
+    std::array<bool,2> constants_uploaded{};
+    RenderPolicy policy;
+    uint64_t timestamp_frequency = 0, timing_samples = 0;
+    double conversion_ms = 0, flow_dependency_ms = 0, generation_ms = 0;
+    std::array<wchar_t, 128> adapter_name{};
+    bool scene_pending = false;
     ComPtr<ID3DBlob> composite_bytecode;
     std::array<Job, 4> jobs;
     SourceWriteObservation last_write;
@@ -189,28 +201,36 @@ struct NativeBackend::State {
         p.CS = {code_blob->GetBufferPointer(), code_blob->GetBufferSize()}; return device->CreateComputePipelineState(&p, IID_PPV_ARGS(result));
     }
     HRESULT Shaders() {
-        D3D12_DESCRIPTOR_RANGE ranges[3]{}; D3D12_ROOT_PARAMETER parameters[4]{};
+        D3D12_DESCRIPTOR_RANGE ranges[4]{}; D3D12_ROOT_PARAMETER parameters[5]{};
         for (UINT i = 0; i != 3; ++i) {
             ranges[i].RangeType = i == 2 ? D3D12_DESCRIPTOR_RANGE_TYPE_UAV : D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
             ranges[i].NumDescriptors = 1; ranges[i].BaseShaderRegister = i == 1 ? 1 : 0;
             parameters[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
             parameters[i].DescriptorTable = {1, &ranges[i]}; parameters[i].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         }
+        ranges[3].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV; ranges[3].NumDescriptors = 1; ranges[3].BaseShaderRegister = 1;
+        parameters[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        parameters[4].DescriptorTable = {1, &ranges[3]}; parameters[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; parameters[3].Constants = {0, 0, 8};
         D3D12_STATIC_SAMPLER_DESC sampler{}; sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
         sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
         sampler.MaxLOD = D3D12_FLOAT32_MAX; sampler.MaxAnisotropy = 1; sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-        D3D12_ROOT_SIGNATURE_DESC rd{}; rd.NumParameters = 4; rd.pParameters = parameters;
+        D3D12_ROOT_SIGNATURE_DESC rd{}; rd.NumParameters = 5; rd.pParameters = parameters;
         rd.NumStaticSamplers = 1; rd.pStaticSamplers = &sampler; rd.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
         ComPtr<ID3DBlob> signature, error; HRESULT hr = D3D12SerializeRootSignature(&rd, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error);
         if (FAILED(hr)) return hr;
         if (FAILED(hr = device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&root)))) return hr;
-        if (FAILED(hr = Compute(shaders::densify, &dense_pso)) || FAILED(hr = Compute(shaders::flag, &flag_pso))) return hr;
+        if (FAILED(hr = Compute(shaders::densify, &dense_pso)) || FAILED(hr = Compute(shaders::flag, &flag_pso)) ||
+            FAILED(hr = Compute(shaders::compare, &compare_pso))) return hr;
         ComPtr<ID3DBlob> vs, ps, cs;
         if (FAILED(hr = Compile(shaders::input, "vs", "vs_5_0", &vs)) || FAILED(hr = Compile(shaders::input, "ps", "ps_5_0", &ps)) ||
             FAILED(hr = Compile(shaders::composite, "main", "cs_5_0", &cs))) return hr;
         if (FAILED(hr = native_device->CreateComputeShader(cs->GetBufferPointer(), cs->GetBufferSize(), nullptr, &composite_shader))) return hr;
         composite_bytecode = cs;
+        D3D11_BUFFER_DESC constants{}; constants.ByteWidth = 144; constants.Usage = D3D11_USAGE_DEFAULT;
+        constants.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        for (auto& buffer : composite_constants)
+            if (FAILED(hr = native_device->CreateBuffer(&constants, nullptr, &buffer))) return hr;
         D3D12_GRAPHICS_PIPELINE_STATE_DESC p{}; p.pRootSignature = root.Get();
         p.VS = {vs->GetBufferPointer(), vs->GetBufferSize()}; p.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
         p.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
@@ -257,7 +277,7 @@ struct NativeBackend::State {
         if (Of([&]{return of.nvOFGetCaps(of_session, NV_OF_CAPS_SUPPORTED_OUTPUT_GRID_SIZES, nullptr, &n);}) != NV_OF_SUCCESS || !n || n > 64) return Fail("NVOF grid count");
         std::vector<uint32_t> grids(n);
         if (Of([&]{return of.nvOFGetCaps(of_session, NV_OF_CAPS_SUPPORTED_OUTPUT_GRID_SIZES, grids.data(), &n);}) != NV_OF_SUCCESS || n > grids.size()) return Fail("NVOF grids");
-        grid = options.quality >= 4 ? 2u : 4u;
+        grid = options.flow_grid ? options.flow_grid : options.quality >= 4 ? 2u : 4u;
         if (std::find(grids.begin(), grids.begin() + n, grid) == grids.begin() + n) grid = 4;
         if (std::find(grids.begin(), grids.begin() + n, grid) == grids.begin() + n) return Fail("NVOF supported grid");
         auto dimension = [&](NV_OF_CAPS cap, uint32_t& value) {
@@ -272,8 +292,9 @@ struct NativeBackend::State {
         if (analysis_width > maxw || analysis_height > maxh) return Fail("NVOF analysis extent");
         NV_OF_INIT_PARAMS p{}; p.width = analysis_width; p.height = analysis_height;
         p.outGridSize = static_cast<NV_OF_OUTPUT_VECTOR_GRID_SIZE>(grid); p.mode = NV_OF_MODE_OPTICALFLOW;
-        p.perfLevel = options.quality == 1 ? NV_OF_PERF_LEVEL_FAST :
-            (options.quality == 3 || options.quality == 5) ? NV_OF_PERF_LEVEL_SLOW : NV_OF_PERF_LEVEL_MEDIUM;
+        const uint32_t preset = options.flow_preset ? options.flow_preset :
+            options.quality == 1 ? 1u : (options.quality == 3 || options.quality == 5) ? 3u : 2u;
+        p.perfLevel = preset == 1 ? NV_OF_PERF_LEVEL_FAST : preset == 3 ? NV_OF_PERF_LEVEL_SLOW : NV_OF_PERF_LEVEL_MEDIUM;
         p.inputBufferFormat = NV_OF_BUFFER_FORMAT_ABGR8; p.predDirection = NV_OF_PRED_DIRECTION_FORWARD;
         const auto result = Of([&]{return of.nvOFInit(of_session, &p);});
         return result == NV_OF_SUCCESS || Fail("NVOF init", static_cast<uint32_t>(result));
@@ -305,8 +326,8 @@ struct NativeBackend::State {
             FAILED(hr = PrivateTexture(extent.width, extent.height, DXGI_FORMAT_R16G16_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, &j.motion)) ||
             FAILED(hr = PrivateTexture(extent.width, extent.height, DXGI_FORMAT_R32_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, &j.depth)) ||
             FAILED(hr = Buffer(4, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &j.disabled)) ||
-            FAILED(hr = Buffer(4, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST, &j.readback))) return hr;
-        D3D12_DESCRIPTOR_HEAP_DESC hd{}; hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; hd.NumDescriptors = 9; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+            FAILED(hr = Buffer(512, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST, &j.readback))) return hr;
+        D3D12_DESCRIPTOR_HEAP_DESC hd{}; hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; hd.NumDescriptors = 13; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         if (FAILED(hr = device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&j.heap)))) return hr;
         hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE; if (FAILED(hr = device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&j.cpu)))) return hr;
         hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV; hd.NumDescriptors = 2;
@@ -318,6 +339,21 @@ struct NativeBackend::State {
         raw.ViewDimension = D3D12_UAV_DIMENSION_BUFFER; raw.Buffer.NumElements = 1; raw.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
         device->CreateUnorderedAccessView(j.disabled.Get(), nullptr, &raw, Cpu(j, 8));
         device->CopyDescriptorsSimple(1, Cpu(j, 8, true), Cpu(j, 8), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        if (FAILED(hr = Buffer(16, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &j.decision))) return hr;
+        D3D12_SHADER_RESOURCE_VIEW_DESC decision_srv{}; decision_srv.Format = DXGI_FORMAT_R32_TYPELESS;
+        decision_srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        decision_srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER; decision_srv.Buffer.NumElements = 4;
+        decision_srv.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+        device->CreateShaderResourceView(j.decision.Get(), &decision_srv, Cpu(j, 9));
+        device->CopyDescriptorsSimple(1, Cpu(j, 9, true), Cpu(j, 9), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        raw.Buffer.NumElements = 4; device->CreateUnorderedAccessView(j.decision.Get(), nullptr, &raw, Cpu(j, 10));
+        device->CopyDescriptorsSimple(1, Cpu(j, 10, true), Cpu(j, 10), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        Uav(j, 12, scene_state.Get(), DXGI_FORMAT_R32_UINT);
+        if (timestamp_frequency) {
+            D3D12_QUERY_HEAP_DESC query{}; query.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP; query.Count = 4;
+            if (FAILED(device->CreateQueryHeap(&query, IID_PPV_ARGS(&j.timestamps)))) timestamp_frequency = 0;
+        }
         for (UINT i = 0; i != 2; ++i) device->CreateRenderTargetView(j.analysis[i].Get(), nullptr, Rtv(j, i));
         if (FAILED(hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&j.prepare_alloc))) ||
             FAILED(hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&j.generate_alloc))) ||
@@ -388,14 +424,27 @@ struct NativeBackend::State {
         if (graphics) {
             cmd->SetGraphicsRootSignature(root.Get()); cmd->SetGraphicsRootDescriptorTable(0, Gpu(j, srv0));
             cmd->SetGraphicsRootDescriptorTable(1, Gpu(j, srv1)); cmd->SetGraphicsRootDescriptorTable(2, Gpu(j, uav));
+            cmd->SetGraphicsRootDescriptorTable(4, Gpu(j, 12));
         } else {
             cmd->SetComputeRootSignature(root.Get()); cmd->SetComputeRootDescriptorTable(0, Gpu(j, srv0));
             cmd->SetComputeRootDescriptorTable(1, Gpu(j, srv1)); cmd->SetComputeRootDescriptorTable(2, Gpu(j, uav));
+            cmd->SetComputeRootDescriptorTable(4, Gpu(j, 12));
         }
     }
     bool Generate(Job& j, bool reset) {
         if (FAILED(j.prepare_alloc->Reset()) || FAILED(j.prepare->Reset(j.prepare_alloc.Get(), input_pso.Get())) ||
             FAILED(j.generate_alloc->Reset()) || FAILED(j.generate->Reset(j.generate_alloc.Get(), nullptr))) return Fail("job allocator reset");
+        if (timestamp_frequency) j.prepare->EndQuery(j.timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0);
+        if (!scene_state_initialized) {
+            auto begin = Barrier(scene_state.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            j.prepare->ResourceBarrier(1, &begin); Root(j, j.prepare.Get(), false, 0, 1, 10);
+            const UINT zero[4]{};
+            j.prepare->ClearUnorderedAccessViewUint(Gpu(j, 12), Cpu(j, 12), scene_state.Get(), zero, 0, nullptr);
+            D3D12_RESOURCE_BARRIER order{}; order.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV; order.UAV.pResource = scene_state.Get();
+            j.prepare->ResourceBarrier(1, &order); scene_state_initialized = true;
+        }
+        const uint32_t filter[8]{extent.width, extent.height, policy.duplicate_filter ? 1u : 0u,
+            policy.scene_cut ? 1u : 0u, policy.duplicate_delta, policy.cut_delta, policy.cut_percent, reset ? 1u : 0u};
         if (options.optical_flow) {
             const D3D12_VIEWPORT viewport{0, 0, float(analysis_width), float(analysis_height), 0, 1};
             const D3D12_RECT rect{0, 0, LONG(analysis_width), LONG(analysis_height)};
@@ -413,6 +462,19 @@ struct NativeBackend::State {
                 j.prepare->ResourceBarrier(2, begin);
             }
         }
+        if (policy.duplicate_filter || policy.scene_cut) {
+            auto* cmd = j.prepare.Get(); Root(j, cmd, false, 0, 1, 10);
+            const UINT zero[4]{}; cmd->ClearUnorderedAccessViewUint(Gpu(j, 10), Cpu(j, 10), j.decision.Get(), zero, 0, nullptr);
+            D3D12_RESOURCE_BARRIER order{}; order.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV; order.UAV.pResource = j.decision.Get();
+            cmd->ResourceBarrier(1, &order);
+            D3D12_RESOURCE_BARRIER images[]{Barrier(j.inputs12[0].Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+                Barrier(j.inputs12[1].Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)};
+            cmd->ResourceBarrier(2, images); cmd->SetPipelineState(compare_pso.Get());
+            cmd->SetComputeRoot32BitConstants(3, 8, filter, 0); cmd->Dispatch((extent.width + 15) / 16, (extent.height + 15) / 16, 1);
+            for (auto& b : images) std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+            cmd->ResourceBarrier(2, images);
+        }
+        if (timestamp_frequency) j.prepare->EndQuery(j.timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 1);
         if (FAILED(j.prepare->Close())) return Fail("prepare command close");
         if (FAILED(queue->Wait(producer12.Get(), producer_value))) return Fail("producer GPU dependency");
         if (options.optical_flow && FAILED(queue->Wait(registered_done.Get(), register_value))) return Fail("NVOF registration dependency");
@@ -428,6 +490,7 @@ struct NativeBackend::State {
             if (FAILED(queue->Wait(flow_done.Get(), flow_value))) return Fail("optical-flow GPU dependency");
         }
         auto* cmd = j.generate.Get();
+        if (timestamp_frequency) cmd->EndQuery(j.timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 2);
         D3D12_RESOURCE_BARRIER resources[]{
             Barrier(j.inputs12[0].Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
             Barrier(j.inputs12[1].Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
@@ -485,6 +548,7 @@ struct NativeBackend::State {
             result = Ngx([&]{return NGX_D3D12_EVALUATE_DLSSG(cmd, feature, params, &ep, &op);});
             if (!NVSDK_NGX_SUCCEED(result)) return Fail("NGX evaluate", static_cast<uint32_t>(result));
         }
+        if (timestamp_frequency) cmd->EndQuery(j.timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 3);
         // Return guidance to COMMON and expose actual disable output on a shared
         // 1x1 UINT image. The native shader tests it without CPU flag readback.
         for (auto& b : guidance) { b.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE; b.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON; }
@@ -492,10 +556,24 @@ struct NativeBackend::State {
         {
             D3D12_RESOURCE_BARRIER flags[]{Barrier(j.disabled.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
                 Barrier(j.flag12.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)};
-            cmd->ResourceBarrier(2, flags); Root(j, cmd, false, 4, 4, 5); cmd->SetPipelineState(flag_pso.Get()); cmd->Dispatch(1, 1, 1);
+            cmd->ResourceBarrier(2, flags);
+            D3D12_RESOURCE_BARRIER scene_order{}; scene_order.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV; scene_order.UAV.pResource = scene_state.Get();
+            cmd->ResourceBarrier(1, &scene_order);
+            auto decision_barrier = Barrier(j.decision.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            cmd->ResourceBarrier(1, &decision_barrier);
+            Root(j, cmd, false, 4, 9, 5); cmd->SetComputeRoot32BitConstants(3, 8, filter, 0);
+            cmd->SetPipelineState(flag_pso.Get()); cmd->Dispatch(1, 1, 1); cmd->ResourceBarrier(1, &scene_order);
+            std::swap(decision_barrier.Transition.StateBefore, decision_barrier.Transition.StateAfter); cmd->ResourceBarrier(1, &decision_barrier);
             flags[0] = Barrier(j.disabled.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
-            flags[1] = Barrier(j.flag12.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
-            cmd->ResourceBarrier(2, flags); cmd->CopyBufferRegion(j.readback.Get(), 0, j.disabled.Get(), 0, 4);
+            flags[1] = Barrier(j.flag12.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            cmd->ResourceBarrier(2, flags);
+            D3D12_TEXTURE_COPY_LOCATION destination{}; destination.pResource = j.readback.Get();
+            destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            destination.PlacedFootprint.Footprint = {DXGI_FORMAT_R32_UINT, 1, 1, 1, 256};
+            D3D12_TEXTURE_COPY_LOCATION source{}; source.pResource = j.flag12.Get(); source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            cmd->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+            auto flag_restore = Barrier(j.flag12.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON); cmd->ResourceBarrier(1, &flag_restore);
+            if (timestamp_frequency) cmd->ResolveQueryData(j.timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 4, j.readback.Get(), 256);
             flags[0] = Barrier(j.disabled.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS); cmd->ResourceBarrier(1, flags);
         }
         // Motion/depth were already restored; only colour resources remain.
@@ -513,10 +591,23 @@ struct NativeBackend::State {
         const auto completed = s.ready12->GetCompletedValue(); if (completed == UINT64_MAX) { s.Fail("removed while polling"); return s.counters; }
         for (UINT i = 0; i != s.slots; ++i) {
             auto& j = s.jobs[i]; if (!j.ready || j.ready <= j.polled || completed < j.ready) continue;
-            void* pointer = nullptr; const D3D12_RANGE range{0, 4};
+            void* pointer = nullptr; const D3D12_RANGE range{0, 288};
             if (SUCCEEDED(j.readback->Map(0, &range, &pointer)) && pointer) {
-                uint32_t disabled = 1; std::memcpy(&disabled, pointer, 4); const D3D12_RANGE written{0, 0}; j.readback->Unmap(0, &written);
-                if (disabled) ++s.counters.gpu_disabled; else ++s.counters.gpu_enabled; j.polled = j.ready;
+                uint32_t flags = 1; std::memcpy(&flags, pointer, 4);
+                if (flags & 1) ++s.counters.gpu_disabled; else ++s.counters.gpu_enabled;
+                if (flags & 2) ++s.counters.duplicate_samples;
+                if (flags & 8) { ++s.counters.scene_cut_samples; s.scene_pending = true; }
+                if (s.timestamp_frequency) {
+                    uint64_t values[4]{}; std::memcpy(values, static_cast<const char*>(pointer) + 256, sizeof(values));
+                    if (values[0] <= values[1] && values[1] <= values[2] && values[2] <= values[3]) {
+                        const double scale = 1000.0 / double(s.timestamp_frequency);
+                        const double n = double(++s.timing_samples);
+                        s.conversion_ms += (double(values[1] - values[0]) * scale - s.conversion_ms) / n;
+                        s.flow_dependency_ms += (double(values[2] - values[1]) * scale - s.flow_dependency_ms) / n;
+                        s.generation_ms += (double(values[3] - values[2]) * scale - s.generation_ms) / n;
+                    }
+                }
+                const D3D12_RANGE written{0, 0}; j.readback->Unmap(0, &written); j.polled = j.ready;
             }
         }
         return s.counters;
@@ -540,6 +631,8 @@ HRESULT NativeBackend::Initialize(ID3D11DeviceContext* context, const TextureObs
     state_ = std::make_unique<State>(); auto& s = *state_; s.options = options; s.extent = source;
     s.options.quality = std::clamp(options.quality, 1u, 5u); s.options.analysis_percent = std::clamp(options.analysis_percent, 10u, 100u);
     s.slots = std::clamp(options.slots, 2u, 4u);
+    s.options.flow_preset = std::min(options.flow_preset, 3u);
+    s.options.flow_grid = options.flow_grid == 2 ? 2u : options.flow_grid ? 4u : 0u;
     if (!std::isfinite(options.motion_scale) || std::abs(options.motion_scale) > 8) { s.Fail("motion scale"); return E_INVALIDARG; }
 #ifdef LS_NATIVE_TEST
     if (options.synthetic_test) s.options.optical_flow = false;
@@ -549,6 +642,8 @@ HRESULT NativeBackend::Initialize(ID3D11DeviceContext* context, const TextureObs
     hr = context->QueryInterface(IID_PPV_ARGS(&s.native_context)); if (FAILED(s.Check(hr, "D3D11 context4"))) return hr;
     ComPtr<IDXGIDevice> dxgi; ComPtr<IDXGIAdapter> adapter; DXGI_ADAPTER_DESC ad{};
     if (FAILED(hr = native.As(&dxgi)) || FAILED(hr = dxgi->GetAdapter(&adapter)) || FAILED(hr = adapter->GetDesc(&ad))) return s.Check(hr, "native adapter");
+    std::copy_n(ad.Description, s.adapter_name.size(), s.adapter_name.begin());
+    s.adapter_name.back() = 0;
     bool synthetic = false;
 #ifdef LS_NATIVE_TEST
     synthetic = options.synthetic_test;
@@ -558,7 +653,9 @@ HRESULT NativeBackend::Initialize(ID3D11DeviceContext* context, const TextureObs
     if (Luid(ad.AdapterLuid) != Luid(s.device->GetAdapterLuid())) { s.Fail("adapter LUID mismatch"); return E_INVALIDARG; }
     D3D12_COMMAND_QUEUE_DESC q{}; q.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     if (FAILED(hr = s.device->CreateCommandQueue(&q, IID_PPV_ARGS(&s.queue)))) return s.Check(hr, "backend queue");
+    if (FAILED(s.queue->GetTimestampFrequency(&s.timestamp_frequency))) s.timestamp_frequency = 0;
     if (FAILED(hr = s.Fences())) return s.Check(hr, "shared fences");
+    if (FAILED(hr = s.PrivateTexture(1,1,DXGI_FORMAT_R32_UINT,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,&s.scene_state))) return s.Check(hr,"scene guard");
     s.analysis_width = std::max(1u, (source.width * s.options.analysis_percent + 99) / 100);
     s.analysis_height = std::max(1u, (source.height * s.options.analysis_percent + 99) / 100);
     if (s.options.optical_flow && !s.OpticalFlow()) return E_FAIL;
@@ -602,6 +699,11 @@ HRESULT NativeBackend::Reattach(ID3D11DeviceContext* context, const TextureObser
     std::array<NativeJob, 4> rebound;
     ComPtr<ID3D11Fence> producer, ready, copied;
     ComPtr<ID3D11ComputeShader> shader;
+    std::array<ComPtr<ID3D11Buffer>,2> constants;
+    D3D11_BUFFER_DESC constant_desc{}; constant_desc.ByteWidth = 144; constant_desc.Usage = D3D11_USAGE_DEFAULT;
+    constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    for (auto& buffer : constants)
+        if (FAILED(hr = target->CreateBuffer(&constant_desc, nullptr, &buffer))) return result(hr);
     // Prepare everything locally. Any import/create failure leaves the old
     // graph usable; no NGX feature or NVOF registration is destroyed/recreated.
     if (FAILED(hr = target->OpenSharedFence(s.producer_handle.value, IID_PPV_ARGS(&producer))) ||
@@ -629,6 +731,7 @@ HRESULT NativeBackend::Reattach(ID3D11DeviceContext* context, const TextureObser
         j.consumed = false; j.warmup = true;
     }
     s.last_source.Reset(); s.last_write = {}; s.last_evaluated_epoch = s.last_evaluated_generation = 0;
+    s.composite_constants = std::move(constants); s.constants_uploaded = {}; s.scene_pending = false;
     s.native_context = std::move(target_context); s.native_device = std::move(target);
     s.producer11 = std::move(producer); s.ready11 = std::move(ready); s.copied11 = std::move(copied);
     s.composite_shader = std::move(shader); s.extent = source;
@@ -651,6 +754,9 @@ bool NativeBackend::Source(ID3D11Texture2D* current, const SourceWriteObservatio
     auto previous = s.last_write; ComPtr<ID3D11Texture2D> previous_source = s.last_source;
     s.last_write = write; s.last_source = current;
     if (!pair) return false;
+    // Completed metadata only (no pixels, waits or flush), before a ring slot can overwrite it.
+    s.PollCountersLocked();
+    const bool scene_reset = s.scene_pending;
     const auto ready = s.ready12->GetCompletedValue(), copied = s.copied12->GetCompletedValue();
     if (ready == UINT64_MAX || copied == UINT64_MAX) return s.Fail("device removed while acquiring job");
     State::Job* job = nullptr;
@@ -664,22 +770,34 @@ bool NativeBackend::Source(ID3D11Texture2D* current, const SourceWriteObservatio
     s.native_context->CopyResource(j.inputs11[1].Get(), current);
     if (FAILED(s.native_context->Signal(s.producer11.Get(), ++s.producer_value))) return s.Fail("native producer signal");
     LARGE_INTEGER frequency{}; QueryPerformanceFrequency(&frequency);
-    const bool reset = s.last_evaluated_epoch != write.epoch || s.last_evaluated_generation + 1 != write.generation ||
+    const bool reset = scene_reset || s.last_evaluated_epoch != write.epoch || s.last_evaluated_generation + 1 != write.generation ||
         write.qpc - previous.qpc > static_cast<uint64_t>(frequency.QuadPart) / 4;
     if (!s.Generate(j, reset)) return false;
+    if (scene_reset) { ++s.counters.scene_resets; s.scene_pending = false; }
     s.last_evaluated_epoch = write.epoch; s.last_evaluated_generation = write.generation;
     return true;
 }
+bool NativeBackend::SetPolicy(const RenderPolicy& policy) {
+    if (!state_) return false;
+    auto& s = *state_; std::unique_lock<std::mutex> lock(s.mutex, std::try_to_lock);
+    if (!lock.owns_lock()) return false;
+    s.policy = policy; return s.initialized;
+}
 bool NativeBackend::Composite(const DispatchObservation& slot, ID3D11UnorderedAccessView* destination) {
+    return Composite(slot, destination, false);
+}
+bool NativeBackend::Composite(const DispatchObservation& slot, ID3D11UnorderedAccessView* destination, bool repeat) {
     if (!state_ || !destination) return false;
     auto& s = *state_; std::unique_lock<std::mutex> lock(s.mutex, std::try_to_lock); if (!lock.owns_lock()) return false;
-    if (s.failed || !s.initialized) return false;
-    if (!slot.pair_matches_observed_updates || !slot.constants_known || slot.phase_bits != 0x3f000000u ||
+    const bool fill = repeat || s.policy.mode == RenderMode::Economy;
+    if (!s.initialized || (s.failed && !fill)) return false;
+    if ((!fill && !slot.pair_matches_observed_updates) || !slot.constants_known || slot.phase_bits != 0x3f000000u ||
         slot.output.mip || slot.output.width != s.extent.width || slot.output.height != s.extent.height ||
-        slot.output.samples != 1 || slot.output.array_size != 1 || !FormatSupported(static_cast<DXGI_FORMAT>(slot.output.view_format))) { ++s.counters.ineligible; return false; }
+        slot.output.samples != 1 || slot.output.array_size != 1 || !FormatSupported(static_cast<DXGI_FORMAT>(slot.output.view_format))) {
+        ++s.counters.ineligible; return false;
+    }
     D3D11_UNORDERED_ACCESS_VIEW_DESC view_desc{}; destination->GetDesc(&view_desc);
-    ComPtr<ID3D11UnorderedAccessView> bound;
-    s.native_context->CSGetUnorderedAccessViews(0, 1, &bound);
+    ComPtr<ID3D11UnorderedAccessView> bound; s.native_context->CSGetUnorderedAccessViews(0, 1, &bound);
     if (!Same(bound.Get(), destination)) { ++s.counters.destination_rejected; return false; }
     ComPtr<ID3D11Resource> resource; destination->GetResource(&resource); ComPtr<ID3D11Device> device; resource->GetDevice(&device);
     if (!Same(device.Get(), s.native_device.Get()) || view_desc.ViewDimension != D3D11_UAV_DIMENSION_TEXTURE2D || view_desc.Texture2D.MipSlice != 0) return false;
@@ -688,31 +806,59 @@ bool NativeBackend::Composite(const DispatchObservation& slot, ID3D11UnorderedAc
     texture->GetDesc(&desc);
     if (desc.Width != slot.output.width || desc.Height != slot.output.height || static_cast<uint32_t>(desc.Format) != slot.output.format ||
         static_cast<uint32_t>(view_desc.Format) != slot.output.view_format || desc.MipLevels != 1 || desc.ArraySize != 1 || desc.SampleDesc.Count != 1) return false;
+    ComPtr<ID3D11ComputeShader> shader; UINT classes = 0; s.native_context->CSGetShader(&shader, nullptr, &classes); if (classes) return false;
+    ID3D11ShaderResourceView* saved_raw[3]{}; s.native_context->CSGetShaderResources(0, 3, saved_raw);
+    ComPtr<ID3D11ShaderResourceView> saved[3]; for (UINT i = 0; i != 3; ++i) saved[i].Attach(saved_raw[i]);
+    // t1 is the REA-confirmed native current source, even when pairing metadata
+    // has been invalidated. Validate it independently before a fallback store.
+    ComPtr<ID3D11Resource> current_resource; ComPtr<ID3D11Texture2D> current_texture;
+    D3D11_SHADER_RESOURCE_VIEW_DESC current_view{};
+    if (!saved[1]) return false;
+    saved[1]->GetDesc(&current_view); saved[1]->GetResource(&current_resource);
+    if (FAILED(current_resource.As(&current_texture))) return false;
+    D3D11_TEXTURE2D_DESC current_desc{}; current_texture->GetDesc(&current_desc);
+    if (current_view.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D || current_view.Texture2D.MostDetailedMip != 0 ||
+        current_view.Texture2D.MipLevels != 1 || current_desc.Width != s.extent.width || current_desc.Height != s.extent.height ||
+        current_desc.MipLevels != 1 || current_desc.ArraySize != 1 || current_desc.SampleDesc.Count != 1 ||
+        static_cast<uint32_t>(current_view.Format) != s.extent.format || Same(current_resource.Get(), resource.Get())) return false;
     State::Job* job = nullptr;
-    for (UINT i = 0; i != s.slots; ++i) {
+    if (!repeat && !s.failed && slot.pair_matches_observed_updates) for (UINT i = 0; i != s.slots; ++i) {
         auto& j = s.jobs[i];
         if (j.ready && !j.consumed && SameSourceWrite(j.previous, slot.previous_write) && SameSourceWrite(j.current, slot.current_write)) {
-            if (j.warmup) { ++s.counters.warmup; return false; }
-            job = &j; break;
+            if (j.warmup) { ++s.counters.warmup; if (!fill) return false; } else job = &j; break;
         }
     }
-    if (!job) { ++s.counters.mismatched; return false; }
-    auto& j = *job;
-    const auto completed = s.ready12->GetCompletedValue(); if (completed == UINT64_MAX) return s.Fail("removed before composite");
-    if (!s.options.gpu_ordered && completed < j.ready) { ++s.counters.busy; return false; }
-    ComPtr<ID3D11ComputeShader> shader; UINT classes = 0; s.native_context->CSGetShader(&shader, nullptr, &classes);
-    if (classes) return false;
-    ID3D11ShaderResourceView* saved_raw[2]{}; s.native_context->CSGetShaderResources(0, 2, saved_raw);
-    ComPtr<ID3D11ShaderResourceView> saved[2]; saved[0].Attach(saved_raw[0]); saved[1].Attach(saved_raw[1]);
-    if (FAILED(s.native_context->Wait(s.ready11.Get(), j.ready))) return s.Fail("native ready GPU dependency");
-    ID3D11ShaderResourceView* views[]{j.output_view.Get(), j.flag_view.Get()};
-    s.native_context->CSSetShaderResources(0, 2, views); s.native_context->CSSetShader(s.composite_shader.Get(), nullptr, 0);
+    if (!job && !repeat) ++s.counters.mismatched;
+    if (job) {
+        const auto completed = s.ready12->GetCompletedValue();
+        if (completed == UINT64_MAX) { s.Fail("removed before composite"); job = nullptr; }
+        else if (!s.options.gpu_ordered && completed < job->ready) { ++s.counters.busy; job = nullptr; }
+    }
+    if (!job && !fill) return false;
+    if (job && FAILED(s.native_context->Wait(s.ready11.Get(), job->ready))) return s.Fail("native ready GPU dependency");
+    ComPtr<ID3D11Buffer> saved_constants; s.native_context->CSGetConstantBuffers(0, 1, &saved_constants);
+    std::array<uint32_t, 36> constants{}; constants[0] = fill ? 1u : 0u; constants[1] = job ? 0u : 1u;
+    for (size_t i = 0; i != s.policy.hud.size(); ++i) {
+        const auto& r = s.policy.hud[i]; constants[4+i*4] = r.left; constants[5+i*4] = r.top;
+        constants[6+i*4] = r.right; constants[7+i*4] = r.bottom;
+    }
+    const size_t constant_index = job ? 0 : 1;
+    if (!s.constants_uploaded[constant_index] || s.uploaded_constants[constant_index] != constants) {
+        s.native_context->UpdateSubresource(s.composite_constants[constant_index].Get(), 0, nullptr, constants.data(), 0, 0);
+        s.uploaded_constants[constant_index] = constants; s.constants_uploaded[constant_index] = true;
+    }
+    ID3D11ShaderResourceView* views[]{job ? job->output_view.Get() : nullptr, job ? job->flag_view.Get() : nullptr, saved[1].Get()};
+    auto* cb = s.composite_constants[constant_index].Get(); s.native_context->CSSetConstantBuffers(0, 1, &cb);
+    s.native_context->CSSetShaderResources(0, 3, views); s.native_context->CSSetShader(s.composite_shader.Get(), nullptr, 0);
     s.native_context->Dispatch((s.extent.width + 15) / 16, (s.extent.height + 15) / 16, 1);
-    // UAV, constants, samplers, other SRVs and every graphics binding are untouched.
-    s.native_context->CSSetShaderResources(0, 2, saved_raw); s.native_context->CSSetShader(shader.Get(), nullptr, 0);
-    j.copied = ++s.copy_value; j.consumed = true;
-    if (FAILED(s.native_context->Signal(s.copied11.Get(), j.copied))) return s.Fail("native composite retirement");
-    ++s.counters.composite_queued; return true;
+    s.native_context->CSSetShaderResources(0, 3, saved_raw); s.native_context->CSSetShader(shader.Get(), nullptr, 0);
+    auto* old_cb = saved_constants.Get(); s.native_context->CSSetConstantBuffers(0, 1, &old_cb);
+    if (job) {
+        job->copied = ++s.copy_value; job->consumed = true;
+        if (FAILED(s.native_context->Signal(s.copied11.Get(), job->copied))) return s.Fail("native composite retirement");
+        ++s.counters.composite_queued;
+    } else ++s.counters.repeat_queued;
+    return true;
 }
 BackendCounters NativeBackend::PollCounters() {
     if (!state_) return {};
@@ -729,6 +875,10 @@ bool NativeBackend::TryPollDiagnostics(BackendDiagnostics& diagnostics) {
     diagnostics.analysis_width = s.analysis_width; diagnostics.analysis_height = s.analysis_height;
     diagnostics.grid = s.options.optical_flow ? s.grid : 0;
     diagnostics.analysis_format = static_cast<uint32_t>(s.analysis_format);
+    diagnostics.adapter_luid = Luid(s.device ? s.device->GetAdapterLuid() : LUID{});
+    diagnostics.adapter_name = s.adapter_name; diagnostics.mode = s.policy.mode;
+    diagnostics.timing_samples = s.timing_samples; diagnostics.conversion_ms = s.conversion_ms;
+    diagnostics.flow_dependency_ms = s.flow_dependency_ms; diagnostics.generation_ms = s.generation_ms;
     diagnostics.reattachments = s.reattachments; diagnostics.reattach_code = s.reattach_code;
     return true;
 }

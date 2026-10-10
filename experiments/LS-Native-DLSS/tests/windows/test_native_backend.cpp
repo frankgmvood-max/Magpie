@@ -74,17 +74,17 @@ struct Fixture {
         r.device = r.context = 1; r.adapter_luid = luid; r.thread = GetCurrentThreadId();
         return r;
     }
-    void Native() {
+    void Native(bool dispatch = true) {
         ID3D11ShaderResourceView* v[]{views[0].Get(), views[1].Get()}; context->CSSetShaderResources(0, 2, v);
         auto* output = outputs[3].Get(); context->CSSetUnorderedAccessViews(0, 1, &output, nullptr);
         context->CSSetShader(native_shader.Get(), nullptr, 0); auto* cb = constants.Get(); context->CSSetConstantBuffers(0, 1, &cb);
-        context->Dispatch(2, 1, 1);
+        if (dispatch) context->Dispatch(2, 1, 1);
     }
     void Unbind() {
         ID3D11ShaderResourceView* v[2]{}; ID3D11UnorderedAccessView* u = nullptr;
         context->CSSetShaderResources(0, 2, v); context->CSSetUnorderedAccessViews(0, 1, &u, nullptr);
     }
-    void Pixels(uint8_t expected) {
+    void Pixels(uint8_t expected, uint8_t protected_color = 0, UINT protected_columns = 0) {
         Unbind(); Drain(); D3D11_TEXTURE2D_DESC td{}; images[3]->GetDesc(&td);
         td.Usage = D3D11_USAGE_STAGING; td.CPUAccessFlags = D3D11_CPU_ACCESS_READ; td.BindFlags = 0;
         ComPtr<ID3D11Texture2D> read; Hr(device->CreateTexture2D(&td, nullptr, &read), "readback");
@@ -93,8 +93,9 @@ struct Fixture {
         bool valid = true;
         for (UINT y = 0; y != td.Height; ++y) for (UINT x = 0; x != td.Width; ++x) {
             const auto* p = static_cast<const uint8_t*>(m.pData) + y * m.RowPitch + x * 4;
-            if (expected == 255) valid &= p[0] == 255 && p[1] == 0 && p[2] == 255 && p[3] == 255;
-            else valid &= p[0] == expected + (y * td.Width + x) % 8 && p[1] == expected && p[2] == 0 && p[3] == 255;
+            const uint8_t color = x < protected_columns ? protected_color : expected;
+            if (color == 255) valid &= p[0] == 255 && p[1] == 0 && p[2] == 255 && p[3] == 255;
+            else valid &= p[0] == color + (y * td.Width + x) % 8 && p[1] == color && p[2] == 0 && p[3] == 255;
         }
         context->Unmap(read.Get(), 0); Require(valid, "conditional replacement pixels");
     }
@@ -231,6 +232,58 @@ void TestReattachment() {
     }
     std::cout << "Nine new D3D11 devices reuse one graph, reject old inputs, reset history and replace real pixels\n";
 }
+void BindCurrent(Fixture& f, UINT index) {
+    auto* view = f.views[index].Get(); f.context->CSSetShaderResources(1, 1, &view);
+}
+void TestEconomy(bool disabled) {
+    Fixture f; NativeBackend backend; BackendOptions options;
+    options.enabled = options.synthetic_test = true; options.test_disable = disabled;
+    Hr(backend.Initialize(f.context.Get(), f.extent, options, L"."), "economy backend");
+    RenderPolicy policy; policy.mode = RenderMode::Economy; Require(backend.SetPolicy(policy), "economy policy");
+    auto a = f.Source(0, 20); backend.Source(f.images[0].Get(), a);
+    auto b = f.Source(1, 40); Require(backend.Source(f.images[1].Get(), b), "economy warmup pair");
+    f.Native(false); Require(backend.Composite(f.Slot(a,b), f.outputs[3].Get()), "economy fills warmup without native synthesis");
+    f.Bindings(); f.Pixels(40);
+    auto c = f.Source(0, 80); Require(backend.Source(f.images[0].Get(), c), "economy next pair");
+    f.Native(false); BindCurrent(f,0);
+    Require(backend.Composite(f.Slot(b,c), f.outputs[3].Get()), "economy generated or source fallback"); f.Pixels(disabled ? 80 : 60);
+    f.Native(false); BindCurrent(f,0); auto unknown = f.Slot(b,c); unknown.pair_matches_observed_updates = false;
+    Require(backend.Composite(unknown, f.outputs[3].Get()), "economy independently validates current SRV on unmatched pair"); f.Pixels(80);
+    BackendDiagnostics d; Require(backend.TryPollDiagnostics(d), "economy diagnostics");
+    Require(d.counters.repeat_queued >= 2 && d.timing_samples && d.adapter_luid == f.luid, "economy repeat and GPU timing metadata");
+    std::cout << "Economy warmup, " << (disabled ? "GPU disable repeat" : "generated pixels") << ", unmatched repeat and timestamps passed\n";
+}
+void TestHudAndFilters() {
+    Fixture f; NativeBackend backend; BackendOptions options; options.enabled = options.synthetic_test = true;
+    Hr(backend.Initialize(f.context.Get(), f.extent, options, L"."), "HUD backend");
+    RenderPolicy policy; policy.hud[0] = {0,0,5000,10000}; Require(backend.SetPolicy(policy), "HUD policy");
+    auto a = f.Source(0,20); backend.Source(f.images[0].Get(),a);
+    auto b = f.Source(1,40); Require(backend.Source(f.images[1].Get(),b), "HUD warmup"); f.Drain();
+    auto c = f.Source(0,80); Require(backend.Source(f.images[0].Get(),c), "HUD pair"); f.Native(); BindCurrent(f,0);
+    Require(backend.Composite(f.Slot(b,c),f.outputs[3].Get()), "HUD composite"); f.Pixels(60,80,f.extent.width/2);
+    policy.hud = {}; policy.mode = RenderMode::Economy; policy.duplicate_filter = true;
+    Require(backend.SetPolicy(policy), "duplicate policy");
+    auto d = f.Source(1,80); Require(backend.Source(f.images[1].Get(),d), "duplicate pair");
+    f.Native(false); Require(backend.Composite(f.Slot(c,d),f.outputs[3].Get()), "duplicate output"); f.Pixels(80);
+    auto count = backend.PollCounters(); Require(count.duplicate_samples > 0, "full-image exact duplicate flag");
+    auto e = f.Source(0,80);
+    const uint32_t pixel = 0xff005051u;
+    // One-pixel box, not a downsampled probe: even this change must reject a duplicate.
+    D3D11_BOX box{0,0,0,1,1,1};
+    f.context->UpdateSubresource(f.images[0].Get(),0,&box,&pixel,4,0);
+    Require(backend.Source(f.images[0].Get(),e), "one-pixel source");
+    f.Native(false); BindCurrent(f,0); Require(backend.Composite(f.Slot(d,e),f.outputs[3].Get()), "one-pixel composite"); f.Unbind(); f.Drain();
+    Require(backend.PollCounters().duplicate_samples == count.duplicate_samples, "one changed pixel is not a duplicate");
+    policy.duplicate_filter = false; policy.scene_cut = true; Require(backend.SetPolicy(policy), "cut policy");
+    auto fresh = f.Source(1,20); backend.Source(f.images[1].Get(),fresh); f.Drain();
+    auto cut = f.Source(0,200); Require(backend.Source(f.images[0].Get(),cut), "cut pair");
+    f.Native(false); BindCurrent(f,0); Require(backend.Composite(f.Slot(fresh,cut),f.outputs[3].Get()), "scene cut output"); f.Pixels(200);
+    Require(backend.PollCounters().scene_cut_samples > 0, "scene cut GPU flag");
+    auto after = f.Source(1,210); Require(backend.Source(f.images[1].Get(),after), "post-cut reset pair");
+    f.Native(false); Require(backend.Composite(f.Slot(cut,after),f.outputs[3].Get()), "post-cut warmup source"); f.Pixels(210);
+    Require(backend.PollCounters().scene_resets > 0, "scene cut resets history");
+    std::cout << "HUD pixel regions, exact duplicates, one-pixel rejection, cut suppression and history reset passed\n";
+}
 void TestDriverLog() {
     NgxLogMessage m;
     std::string input(1500, 'x'); input[5] = '\n';
@@ -249,5 +302,5 @@ void TestDriverLog() {
     std::cout << "NGX callback ownership, truncation, concurrent producers and bounded output passed\n";
 }
 }
-int main() { std::cout << std::unitbuf; try { TestDriverLog(); Test(false); Test(true); TestRetirement(true); TestRetirement(false); TestReattachment(); return 0; }
+int main() { std::cout << std::unitbuf; try { TestDriverLog(); Test(false); Test(true); TestRetirement(true); TestRetirement(false); TestReattachment(); TestEconomy(false); TestEconomy(true); TestHudAndFilters(); return 0; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; } }

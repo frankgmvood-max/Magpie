@@ -29,6 +29,7 @@ try {
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Install.ps1') -LSFolder $ls
     if ($LASTEXITCODE -ne 0) { throw 'Install failed' }
     if ([IO.File]::ReadAllText((Join-Path $ls 'Lossless.dll')) -ne 'new native proxy') { throw 'Wrong installed DLL' }
+    if ([IO.File]::ReadAllText((Join-Path $ls 'NativeDLSS.ini')) -ne 'old ini') { throw 'Upgrade overwrote existing settings and profiles' }
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Install.ps1') -LSFolder $ls
     if ($LASTEXITCODE -ne 0) { throw 'Repeated install failed' }
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Install.ps1') -LSFolder $ls -Restore

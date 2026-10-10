@@ -56,7 +56,7 @@ jobs:
       - name: Package standalone native build
         shell: pwsh
         run: |
-          $out = 'build/LS-Native-DLSS-0.1.4'
+          $out = 'build/LS-Native-DLSS-0.2.0'
           New-Item -ItemType Directory -Path "$out/licenses" -Force | Out-Null
           Copy-Item experiments/LS-Native-DLSS/package/* $out
           Copy-Item build/native-observer/Release/Lossless.dll $out
@@ -76,7 +76,7 @@ jobs:
           } | Set-Content "$out/SHA256SUMS.txt" -Encoding utf8
       - uses: actions/upload-artifact@v7
         with:
-          name: LS-Native-DLSS-0.1.4
-          path: build/LS-Native-DLSS-0.1.4/
+          name: LS-Native-DLSS-0.2.0
+          path: build/LS-Native-DLSS-0.2.0/
           retention-days: 90
           if-no-files-found: error
