@@ -115,4 +115,7 @@ touch internal analysis instead of the observed final synthesis dispatch.
 4. Validate the early Dispatch 254 position and image extent before connecting asynchronous snapshots/NGX.
 5. Demonstrate a bit-identical no-op replacement before substituting DLSS output.
 
-No GPU run, CPU decompilation into rebuildable original source, or DLL patch was performed.
+REA/Ghidra follow-up (2026-10-10) corroborates these mappings and recovers the
+direct caller at RVA 0x14c90. Decompiler observations and reproduction steps:
+[rea-integration.md](rea-integration.md). No original source was recovered,
+no original DLL was patched, and no real LS/NVIDIA GPU run was performed.

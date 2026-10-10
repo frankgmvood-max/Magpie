@@ -1,0 +1,206 @@
+[
+  {
+    "method": "ping",
+    "params": {}
+  },
+  {
+    "method": "inspect_native_load_image",
+    "params": {}
+  },
+  {
+    "method": "procedure_info",
+    "params": {
+      "document": null,
+      "procedure": "0x180020260"
+    }
+  },
+  {
+    "method": "procedure_pseudo_code",
+    "params": {
+      "document": null,
+      "procedure": "0x180020260"
+    }
+  },
+  {
+    "method": "read_function_instructions",
+    "params": {
+      "document": null,
+      "procedure": "0x180020260"
+    }
+  },
+  {
+    "method": "procedure_callers",
+    "params": {
+      "document": null,
+      "procedure": "0x180020260"
+    }
+  },
+  {
+    "method": "procedure_info",
+    "params": {
+      "document": null,
+      "procedure": "0x180021940"
+    }
+  },
+  {
+    "method": "procedure_pseudo_code",
+    "params": {
+      "document": null,
+      "procedure": "0x180021940"
+    }
+  },
+  {
+    "method": "read_function_instructions",
+    "params": {
+      "document": null,
+      "procedure": "0x180021940"
+    }
+  },
+  {
+    "method": "procedure_callers",
+    "params": {
+      "document": null,
+      "procedure": "0x180021940"
+    }
+  },
+  {
+    "method": "procedure_info",
+    "params": {
+      "document": null,
+      "procedure": "0x180020d90"
+    }
+  },
+  {
+    "method": "procedure_pseudo_code",
+    "params": {
+      "document": null,
+      "procedure": "0x180020d90"
+    }
+  },
+  {
+    "method": "read_function_instructions",
+    "params": {
+      "document": null,
+      "procedure": "0x180020d90"
+    }
+  },
+  {
+    "method": "procedure_callers",
+    "params": {
+      "document": null,
+      "procedure": "0x180020d90"
+    }
+  },
+  {
+    "method": "procedure_info",
+    "params": {
+      "document": null,
+      "procedure": "0x18001e800"
+    }
+  },
+  {
+    "method": "procedure_pseudo_code",
+    "params": {
+      "document": null,
+      "procedure": "0x18001e800"
+    }
+  },
+  {
+    "method": "read_function_instructions",
+    "params": {
+      "document": null,
+      "procedure": "0x18001e800"
+    }
+  },
+  {
+    "method": "procedure_callers",
+    "params": {
+      "document": null,
+      "procedure": "0x18001e800"
+    }
+  },
+  {
+    "method": "procedure_info",
+    "params": {
+      "document": null,
+      "procedure": "0x180014c90"
+    }
+  },
+  {
+    "method": "procedure_pseudo_code",
+    "params": {
+      "document": null,
+      "procedure": "0x180014c90"
+    }
+  },
+  {
+    "method": "read_function_instructions",
+    "params": {
+      "document": null,
+      "procedure": "0x180014c90"
+    }
+  },
+  {
+    "method": "procedure_callers",
+    "params": {
+      "document": null,
+      "procedure": "0x180014c90"
+    }
+  },
+  {
+    "method": "procedure_info",
+    "params": {
+      "document": null,
+      "procedure": "0x18001e890"
+    }
+  },
+  {
+    "method": "procedure_pseudo_code",
+    "params": {
+      "document": null,
+      "procedure": "0x18001e890"
+    }
+  },
+  {
+    "method": "read_function_instructions",
+    "params": {
+      "document": null,
+      "procedure": "0x18001e890"
+    }
+  },
+  {
+    "method": "procedure_callers",
+    "params": {
+      "document": null,
+      "procedure": "0x18001e890"
+    }
+  },
+  {
+    "method": "procedure_info",
+    "params": {
+      "document": null,
+      "procedure": "0x180024670"
+    }
+  },
+  {
+    "method": "procedure_pseudo_code",
+    "params": {
+      "document": null,
+      "procedure": "0x180024670"
+    }
+  },
+  {
+    "method": "read_function_instructions",
+    "params": {
+      "document": null,
+      "procedure": "0x180024670"
+    }
+  },
+  {
+    "method": "procedure_callers",
+    "params": {
+      "document": null,
+      "procedure": "0x180024670"
+    }
+  }
+]

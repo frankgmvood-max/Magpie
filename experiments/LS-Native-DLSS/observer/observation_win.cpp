@@ -20,6 +20,7 @@
 #include <vector>
 #ifdef LS_OBSERVER_TEST
 #include <iostream>
+#include <condition_variable>
 #include <d3dcompiler.h>
 #endif
 
@@ -199,30 +200,54 @@ void BackendComposite(ID3D11DeviceContext* ctx, const DispatchObservation& recor
     Com<ID3D11UnorderedAccessView> destination; ctx->CSGetUnorderedAccessViews(0, 1, destination.Put());
     if (session) session->backend->Composite(record, destination.p);
 }
+void WriteBackendDiagnostics(std::ostream& out) {
+    struct SessionSnapshot {
+        uint64_t context = 0;
+        TextureObservation extent;
+        NativeBackend* backend = nullptr;
+        BackendDiagnostics diagnostics;
+        bool sampled = false;
+    };
+    std::array<SessionSnapshot, 4> snapshots;
+    {
+        std::unique_lock<std::mutex> lock(g->backend_mutex, std::try_to_lock);
+        if (!lock.owns_lock()) return; // Diagnostics yield to the native frame path.
+        for (size_t i = 0; i != snapshots.size(); ++i) {
+            snapshots[i].context = g->sessions[i].context;
+            snapshots[i].extent = g->sessions[i].extent;
+            snapshots[i].backend = g->sessions[i].backend.get();
+        }
+    }
+    // Session pointers are process-lifetime pinned. No controller lock during
+    // GPU-counter polling, formatting or file I/O. Busy backends skip a sample.
+    for (auto& snapshot : snapshots)
+        if (snapshot.backend) snapshot.sampled = snapshot.backend->TryPollDiagnostics(snapshot.diagnostics);
+    out << "profile=" << g->profile_revision.load() << " type=" << g->profile_type.load()
+        << " mode=" << g->profile_mode.load() << " multiplier=" << g->profile_multiplier.load()
+        << " hdr=" << g->profile_hdr.load() << " eligible=" << g->eligible.load()
+        << " source=" << g->source_calls.load() << " matched_slots=" << g->slots_seen.load()
+        << " controller_busy=" << g->backend_busy.load() << " session_limit=" << g->session_limit.load() << "\n";
+    for (const auto& snapshot : snapshots) if (snapshot.backend) {
+        out << "session=" << snapshot.context << " " << snapshot.extent.width << 'x' << snapshot.extent.height;
+        if (!snapshot.sampled) { out << " diagnostics_busy=1\n"; continue; }
+        const auto& d = snapshot.diagnostics; const auto& c = d.counters;
+        out << " step=" << d.step << " code=0x" << std::hex << d.code << std::dec
+            << " analysis=" << d.analysis_width << 'x' << d.analysis_height
+            << " analysis_format=" << d.analysis_format << " flow_grid=" << d.grid
+            << " submitted=" << c.submitted << " composite_queued=" << c.composite_queued
+            << " busy=" << c.busy << " unmatched=" << c.mismatched << " flag_enabled_samples=" << c.gpu_enabled
+            << " flag_disabled_samples=" << c.gpu_disabled << " failures=" << c.failed
+            << " ineligible=" << c.ineligible << " destination_rejected=" << c.destination_rejected << " warmup=" << c.warmup << "\n";
+    }
+    out.flush();
+}
 void BackendWriter() {
     while (g->active.load()) {
-        {
-            std::lock_guard<std::mutex> lock(g->backend_mutex);
-            auto& out = g->backend_log;
-            out << "profile=" << g->profile_revision.load() << " type=" << g->profile_type.load()
-                << " mode=" << g->profile_mode.load() << " multiplier=" << g->profile_multiplier.load()
-                << " hdr=" << g->profile_hdr.load() << " eligible=" << g->eligible.load()
-                << " source=" << g->source_calls.load() << " matched_slots=" << g->slots_seen.load()
-                << " controller_busy=" << g->backend_busy.load() << " session_limit=" << g->session_limit.load() << "\n";
-            for (const auto& session : g->sessions) if (session.backend) {
-                const auto c = session.backend->PollCounters();
-                out << "session=" << session.context << " " << session.extent.width << 'x' << session.extent.height
-                    << " step=" << session.backend->FailureStep() << " code=0x" << std::hex << session.backend->ErrorCode() << std::dec
-                    << " submitted=" << c.submitted << " composite_queued=" << c.composite_queued
-                    << " busy=" << c.busy << " unmatched=" << c.mismatched << " flag_enabled_samples=" << c.gpu_enabled
-                    << " flag_disabled_samples=" << c.gpu_disabled << " failures=" << c.failed
-                    << " ineligible=" << c.ineligible << " destination_rejected=" << c.destination_rejected << " warmup=" << c.warmup << "\n";
-            }
-            out.flush();
-        }
+        WriteBackendDiagnostics(g->backend_log);
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 }
+
 #endif
 template<class T> uint64_t ObjectId(T* object) {
     uint64_t value = 0;
@@ -748,7 +773,7 @@ void StartNativeObservation(HMODULE native, HMODULE proxy, const std::filesystem
         if (backend) {
             g->backend_log.open(folder / L"logs" / (L"native-dlss-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(start.QuadPart) + L".log"));
             if (!g->backend_log) return;
-            g->backend_log << "NativeDLSS 0.1.0 experimental. Present owner: LS. Full source coverage / real RTX3080 acceptance: unverified.\n"
+            g->backend_log << "NativeDLSS 0.1.1 experimental. Present owner: LS. Full source coverage / real RTX3080 acceptance: unverified.\n"
                 << "OpticalFlow=" << g->options.optical_flow << " Quality=" << g->options.quality
                 << " AnalysisPercent=" << g->options.analysis_percent << " GPUOrdered=" << g->options.gpu_ordered
                 << " Slots=" << g->options.slots << "\n";
@@ -976,6 +1001,42 @@ int NativeObservationSelfTest() {
     if (!pixels(0xffff00ff)) { std::cerr << "hook warmup did not preserve native output\n"; return 1; }
     source(0xff000064, 1); synthesize(2, 1);
     if (!pixels(0xff000050)) { std::cerr << "real Dispatch hook did not replace native magenta with pair midpoint\n"; return 1; }
+    // A blocked diagnostic sink must not own either frame-path lock. Sampling
+    // finishes before the first stream write, then the render thread continues.
+    struct BlockedDiagnosticSink : std::streambuf {
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool entered = false, released = false;
+        void Block() {
+            std::unique_lock<std::mutex> lock(mutex);
+            entered = true; changed.notify_all();
+            changed.wait(lock, [&] { return released; });
+        }
+        std::streamsize xsputn(const char*, std::streamsize size) override { Block(); return size; }
+        int_type overflow(int_type value) override { Block(); return traits_type::not_eof(value); }
+        bool AwaitWrite() {
+            std::unique_lock<std::mutex> lock(mutex);
+            return changed.wait_for(lock, std::chrono::seconds(5), [&] { return entered; });
+        }
+        void Release() {
+            std::lock_guard<std::mutex> lock(mutex); released = true; changed.notify_all();
+        }
+    } sink;
+    const auto busy_before = g->backend_busy.load(), epoch_before = g->source_invalidation_epoch.load();
+    std::ostream blocked_log(&sink);
+    std::thread logger([&] { WriteBackendDiagnostics(blocked_log); });
+    const bool logger_blocked = sink.AwaitWrite();
+    bool uninterrupted = false;
+    if (logger_blocked) {
+        source(0xff00008c, 2); synthesize(1, 2);
+        uninterrupted = pixels(0xff000078) && g->backend_busy.load() == busy_before &&
+            g->source_invalidation_epoch.load() == epoch_before;
+    }
+    sink.Release(); logger.join();
+    if (!logger_blocked || !uninterrupted) {
+        std::cerr << "blocked diagnostic output disrupted source history or composite\n"; return 1;
+    }
+    std::cout << "Blocked diagnostic output preserves source generations and GPU midpoint replacement\n";
     SetNativeProfile(1, 1, 2.0f, false); // Adaptive stays native.
     source(0xff00008c, 2); synthesize(1, 2);
     if (!pixels(0xffff00ff)) { std::cerr << "unsupported profile was replaced\n"; return 1; }

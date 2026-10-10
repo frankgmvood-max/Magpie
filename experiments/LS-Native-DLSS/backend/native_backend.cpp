@@ -466,6 +466,20 @@ struct NativeBackend::State {
         if (FAILED(queue->Signal(ready12.Get(), j.ready))) return Fail("ready GPU signal");
         ++counters.submitted; return true;
     }
+    BackendCounters PollCountersLocked() {
+        auto& s = *this;
+        if (s.failed || !s.initialized) return s.counters;
+        const auto completed = s.ready12->GetCompletedValue(); if (completed == UINT64_MAX) { s.Fail("removed while polling"); return s.counters; }
+        for (UINT i = 0; i != s.slots; ++i) {
+            auto& j = s.jobs[i]; if (!j.ready || j.ready <= j.polled || completed < j.ready) continue;
+            void* pointer = nullptr; const D3D12_RANGE range{0, 4};
+            if (SUCCEEDED(j.readback->Map(0, &range, &pointer)) && pointer) {
+                uint32_t disabled = 1; std::memcpy(&disabled, pointer, 4); const D3D12_RANGE written{0, 0}; j.readback->Unmap(0, &written);
+                if (disabled) ++s.counters.gpu_disabled; else ++s.counters.gpu_enabled; j.polled = j.ready;
+            }
+        }
+        return s.counters;
+    }
 };
 
 NativeBackend::NativeBackend() = default;
@@ -594,16 +608,17 @@ bool NativeBackend::Composite(const DispatchObservation& slot, ID3D11UnorderedAc
 BackendCounters NativeBackend::PollCounters() {
     if (!state_) return {};
     auto& s = *state_; std::lock_guard<std::mutex> lock(s.mutex);
-    if (s.failed || !s.initialized) return s.counters;
-    const auto completed = s.ready12->GetCompletedValue(); if (completed == UINT64_MAX) { s.Fail("removed while polling"); return s.counters; }
-    for (UINT i = 0; i != s.slots; ++i) {
-        auto& j = s.jobs[i]; if (!j.ready || j.ready <= j.polled || completed < j.ready) continue;
-        void* pointer = nullptr; const D3D12_RANGE range{0, 4};
-        if (SUCCEEDED(j.readback->Map(0, &range, &pointer)) && pointer) {
-            uint32_t disabled = 1; std::memcpy(&disabled, pointer, 4); const D3D12_RANGE written{0, 0}; j.readback->Unmap(0, &written);
-            if (disabled) ++s.counters.gpu_disabled; else ++s.counters.gpu_enabled; j.polled = j.ready;
-        }
-    }
-    return s.counters;
+    return s.PollCountersLocked();
+}
+bool NativeBackend::TryPollDiagnostics(BackendDiagnostics& diagnostics) {
+    if (!state_) { diagnostics = {}; return true; }
+    auto& s = *state_; std::unique_lock<std::mutex> lock(s.mutex, std::try_to_lock);
+    if (!lock.owns_lock()) return false;
+    diagnostics.counters = s.PollCountersLocked();
+    diagnostics.step = s.step; diagnostics.code = s.code;
+    diagnostics.analysis_width = s.analysis_width; diagnostics.analysis_height = s.analysis_height;
+    diagnostics.grid = s.options.optical_flow ? s.grid : 0;
+    diagnostics.analysis_format = static_cast<uint32_t>(s.analysis_format);
+    return true;
 }
 } // namespace ls_native
