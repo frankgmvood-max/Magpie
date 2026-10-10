@@ -86,7 +86,7 @@ public static class Controls {
     static bool TryRect(string text, out uint[] rect) {
         rect = new uint[4]; if (string.IsNullOrWhiteSpace(text)) return true;
         var parts = text.Split(','); if (parts.Length != 4) return false;
-        for (int i = 0; i < 4; ++i) if (!uint.TryParse(parts[i], NumberStyles.None, CultureInfo.InvariantCulture, out rect[i]) || rect[i] > 10000) return false;
+        for (int i = 0; i < 4; ++i) if (!uint.TryParse(parts[i].Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out rect[i]) || rect[i] > 10000) return false;
         return rect[0] < rect[2] && rect[1] < rect[3];
     }
     public static void Attach(object page) {
@@ -103,7 +103,10 @@ public static class Controls {
         var v = Views.GetValue(page, p => throw new InvalidOperationException("DLSS controls were not attached."));
         v.Loading = true; v.Profile = profile; v.Load();
     }
-    public static int TypeIndex(int type, object page) { return type == Dlss ? Views.GetValue(page, p => throw new InvalidOperationException()).Index : type; }
+    public static int TypeIndex(int type, object page) {
+        int index = Views.GetValue(page, p => throw new InvalidOperationException()).Index;
+        return type == Dlss ? index : type >= 0 && type < index ? type : -1;
+    }
     public static void EndProfile(object page) { var v = Views.GetValue(page, p => throw new InvalidOperationException()); v.Loading = false; v.Visibility(); }
     public static bool HandleType(object page) {
         var v = Views.GetValue(page, p => throw new InvalidOperationException());

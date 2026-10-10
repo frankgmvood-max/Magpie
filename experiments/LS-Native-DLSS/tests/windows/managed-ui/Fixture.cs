@@ -117,9 +117,11 @@ static class Tests {
         var q = new UI.Profile { FrameGeneration = (UI.Profile.FrameGenerationEnum)6 }; Set(q,"FlowPreset",2); w.Selected = q;
         int saves = w.SaveCount; page.ApplyProfileToUI(q);
         Check(w.SaveCount == saves && choices[0].SelectedIndex == 1 && (int)q.FrameGeneration == 6, "Profile switch corrupted selection/settings");
+        q.FrameGeneration = UI.Profile.FrameGenerationEnum.LSFG2; page.ApplyProfileToUI(q);
+        Check(w.SaveCount == saves && page.LSFG2Container.Visibility == Visibility.Visible && own.Visibility == Visibility.Collapsed, "Native profile load left DLSS visibility or saved during loading");
         page.ApplyProfileToUI(p); w.Selected = p;
         w.Close(); app.Shutdown();
-        Console.WriteLine("Real WPF: injected helper bootstrap, original item indices, DLSS/native transitions, quality/HUD validation, XML round trip, copy/null copy, profile load guard and cursor/VRR preservation passed.");
+        Console.WriteLine("Real WPF (.NET " + Environment.Version + "): injected helper bootstrap, original item indices, DLSS/native transitions, quality/HUD validation, XML round trip, copy/null copy, profile load guard and cursor/VRR settings preservation passed.");
     }
 }
 }
