@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <filesystem>
 #include <cstring>
+#include "../include/ui_settings.h"
 
 template<class Function> Function NativeExport(HMODULE module, const char* name) {
     const FARPROC address = GetProcAddress(module, name);
@@ -16,3 +17,5 @@ template<class Function> Function NativeExport(HMODULE module, const char* name)
 void StartNativeObservation(HMODULE native, HMODULE proxy,
                             const std::filesystem::path& folder) noexcept;
 void SetNativeProfile(int type, int mode, float multiplier, bool hdr) noexcept;
+bool ConfigureNativeUi(const ls_native::UiSettings& settings) noexcept;
+bool NativeUiOwnsSelection() noexcept;

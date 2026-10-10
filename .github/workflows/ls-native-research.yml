@@ -33,6 +33,9 @@ jobs:
     runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
       - name: Fetch pinned official NVIDIA SDK
         shell: pwsh
         run: |
@@ -51,15 +54,22 @@ jobs:
         run: ctest --test-dir build/native-observer -C Release --output-on-failure
       - name: Verify original native export names and ordinals
         run: python experiments/LS-Native-DLSS/tools/verify_proxy_exports.py build/native-observer/Release/Lossless.dll
+      - name: Build native WPF controls and source-owned UI fixture
+        shell: pwsh
+        run: experiments/LS-Native-DLSS/tools/build_managed_ui.ps1 -OutputRoot build/managed-ui
       - name: Verify installer, rollback and script syntax
-        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File experiments/LS-Native-DLSS/tests/windows/test_package.ps1
+        run: powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File experiments/LS-Native-DLSS/tests/windows/test_package.ps1 -ManagedBuild build/managed-ui
       - name: Package standalone native build
         shell: pwsh
         run: |
-          $out = 'build/LS-Native-DLSS-0.2.0'
+          $out = 'build/LS-Native-DLSS-0.3.0'
           New-Item -ItemType Directory -Path "$out/licenses" -Force | Out-Null
           Copy-Item experiments/LS-Native-DLSS/package/* $out
           Copy-Item build/native-observer/Release/Lossless.dll $out
+          Copy-Item build/managed-ui/NativeDLSS.UI.dll $out
+          Copy-Item build/managed-ui/Mono.Cecil.dll $out
+          Copy-Item build/managed-ui/UI-Patcher.cs $out
+          Copy-Item experiments/LS-Native-DLSS/third_party/CECIL-LICENSE.txt "$out/licenses"
           Copy-Item experiments/LS-Native-DLSS/observer/NativeDLSS.ini $out
           Copy-Item experiments/LS-Native-DLSS/observer/NOTICE.md $out
           Copy-Item src/Magpie.Core/third_party/minhook/LICENSE.txt "$out/licenses/MINHOOK-LICENSE.txt"
@@ -76,7 +86,7 @@ jobs:
           } | Set-Content "$out/SHA256SUMS.txt" -Encoding utf8
       - uses: actions/upload-artifact@v7
         with:
-          name: LS-Native-DLSS-0.2.0
-          path: build/LS-Native-DLSS-0.2.0/
+          name: LS-Native-DLSS-0.3.0
+          path: build/LS-Native-DLSS-0.3.0/
           retention-days: 90
           if-no-files-found: error

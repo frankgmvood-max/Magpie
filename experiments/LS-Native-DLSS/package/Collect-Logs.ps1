@@ -35,7 +35,7 @@ try {
         $base = Join-Path $LSFolder $dir
         if (!(Test-Path -LiteralPath $base -PathType Container)) { continue }
         $files = @(Get-ChildItem -LiteralPath $base -File -Recurse | Where-Object {
-            $_.Extension -in @('.log','.jsonl','.txt') -and ($dir -ne 'logs' -or $_.Name -like 'native-dlss-*.log')
+            $_.Extension -in @('.log','.jsonl','.txt') -and ($dir -ne 'logs' -or $_.Name -like 'native-dlss-*.log' -or $_.Name -eq 'native-ui.log')
         } | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 40)
         foreach ($file in $files) {
             $relative = $file.FullName.Substring($LSFolder.TrimEnd('\').Length + 1)

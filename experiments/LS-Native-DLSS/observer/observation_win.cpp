@@ -20,6 +20,7 @@
 #include <chrono>
 #include <fstream>
 #include <iomanip>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -34,6 +35,9 @@
 
 namespace {
 using namespace ls_native;
+std::mutex ui_mutex;
+bool ui_owned = false;
+UiSettings ui_settings;
 constexpr char kDllHash[] = "626b196d799606cd4250b7b29e04228692ab70cf56a5d1bbb56d748c8219f0eb";
 constexpr char kShaderHash[] = "3af0031e97f43a9372c23749ebbbe91506119268d84e869ba715ffe71bb9d45a";
 constexpr char kInputShaderHash[] = "214a8ad496c0ffff58e9739d4be085a450d82eaaf23e2ad21dea8b251872880f";
@@ -184,6 +188,9 @@ struct State {
         std::unique_ptr<NativeBackend> backend;
     };
     BackendOptions options;
+    BackendOptions ui_options;
+    std::atomic<bool> ui_owned{false};
+    std::atomic<uint32_t> ui_type{0};
     RenderPolicy policy;
     std::mutex policy_mutex;
     std::atomic<uint32_t> requested_mode{1};
@@ -378,7 +385,10 @@ void BackendSource(ID3D11DeviceContext* ctx, ID3D11Resource* source, const Sourc
         // One startup allocation on the native owning thread. No LS device is
         // touched by the logger, including SINGLETHREADED devices.
         g->backend_phase.store(1);
-        candidate.initialized = SUCCEEDED(candidate.backend->Initialize(ctx, write.texture, g->options, g->folder));
+        BackendOptions options;
+        { std::lock_guard<std::mutex> settings(g->policy_mutex);
+          options = g->ui_owned.load() ? g->ui_options : g->options; }
+        candidate.initialized = SUCCEEDED(candidate.backend->Initialize(ctx, write.texture, options, g->folder));
         if (candidate.initialized) PrepareRepeat(ctx, candidate);
         candidate.final_verified.store(false); candidate.binding_context.store(write.context);
         auto* binding = &candidate; ctx->SetPrivateData(kSessionTag, sizeof(binding), &binding);
@@ -513,6 +523,7 @@ void WriteBackendDiagnostics(std::ostream& out) {
         << " source=" << g->source_calls.load() << " matched_slots=" << g->slots_seen.load()
         << " controller_busy=" << g->backend_busy.load() << " session_limit=" << g->session_limit.load()
         << " requested_mode=" << RenderModeName(static_cast<RenderMode>(g->requested_mode.load()))
+        << " ui_owned=" << g->ui_owned.load() << " ui_type=" << g->ui_type.load()
         << " analysis_skipped=" << g->analysis_skipped.load() << " synthesis_skipped=" << g->synthesis_skipped.load()
         << " repeat_queued=" << g->repeat_queued.load() << " bypass_rejected=" << g->bypass_rejected.load()
         << " unknown_analysis_call=" << g->unknown_analysis_call.load() << " hotkeys=" << g->hotkeys.load()
@@ -597,10 +608,10 @@ void BackendWriter() {
     while (g->active.load()) {
         MSG message{};
         while (PeekMessageW(&message, nullptr, WM_HOTKEY, WM_HOTKEY, PM_REMOVE)) {
-            if (message.wParam == 0x4c50) {
+            if (message.wParam == 0x4c50 && !g->ui_owned.load()) {
                 g->requested_mode.store((g->requested_mode.load() + 1) % 3); ++g->source_invalidation_epoch;
             } else if (message.wParam == 0x4c51) ++g->source_invalidation_epoch;
-            else if (message.wParam == 0x4c52) {
+            else if (message.wParam == 0x4c52 && !g->ui_owned.load()) {
                 const auto config = ReadPolicyConfig(g->folder / L"NativeDLSS.ini");
                 { std::lock_guard<std::mutex> lock(g->policy_mutex); g->policy = config.policy; }
                 g->requested_mode.store(static_cast<uint32_t>(config.policy.mode)); ++g->source_invalidation_epoch;
@@ -1122,11 +1133,12 @@ void Writer() {
 
 void StartNativeObservation(HMODULE native, HMODULE proxy, const std::filesystem::path& folder) noexcept {
     try {
+        std::lock_guard<std::mutex> ui_guard(ui_mutex);
         const auto ini = folder / L"NativeDLSS.ini";
         const bool tracing = GetPrivateProfileIntW(L"Observation", L"Enabled", 0, ini.c_str()) == 1;
         bool backend = false;
 #ifdef LS_WITH_NGX
-        backend = GetPrivateProfileIntW(L"NativeDLSS", L"Enabled", 0, ini.c_str()) == 1;
+        backend = ui_owned || GetPrivateProfileIntW(L"NativeDLSS", L"Enabled", 0, ini.c_str()) == 1;
 #endif
         if (!tracing && !backend) return;
         wchar_t nativePath[32768]{};
@@ -1156,6 +1168,14 @@ void StartNativeObservation(HMODULE native, HMODULE proxy, const std::filesystem
         g->folder = folder;
         const auto config = ReadPolicyConfig(ini); g->options = config.backend; g->options.enabled = backend;
         g->policy = config.policy; g->requested_mode.store(static_cast<uint32_t>(config.policy.mode));
+        g->ui_options = g->options;
+        if (ui_owned) {
+            g->ui_owned.store(true); g->ui_type.store(ui_settings.type);
+            g->policy = UiPolicy(ui_settings); g->requested_mode.store(static_cast<uint32_t>(g->policy.mode));
+            g->ui_options.enabled = true; g->ui_options.optical_flow = true; g->ui_options.gpu_ordered = true;
+            g->ui_options.flow_preset = ui_settings.preset; g->ui_options.flow_grid = ui_settings.grid;
+            g->ui_options.analysis_percent = ui_settings.analysis; g->ui_options.slots = ui_settings.slots;
+        }
         g->native_base = reinterpret_cast<uintptr_t>(native);
         for (uint32_t id = 255; id <= 302; ++id) {
             if (!IsAnalysisResource(id)) continue;
@@ -1281,6 +1301,32 @@ void SetNativeProfile(int type, int mode, float multiplier, bool hdr) noexcept {
 #else
     (void)type; (void)mode; (void)multiplier; (void)hdr;
 #endif
+}
+
+bool NativeUiOwnsSelection() noexcept {
+    std::lock_guard<std::mutex> lock(ui_mutex);
+    return ui_owned;
+}
+bool ConfigureNativeUi(const ls_native::UiSettings& settings) noexcept {
+    if (!ls_native::ValidUiSettings(settings)) return false;
+    try {
+        std::lock_guard<std::mutex> lock(ui_mutex);
+        ui_settings = settings; ui_owned = true;
+#ifdef LS_WITH_NGX
+        if (g) {
+            const auto policy = UiPolicy(settings);
+            std::lock_guard<std::mutex> values(g->policy_mutex);
+            g->ui_options = g->options;
+            g->ui_options.enabled = true; g->ui_options.optical_flow = true; g->ui_options.gpu_ordered = true;
+            g->ui_options.flow_preset = settings.preset; g->ui_options.flow_grid = settings.grid;
+            g->ui_options.analysis_percent = settings.analysis; g->ui_options.slots = settings.slots;
+            g->policy = policy; g->ui_type.store(settings.type); g->ui_owned.store(true);
+            ++g->source_invalidation_epoch;
+            g->requested_mode.store(static_cast<uint32_t>(policy.mode));
+        }
+#endif
+        return true;
+    } catch (...) { return false; }
 }
 
 #ifdef LS_OBSERVER_TEST
@@ -1495,7 +1541,10 @@ int NativeObservationSelfTest() {
     std::cout << "Blocked diagnostic output preserves source generations and GPU midpoint replacement\n";
     // Synthetic call-site injection exists only in this test translation unit.
     // It proves our bypass dispatcher and pixels, not the actual LS caller ABI.
-    g->requested_mode.store(2); ++g->source_invalidation_epoch;
+    UiSettings ui_test; ui_test.type = 6; ui_test.duplicate = ui_test.scene = 0;
+    if (!ConfigureNativeUi(ui_test) || !g->ui_owned.load() || g->requested_mode.load() != 2) return 1;
+    auto bad_ui = ui_test; bad_ui.grid = 3;
+    if (ConfigureNativeUi(bad_ui) || g->requested_mode.load() != 2) return 1;
     g->test_return_rva = kSourceReturn;
     source(0xff000014,1); source(0xff00003c,2);
     g->test_return_rva = kSynthesisReturn; synthesize(1,2);
@@ -1538,13 +1587,20 @@ int NativeObservationSelfTest() {
         t_dispatch=false; unbind();
     }
     if(g->repeat_queued.load()!=repeats_before+1 || !pixels(0xff00008c) || native_skipped<2) return 1;
-    g->requested_mode.store(1); ++g->source_invalidation_epoch;
+    ui_test.type = 1;
+    if (!ConfigureNativeUi(ui_test) || g->requested_mode.load() != 0) return 1;
     g->test_return_rva=kSourceReturn; source(0xff0000a0,1);
     g->test_return_rva=kSynthesisReturn; synthesize(2,1);
-    if(!pixels(0xff0000a0)) { std::cerr << "economy to hybrid recovery slot\n";return 1; }
+    if(!pixels(0xff0000a0)) { std::cerr << "UI DLSS to native recovery slot\n";return 1; }
     g->test_return_rva=0; source(0xff0000b4,2); synthesize(1,2);
-    if(!pixels(0xffff00ff)) { std::cerr << "hybrid source warmup did not preserve native pixels\n";return 1; }
-    std::cout << "Synthetic verified call sites: analysis/synthesis bypass, unknown-site rejection, source fallback and mode recovery passed\n";
+    if(!pixels(0xffff00ff)) { std::cerr << "UI native type did not restore original pixels\n";return 1; }
+    const auto native_analysis_before = g->analysis_skipped.load();
+    g->test_return_rva = kAnalysisReturns[0]; analyze();
+    if (g->analysis_skipped.load() != native_analysis_before || !pixels(0xff00ff00)) return 1;
+    g->test_return_rva = 0;
+    // Restore the legacy hybrid fixture setup for the independent restart tests.
+    g->ui_owned.store(false); g->requested_mode.store(1); ++g->source_invalidation_epoch;
+    std::cout << "Synthetic verified call sites: UI bridge economy/native switching, native analysis restoration, invalid settings rejection, analysis/synthesis bypass, unknown-site rejection and source fallback passed\n";
     SetNativeProfile(1, 1, 2.0f, false); // Adaptive stays native.
     source(0xff00008c, 2); synthesize(1, 2);
     if (!pixels(0xffff00ff)) { std::cerr << "unsupported profile was replaced\n"; return 1; }

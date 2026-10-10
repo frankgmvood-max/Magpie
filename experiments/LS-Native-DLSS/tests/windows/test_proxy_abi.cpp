@@ -26,6 +26,23 @@ int main(int argc, char** argv) {
     const auto native = GetModuleHandleW(L"Lossless_original.dll");
     const auto check = native ? NativeExport<int(*)()>(native, "TestSettingsApplied") : nullptr;
     if (!check || check() != 1) { std::cerr << "32 settings arguments were not preserved\n"; return 1; }
+    const auto configure = NativeExport<int(__cdecl*)(const ls_native::UiSettings*)>(proxy, "ZNativeDLSSConfigure");
+    const auto ui_check = NativeExport<int(*)(int,int,float,int)>(native, "TestUiSettingsApplied");
+    ls_native::UiSettings settings; settings.type = 6;
+    if (!configure || !ui_check || configure(nullptr) != 0 || configure(&settings) != 1) return 1;
+    apply(101,102,103,104,1.25f,201,107,202,6,110,111,2.5f,3.75f,114,203,204,205,206,
+          119,120,207,208,123,124,209,126,127,128,129,130,131,210);
+    if (ui_check(1,0,2.0f,0) != 1) { std::cerr << "DLSS scheduler mapping changed unrelated native arguments\n"; return 1; }
+    settings.version = 99;
+    if (configure(&settings) != 0) return 1;
+    settings.version = 1;
+    for (int type = 0; type <= 5; ++type) {
+        settings.type = static_cast<uint32_t>(type);
+        if (configure(&settings) != 1) return 1;
+        apply(101,102,103,104,1.25f,201,107,202,type,110,111,2.5f,3.75f,114,203,204,205,206,
+              119,120,207,208,123,124,209,126,127,128,129,130,131,210);
+        if (ui_check(type,111,2.5f,208) != 1) { std::cerr << "Native type settings changed after DLSS selection\n"; return 1; }
+    }
     FreeLibrary(proxy);
-    std::cout << "10 PE forwarders and all 32 settings arguments passed\n";
+    std::cout << "10 PE forwarders, all 32 native arguments, versioned UI bridge, DLSS mapping and all native types after DLSS passed\n";
 }

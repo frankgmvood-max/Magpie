@@ -1,5 +1,6 @@
 LIBRARY Lossless
 EXPORTS
+    ZNativeDLSSConfigure @12
     Activate=Lossless_original.Activate @1
     ApplySettings @2
     GetAdapterNames=Lossless_original.GetAdapterNames @3

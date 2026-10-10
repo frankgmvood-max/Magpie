@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "tool": "REA 6.3.0",
+  "managed_provider": "rea-dotnet-static (upstream MCP)",
+  "managed_original_sha256": "e4ea2dbb1371ea1920d73c87202f19b6f095ef6f521a8a7a139d19f34f1fe866",
+  "mvid": "55e3bf6f-9537-4ffb-85fd-c18b581bb253",
+  "assembly": "LosslessScaling 3.2.2.0",
+  "evidence_ids": {
+    "artifact": "ev_dcd04232e6763c376b3e74b0d96cf0041e17c95f77afd8b920cf799f59453251",
+    "members": "ev_fcf726fe9f208bc83f70bd68383e4964f1b74914069604ea4958c79554f54f4e",
+    "patched-artifact": "ev_4da89decc03633262329ed323baee20e1adeae775d45476c6cc712faeef934dd",
+    "patched-members": "ev_b7a1d9a481a62e01040bc3d7afbc0573dc276ab0ffbaac64c577f51da3c5f6c5",
+    "comparison": "ev_a3f6e2ebe3fe54df1f0bd4473ec0cfb714238b4424a026a2ea0c2de78c73a0cd"
+  },
+  "original_hook_methods": [
+    {
+      "token": "0x06000003",
+      "declaring_type": "UI.App",
+      "name": "Main",
+      "il_sha256": "feb05ba61791904f1e9816d227ca1b74cf482152a57c626349e8fb88bfbb5c8e"
+    },
+    {
+      "token": "0x0600004d",
+      "declaring_type": "UI.MainWindow",
+      "name": "ApplyProfileToCore",
+      "il_sha256": "6d1b8d48289ea25a832881edbe4b03c868f78013de99cdeb22b3e437ebd2cde9"
+    },
+    {
+      "token": "0x060001ae",
+      "declaring_type": "UI.Pages.ProfilePage",
+      "name": ".ctor",
+      "il_sha256": "e99443f810ae0d1ac3fd4088b6d7b70f5ac41b2f6a606e3dcc0a293c901587a1"
+    },
+    {
+      "token": "0x060001af",
+      "declaring_type": "UI.Pages.ProfilePage",
+      "name": "ApplyProfileToUI",
+      "il_sha256": "5210ffe0211c959d49b5407e328dfbed2fbd11f15d8f8eff6e1e879dbab9e614"
+    },
+    {
+      "token": "0x060001bb",
+      "declaring_type": "UI.Pages.ProfilePage",
+      "name": "FrameGeneration_SelectionChanged",
+      "il_sha256": "92515d8f8a4487339cf6026f2eb2cd9720ae295351f8b18486269fc0a8708622"
+    }
+  ],
+  "new_frame_generation_enum": {
+    "name": "DLSS",
+    "value": 6,
+    "combo_index": "actual original Items.Count at attachment"
+  },
+  "native_original_sha256": "626b196d799606cd4250b7b29e04228692ab70cf56a5d1bbb56d748c8219f0eb",
+  "native_apply_settings_rva": "0x2be80",
+  "native_bridge_results_sha256": "92af81b4a8d68be702d1e7e4474dd08c9902ce5046c99ad4191f7bf3c35481e1",
+  "native_consumed_parameter_count": 32,
+  "ui_bridge": {
+    "export": "ZNativeDLSSConfigure",
+    "ordinal": 12,
+    "version": 1,
+    "bytes": 176
+  },
+  "resource_digests": {
+    "LosslessScaling.g.resources": "ab41020b3fa573d608156d76f0cff7fe66825e51e6c2e84099da888ac352f2fa",
+    "UI.Resources.Strings.resources": "41c42a31e6a4fb577fe452991883146f48b42fd3f65345e8677702c79ceb2af5"
+  },
+  "verification": {
+    "original_declarations_retained": 533,
+    "intended_modified_methods": 6,
+    "original_embedded_resources_bytes": "identical",
+    "original_native_pinvoke_declarations": "identical",
+    "managed_member_comparison": "partial; not semantic equivalence proof",
+    "physical_gpu_vrr_validation": false
+  }
+}

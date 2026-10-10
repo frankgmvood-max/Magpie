@@ -4,8 +4,7 @@
 
 #ifdef _MSC_VER
 // The same plain named-forwarder mechanism used by the working reference.
-// With exactly these eleven alphabetically sorted names the linker assigns
-// native ordinals 1..11; the CI PE-table check guards that assumption.
+// The added ZNativeDLSSConfigure sorts last, preserving original ordinals 1..11.
 #define LS_FORWARD(name) __pragma(comment(linker, "/export:" #name "=Lossless_original." #name))
 LS_FORWARD(Activate)
 LS_FORWARD(GetAdapterNames)
@@ -68,8 +67,17 @@ extern "C" __declspec(dllexport) void __fastcall ApplySettings(LS_SETTINGS_ARGS)
         RaiseException(ERROR_PROC_NOT_FOUND, EXCEPTION_NONCONTINUABLE, 0, nullptr);
         return;
     }
+    if (NativeUiOwnsSelection() && frameGenType == 6) {
+        // Native LS still owns capture, scheduling, source and midpoint surfaces.
+        // Verified analysis/synthesis gates remove its generator's dispatches.
+        frameGenType = 1; frameGenMode = 0; frameGenMultiplier = 2.0f; hdrSupport = 0;
+    }
     SetNativeProfile(frameGenType, frameGenMode, frameGenMultiplier, hdrSupport != 0);
-    g_apply(LS_SETTINGS_VALUES); // Every native setting reaches LS unchanged.
+    g_apply(LS_SETTINGS_VALUES);
+}
+
+extern "C" __declspec(dllexport) int __cdecl ZNativeDLSSConfigure(const ls_native::UiSettings* settings) {
+    return settings && ConfigureNativeUi(*settings) ? 1 : 0;
 }
 
 BOOL WINAPI DllMain(HMODULE module, DWORD reason, LPVOID) {

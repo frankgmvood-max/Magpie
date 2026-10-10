@@ -1,4 +1,6 @@
+param([Parameter(Mandatory=$true)][string]$ManagedBuild)
 $ErrorActionPreference = 'Stop'
+$ManagedBuild = [IO.Path]::GetFullPath($ManagedBuild)
 $project = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 foreach ($name in @('Install.ps1','Settings.ps1','Collect-Logs.ps1')) {
     $errors = $null; $tokens = $null
@@ -18,6 +20,10 @@ try {
     $installer = [IO.File]::ReadAllText((Join-Path $project 'package/Install.ps1'))
     # Only this generated test fixture changes the reference; production keeps
     # the exact commercial-original hash and contains no test switch.
+    Copy-Item -LiteralPath (Join-Path $ManagedBuild 'fixture/NativeUIFixture.dll') -Destination (Join-Path $ls 'LosslessScaling.dll')
+    $originalManagedHash = (Get-FileHash (Join-Path $ls 'LosslessScaling.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
+    $installer = $installer.Replace('e4ea2dbb1371ea1920d73c87202f19b6f095ef6f521a8a7a139d19f34f1fe866',$originalManagedHash).Replace('::Patch(','::PatchFixture(')
+    foreach ($name in @('Mono.Cecil.dll','UI-Patcher.cs','NativeDLSS.UI.dll')) { Copy-Item -LiteralPath (Join-Path $ManagedBuild $name) -Destination $package }
     $installer = $installer.Replace('626b196d799606cd4250b7b29e04228692ab70cf56a5d1bbb56d748c8219f0eb',$hash)
     [IO.File]::WriteAllText((Join-Path $package 'Install.ps1'),$installer,[Text.UTF8Encoding]::new($true))
     [IO.File]::WriteAllText((Join-Path $ls 'LosslessScaling.exe'),'fixture app')
@@ -32,11 +38,28 @@ try {
     if ([IO.File]::ReadAllText((Join-Path $ls 'NativeDLSS.ini')) -ne 'old ini') { throw 'Upgrade overwrote existing settings and profiles' }
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Install.ps1') -LSFolder $ls
     if ($LASTEXITCODE -ne 0) { throw 'Repeated install failed' }
+    # Same patcher and installed managed payload, executed with actual WPF.
+    $uiRun = Join-Path $root 'wpf-run'; New-Item -ItemType Directory -Path $uiRun | Out-Null
+    Copy-Item (Join-Path $ManagedBuild 'fixture/*') $uiRun
+    Copy-Item -LiteralPath (Join-Path $ls 'LosslessScaling.dll') -Destination (Join-Path $uiRun 'NativeUIFixture.dll') -Force
+    Copy-Item -LiteralPath (Join-Path $ManagedBuild '../native-observer/Release/Lossless.dll') -Destination $uiRun
+    Copy-Item -LiteralPath (Join-Path $project 'observer/NativeDLSS.ini') -Destination $uiRun
+    & dotnet (Join-Path $uiRun 'NativeUIFixture.dll')
+    if ($LASTEXITCODE -ne 0) { throw 'Patched WPF fixture failed' }
+    $product = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $ManagedBuild 'fixture/NativeUIFixture.dll')).ProductName
+    $settingsFolder = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) $product
+    New-Item -ItemType Directory -Path $settingsFolder -Force | Out-Null
+    $settingsFile = Join-Path $settingsFolder 'Settings.xml'
+    [IO.File]::WriteAllText($settingsFile,'<Settings><Profile><FrameGeneration>DLSS</FrameGeneration><ClipCursor>true</ClipCursor><NativeDLSSFlowPreset>3</NativeDLSSFlowPreset></Profile></Settings>')
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Install.ps1') -LSFolder $ls -Restore
     if ($LASTEXITCODE -ne 0) { throw 'Restore failed' }
     if ([IO.File]::ReadAllText((Join-Path $ls 'Lossless.dll')) -ne 'old manager proxy' -or
         [IO.File]::ReadAllText((Join-Path $ls 'NativeDLSS.ini')) -ne 'old ini' -or
         [IO.File]::ReadAllText((Join-Path $ls 'dxgi.dll')) -ne 'existing working SM86 proxy') { throw 'Backup or SM86 not preserved' }
+    if ((Get-FileHash (Join-Path $ls 'LosslessScaling.dll') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $originalManagedHash -or (Test-Path (Join-Path $ls 'NativeDLSS.UI.dll'))) { throw 'Managed UI/helper rollback failed' }
+    [xml]$restoredSettings = Get-Content $settingsFile -Raw
+    if ($restoredSettings.Settings.Profile.FrameGeneration -ne 'LSFG3' -or $restoredSettings.Settings.Profile.ClipCursor -ne 'true') { throw 'Rollback lost settings or left an unsupported DLSS enum' }
+    Remove-Item -LiteralPath $settingsFolder -Recurse -Force
     New-Item -ItemType Directory -Path (Join-Path $ls 'logs'),(Join-Path $ls 'native-dlss-cache/nested'),(Join-Path $ls 'dlssg_sm86/logs') -Force | Out-Null
     [IO.File]::WriteAllText((Join-Path $ls 'logs/native-dlss-fixture.log'),'native log')
     [IO.File]::WriteAllText((Join-Path $ls 'native-dlss-cache/nested/ngx.log'),'NGX log')

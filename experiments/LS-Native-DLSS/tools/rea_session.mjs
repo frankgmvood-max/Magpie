@@ -2,7 +2,7 @@
 // One persistent REA MCP session for a bounded, analyst-directed investigation.
 // The runtime and providers are caller-installed; no agent configuration changes.
 import { createRequire } from 'node:module';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { createInterface } from 'node:readline';
 
@@ -47,7 +47,9 @@ try {
       if (!names.has(request.name)) throw new Error('Tool is absent from the connected REA catalog.');
       const label = request.label ?? `${++sequence}-${request.name}`;
       if (!/^[a-zA-Z0-9_-]+$/.test(label)) throw new Error('Use a plain filename label.');
-      const result = await client.callTool({ name: request.name, arguments: request.arguments ?? {} }, { timeout: 660000 });
+      // Large managed comparison Evidence stays in a private local request file.
+      const args = request.argumentsFile ? JSON.parse(await readFile(resolve(request.argumentsFile), 'utf8')) : request.arguments ?? {};
+      const result = await client.callTool({ name: request.name, arguments: args }, { timeout: 660000 });
       const file = join(output, `${label}.json`);
       await writeFile(file, JSON.stringify(result, null, 2), { mode: 0o600 });
       if (request.name === 'open_binary' && !result.isError) open = true;
