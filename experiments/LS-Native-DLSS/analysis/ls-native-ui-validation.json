@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "package": "LS-Native-DLSS-0.3.0.zip",
+  "package_sha256": "158a59578cd3bdd964018ce45002192dc79036090853336b35aa7cd417b90b3a",
+  "build_commit": "99b077e985a5d7d8bf915b7600e3067c80c4b391",
+  "github_actions_run": 38077869208,
+  "windows_job": 114288529994,
+  "validation": {
+    "windows_native_tests_passed": 10,
+    "python_tests_passed": 18,
+    "portable_cpp_programs_passed": 3,
+    "actual_wpf_fixture_runtimes": [
+      "8.0.31",
+      "9.0.20"
+    ],
+    "wpf_profile_checks": [
+      "original indices retained",
+      "DLSS/native transitions",
+      "native profile visibility",
+      "quality persistence",
+      "HUD validation",
+      "XML round trip",
+      "copy/null copy",
+      "loading does not autosave",
+      "cursor/VRR setting values retained"
+    ],
+    "installer_checks": [
+      "install/repeat/rollback",
+      "native/managed version rejection",
+      "changed helper ownership rejection",
+      "DLSS XML conversion preserving other settings"
+    ],
+    "commercial_application_full_startup_executed": false,
+    "nvidia_sm86_two_gpu_vrr_hardware_tested": false
+  },
+  "final_package_rea_evidence_ids": {
+    "artifact": "ev_dcd04232e6763c376b3e74b0d96cf0041e17c95f77afd8b920cf799f59453251",
+    "members": "ev_fcf726fe9f208bc83f70bd68383e4964f1b74914069604ea4958c79554f54f4e",
+    "patched-artifact": "ev_01f44013b557a5adfc09f839879b5deafb1bdb2c5db3bf40a8d00ee35051df92",
+    "patched-members": "ev_c8a87b89b50474853e02318a90a43631446fe1b5bdc7cfd3818e0e195b8824b1",
+    "comparison": "ev_7bd6311902cd808d35771568160f57d6df0a6b5a85ae437583c303feb374f0f8"
+  },
+  "rea_managed_comparison_coverage": "partial; not a semantic equivalence certificate",
+  "independent_cecil_semantic_check": {
+    "original_method_declarations_retained": 533,
+    "original_methods_with_hooks": 6,
+    "original_pinvoke_declarations_preserved": true,
+    "embedded_resources_sha256_identical": true
+  },
+  "packaged_components_sha256": {
+    "NativeDLSS.UI.dll": "ee6099a9f970c9b8c5d44aec34837ab2605929e56e7bb2a025dfeb992e77139b",
+    "UI-Patcher.cs": "037b00b4c4b9b84055adea9f3eb3ed450c9f5bdfd6c042fbdb5183578fe59596",
+    "Mono.Cecil.dll": "c41bdb9ffd3c5f6e17d2382c1012d73703e035e3f1100245fdd4e08c8dc6eb5b"
+  }
+}
