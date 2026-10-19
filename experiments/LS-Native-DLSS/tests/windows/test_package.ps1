@@ -2,7 +2,7 @@ param([Parameter(Mandatory=$true)][string]$ManagedBuild)
 $ErrorActionPreference = 'Stop'
 $ManagedBuild = [IO.Path]::GetFullPath($ManagedBuild)
 $project = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
-foreach ($name in @('Install.ps1','Settings.ps1','Collect-Logs.ps1','Start-Diagnostics.ps1')) {
+foreach ($name in @('Install.ps1','Settings.ps1','Collect-Logs.ps1','Start-Diagnostics.ps1','Capture-Pacing.ps1')) {
     $errors = $null; $tokens = $null
     # Windows PowerShell defaults BOM-less files to ANSI. Read source as UTF-8;
     # the distributed scripts receive a UTF-8 BOM during packaging.

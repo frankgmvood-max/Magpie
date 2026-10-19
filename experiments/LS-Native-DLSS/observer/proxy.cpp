@@ -67,12 +67,14 @@ extern "C" __declspec(dllexport) void __fastcall ApplySettings(LS_SETTINGS_ARGS)
         RaiseException(ERROR_PROC_NOT_FOUND, EXCEPTION_NONCONTINUABLE, 0, nullptr);
         return;
     }
+    const auto requested = NativeSettingValues(LS_SETTINGS_VALUES);
     if (NativeUiOwnsSelection() && frameGenType == 6) {
         // Native LS still owns capture, scheduling, source and midpoint surfaces.
         // Verified analysis/synthesis gates remove its generator's dispatches.
         frameGenType = 1; frameGenMode = 0; frameGenMultiplier = 2.0f; hdrSupport = 0;
     }
     SetNativeProfile(frameGenType, frameGenMode, frameGenMultiplier, hdrSupport != 0);
+    RecordNativeSettings(requested, NativeSettingValues(LS_SETTINGS_VALUES));
     g_apply(LS_SETTINGS_VALUES);
 }
 
