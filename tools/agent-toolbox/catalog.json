@@ -1,0 +1,901 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-10-19",
+  "research": "research-2026-10-19.md",
+  "availability": "Catalog entries do not imply installation or an active MCP connection. Verify the current environment and official setup documentation before use.",
+  "routes": {
+    "native-static": {
+      "description": "Static analysis of native executables",
+      "tools": [
+        "detect-it-easy",
+        "ghidra",
+        "ghidra-mcp"
+      ]
+    },
+    "native-debug": {
+      "description": "Windows execution debugging and runtime instrumentation",
+      "tools": [
+        "x64dbg",
+        "frida"
+      ]
+    },
+    "ida-analysis": {
+      "description": "Analysis using a compatible licensed IDA installation",
+      "tools": [
+        "ida-mcp"
+      ]
+    },
+    "dotnet": {
+      "description": "Managed .NET assembly analysis",
+      "tools": [
+        "dnspyex"
+      ]
+    },
+    "android": {
+      "description": "Android DEX/APK source and runtime analysis",
+      "tools": [
+        "jadx",
+        "frida"
+      ]
+    },
+    "binary-format": {
+      "description": "Binary structure and executable format automation",
+      "tools": [
+        "imhex",
+        "lief"
+      ]
+    },
+    "source-navigation": {
+      "description": "Source symbols, references and dependency documentation",
+      "tools": [
+        "serena",
+        "context7"
+      ]
+    },
+    "source-rewrite": {
+      "description": "Structural source search and rewrites",
+      "tools": [
+        "ast-grep"
+      ]
+    },
+    "repo-handoff": {
+      "description": "Package selected repository contents for a model",
+      "tools": [
+        "repomix"
+      ]
+    },
+    "web-debug": {
+      "description": "Chrome console, network, memory and performance investigation",
+      "tools": [
+        "chrome-devtools-mcp"
+      ]
+    },
+    "web-test": {
+      "description": "Browser scenarios and reproducible web tests",
+      "tools": [
+        "playwright-cli",
+        "playwright"
+      ]
+    },
+    "source-check": {
+      "description": "Rule-based source analysis",
+      "tools": [
+        "semgrep"
+      ]
+    },
+    "python": {
+      "description": "Python environment, linting and performance",
+      "tools": [
+        "uv",
+        "ruff",
+        "py-spy"
+      ]
+    },
+    "native-profile": {
+      "description": "Instrumented native and frame profiling",
+      "tools": [
+        "tracy"
+      ]
+    },
+    "http-analysis": {
+      "description": "HTTP/HTTPS protocol investigation",
+      "tools": [
+        "mitmproxy"
+      ]
+    },
+    "git-review": {
+      "description": "Inspect and manage Git changes",
+      "tools": [
+        "lazygit"
+      ]
+    },
+    "long-tasks": {
+      "description": "Persistent task dependencies and project memory",
+      "tools": [
+        "beads"
+      ]
+    }
+  },
+  "tools": [
+    {
+      "id": "ghidra",
+      "repository": "NationalSecurityAgency/ghidra",
+      "url": "https://github.com/NationalSecurityAgency/ghidra",
+      "description": "Ghidra is a software reverse engineering (SRE) framework",
+      "setup_docs": "https://github.com/NationalSecurityAgency/ghidra#readme",
+      "executables": [
+        "analyzeHeadless",
+        "analyzeHeadless.bat"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "Apache-2.0",
+      "snapshot": {
+        "stars": 90888,
+        "pushed_at": "2026-10-16T16:52:06Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "ghidra-mcp",
+      "repository": "LaurieWired/GhidraMCP",
+      "url": "https://github.com/LaurieWired/GhidraMCP",
+      "description": "MCP Server for Ghidra",
+      "setup_docs": "https://github.com/LaurieWired/GhidraMCP#readme",
+      "executables": [
+        "ghidra-mcp"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "Apache-2.0",
+      "snapshot": {
+        "stars": 11388,
+        "pushed_at": "2026-10-10T20:08:37Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "ghidra-mcp-extended",
+      "repository": "bethington/ghidra-mcp",
+      "url": "https://github.com/bethington/ghidra-mcp",
+      "description": "Ghidra MCP Server — 200+ MCP tools for AI-powered reverse engineering. GUI plugin + headless server, lazy tool loading, convention enforcement, batch operations, Ghidra Server integration, and Docker deployment.",
+      "setup_docs": "https://github.com/bethington/ghidra-mcp#readme",
+      "executables": [
+        "bridge-mcp-ghidra"
+      ],
+      "status": "candidate",
+      "notes": "README and release describe different tool counts and Ghidra versions; select a matching pinned release.",
+      "license": "Apache-2.0",
+      "snapshot": {
+        "stars": 5770,
+        "pushed_at": "2026-10-16T01:17:04Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "ida-pro-mcp-legacy",
+      "repository": "mrexodia/ida-pro-mcp",
+      "url": "https://github.com/mrexodia/ida-pro-mcp",
+      "description": "AI-powered reverse engineering assistant that bridges IDA Pro with language models through MCP.",
+      "setup_docs": "https://github.com/mrexodia/ida-pro-mcp#readme",
+      "executables": [],
+      "status": "superseded",
+      "notes": "Author recommends the official HexRaysSA/ida-mcp server; retained for historical comparison.",
+      "license": "MIT",
+      "snapshot": {
+        "stars": 12998,
+        "pushed_at": "2026-09-26T15:42:10Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "x64dbg",
+      "repository": "x64dbg/x64dbg",
+      "url": "https://github.com/x64dbg/x64dbg",
+      "description": "An open-source user mode debugger for Windows. Optimized for reverse engineering and malware analysis.",
+      "setup_docs": "https://github.com/x64dbg/x64dbg#readme",
+      "executables": [
+        "x64dbg",
+        "x64dbg.exe",
+        "x32dbg",
+        "x32dbg.exe"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "NOASSERTION",
+      "snapshot": {
+        "stars": 49937,
+        "pushed_at": "2026-10-18T12:08:57Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "frida",
+      "repository": "frida/frida",
+      "url": "https://github.com/frida/frida",
+      "description": "Main repo for hosting release binaries",
+      "setup_docs": "https://github.com/frida/frida#readme",
+      "executables": [
+        "frida"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "NOASSERTION",
+      "snapshot": {
+        "stars": 22362,
+        "pushed_at": "2026-10-18T14:23:37Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "imhex",
+      "repository": "WerWolv/ImHex",
+      "url": "https://github.com/WerWolv/ImHex",
+      "description": "🔍 A Hex Editor for Reverse Engineers, Programmers and people who value their retinas when working at 3 AM.",
+      "setup_docs": "https://github.com/WerWolv/ImHex#readme",
+      "executables": [
+        "imhex"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "GPL-2.0",
+      "snapshot": {
+        "stars": 55413,
+        "pushed_at": "2026-10-09T00:56:24Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "dnspyex",
+      "repository": "dnSpyEx/dnSpy",
+      "url": "https://github.com/dnSpyEx/dnSpy",
+      "description": "Unofficial revival of the well known .NET debugger and assembly editor, dnSpy",
+      "setup_docs": "https://github.com/dnSpyEx/dnSpy#readme",
+      "executables": [
+        "dnSpy",
+        "dnSpy.exe"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "GPL-3.0",
+      "snapshot": {
+        "stars": 11296,
+        "pushed_at": "2026-10-17T20:34:07Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "jadx",
+      "repository": "skylot/jadx",
+      "url": "https://github.com/skylot/jadx",
+      "description": "Dex to Java decompiler",
+      "setup_docs": "https://github.com/skylot/jadx#readme",
+      "executables": [
+        "jadx",
+        "jadx-gui"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "Apache-2.0",
+      "snapshot": {
+        "stars": 51067,
+        "pushed_at": "2026-10-14T22:10:04Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "radare2",
+      "repository": "radareorg/radare2",
+      "url": "https://github.com/radareorg/radare2",
+      "description": "UNIX-like reverse engineering framework and command-line toolset",
+      "setup_docs": "https://github.com/radareorg/radare2#readme",
+      "executables": [
+        "radare2",
+        "r2"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "NOASSERTION",
+      "snapshot": {
+        "stars": 25086,
+        "pushed_at": "2026-10-18T22:23:54Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "cutter",
+      "repository": "rizinorg/cutter",
+      "url": "https://github.com/rizinorg/cutter",
+      "description": "Free and Open Source Reverse Engineering Platform powered by rizin",
+      "setup_docs": "https://github.com/rizinorg/cutter#readme",
+      "executables": [
+        "cutter"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "GPL-3.0",
+      "snapshot": {
+        "stars": 20053,
+        "pushed_at": "2026-09-11T12:44:05Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "capa",
+      "repository": "mandiant/capa",
+      "url": "https://github.com/mandiant/capa",
+      "description": "The FLARE team's open-source tool to identify capabilities in executable files.",
+      "setup_docs": "https://github.com/mandiant/capa#readme",
+      "executables": [
+        "capa"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "Apache-2.0",
+      "snapshot": {
+        "stars": 6253,
+        "pushed_at": "2026-10-16T14:37:45Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "detect-it-easy",
+      "repository": "horsicq/Detect-It-Easy",
+      "url": "https://github.com/horsicq/Detect-It-Easy",
+      "description": "Program for determining types of files for Windows, Linux and MacOS.",
+      "setup_docs": "https://github.com/horsicq/Detect-It-Easy#readme",
+      "executables": [
+        "diec",
+        "die"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "MIT",
+      "snapshot": {
+        "stars": 11752,
+        "pushed_at": "2026-10-18T12:32:14Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "lief",
+      "repository": "lief-project/LIEF",
+      "url": "https://github.com/lief-project/LIEF",
+      "description": "LIEF - Library to Instrument Executable Formats (C++, Python, Rust)",
+      "setup_docs": "https://github.com/lief-project/LIEF#readme",
+      "executables": [],
+      "status": "candidate",
+      "notes": "",
+      "license": "Apache-2.0",
+      "snapshot": {
+        "stars": 5596,
+        "pushed_at": "2026-10-18T17:31:50Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "llm4decompile",
+      "repository": "albertan017/LLM4Decompile",
+      "url": "https://github.com/albertan017/LLM4Decompile",
+      "description": "Reverse Engineering: Decompiling Binary Code with Large Language Models",
+      "setup_docs": "https://github.com/albertan017/LLM4Decompile#readme",
+      "executables": [],
+      "status": "research_only",
+      "notes": "Research models and datasets; not the default interactive decompiler.",
+      "license": "MIT",
+      "snapshot": {
+        "stars": 7144,
+        "pushed_at": "2026-02-12T03:02:03Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "opencode",
+      "repository": "anomalyco/opencode",
+      "url": "https://github.com/anomalyco/opencode",
+      "description": "The open source coding agent.",
+      "setup_docs": "https://github.com/anomalyco/opencode#readme",
+      "executables": [
+        "opencode"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "MIT",
+      "snapshot": {
+        "stars": 216561,
+        "pushed_at": "2026-10-19T00:08:57Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "claude-code",
+      "repository": "anthropics/claude-code",
+      "url": "https://github.com/anthropics/claude-code",
+      "description": "Claude Code is an agentic coding tool that lives in your terminal, understands your codebase, and helps you code faster by executing routine tasks, explaining complex code, and handling git workflows - all through natural language commands.",
+      "setup_docs": "https://github.com/anthropics/claude-code#readme",
+      "executables": [
+        "claude"
+      ],
+      "status": "candidate",
+      "notes": "Commercial Terms, not an open-source implementation. Model access and billing are separate.",
+      "license": "Commercial Terms",
+      "snapshot": {
+        "stars": 152254,
+        "pushed_at": "2026-10-18T22:26:53Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "codex",
+      "repository": "openai/codex",
+      "url": "https://github.com/openai/codex",
+      "description": "Lightweight coding agent that runs in your terminal",
+      "setup_docs": "https://github.com/openai/codex#readme",
+      "executables": [
+        "codex"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "Apache-2.0",
+      "snapshot": {
+        "stars": 129763,
+        "pushed_at": "2026-10-19T00:13:30Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "gemini-cli",
+      "repository": "google-gemini/gemini-cli",
+      "url": "https://github.com/google-gemini/gemini-cli",
+      "description": "An open-source AI agent that brings the power of Gemini directly into your terminal.",
+      "setup_docs": "https://github.com/google-gemini/gemini-cli#readme",
+      "executables": [
+        "gemini"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "Apache-2.0",
+      "snapshot": {
+        "stars": 107441,
+        "pushed_at": "2026-10-18T01:34:41Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "aider",
+      "repository": "Aider-AI/aider",
+      "url": "https://github.com/Aider-AI/aider",
+      "description": "aider is AI pair programming in your terminal",
+      "setup_docs": "https://github.com/Aider-AI/aider#readme",
+      "executables": [
+        "aider"
+      ],
+      "status": "recheck_maintenance",
+      "notes": "Last recorded push was 2026-05-22; recheck maintenance before adoption.",
+      "license": "Apache-2.0",
+      "snapshot": {
+        "stars": 49625,
+        "pushed_at": "2026-05-22T14:02:20Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "cline",
+      "repository": "cline/cline",
+      "url": "https://github.com/cline/cline",
+      "description": "Autonomous coding agent as an SDK, IDE extension, or CLI assistant.",
+      "setup_docs": "https://github.com/cline/cline#readme",
+      "executables": [
+        "cline"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "Apache-2.0",
+      "snapshot": {
+        "stars": 70517,
+        "pushed_at": "2026-10-18T23:23:53Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "roo-code",
+      "repository": "RooCodeInc/Roo-Code",
+      "url": "https://github.com/RooCodeInc/Roo-Code",
+      "description": "Roo Code gives you a whole dev team of AI agents in your code editor.",
+      "setup_docs": "https://github.com/RooCodeInc/Roo-Code#readme",
+      "executables": [],
+      "status": "discontinued",
+      "notes": "Shut down and archived on 2026-05-15; not a default recommendation.",
+      "license": "Apache-2.0",
+      "snapshot": {
+        "stars": 24272,
+        "pushed_at": "2026-05-15T18:08:47Z",
+        "archived": true
+      }
+    },
+    {
+      "id": "continue",
+      "repository": "continuedev/continue",
+      "url": "https://github.com/continuedev/continue",
+      "description": "open-source coding agent",
+      "setup_docs": "https://github.com/continuedev/continue#readme",
+      "executables": [],
+      "status": "maintenance_ended",
+      "notes": "README states active maintenance has ended; archived=false in API is not evidence of support.",
+      "license": "Apache-2.0",
+      "snapshot": {
+        "stars": 36251,
+        "pushed_at": "2026-10-18T18:34:51Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "serena",
+      "repository": "oraios/serena",
+      "url": "https://github.com/oraios/serena",
+      "description": "A powerful MCP toolkit for coding, providing semantic retrieval and editing capabilities  - the IDE for your agent",
+      "setup_docs": "https://github.com/oraios/serena#readme",
+      "executables": [
+        "serena"
+      ],
+      "status": "candidate",
+      "notes": "Application v2: GPL-3.0-or-later; SolidLSP: MIT. A configured language backend and model client are required.",
+      "license": "GPL-3.0-or-later / MIT by component",
+      "snapshot": {
+        "stars": 30368,
+        "pushed_at": "2026-10-15T19:39:53Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "context7",
+      "repository": "upstash/context7",
+      "url": "https://github.com/upstash/context7",
+      "description": "Context7 Platform -- Up-to-date docs for AI agents",
+      "setup_docs": "https://github.com/upstash/context7#readme",
+      "executables": [],
+      "status": "candidate",
+      "notes": "",
+      "license": "MIT",
+      "snapshot": {
+        "stars": 63258,
+        "pushed_at": "2026-10-17T14:44:22Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "playwright-mcp",
+      "repository": "microsoft/playwright-mcp",
+      "url": "https://github.com/microsoft/playwright-mcp",
+      "description": "Playwright MCP server",
+      "setup_docs": "https://github.com/microsoft/playwright-mcp#readme",
+      "executables": [],
+      "status": "candidate",
+      "notes": "Authors suggest considering CLI+Skills for coding agents; use MCP when persistent structured interaction benefits the task.",
+      "license": "Apache-2.0",
+      "snapshot": {
+        "stars": 38339,
+        "pushed_at": "2026-10-16T22:43:43Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "chrome-devtools-mcp",
+      "repository": "ChromeDevTools/chrome-devtools-mcp",
+      "url": "https://github.com/ChromeDevTools/chrome-devtools-mcp",
+      "description": "Chrome DevTools for coding agents",
+      "setup_docs": "https://github.com/ChromeDevTools/chrome-devtools-mcp#readme",
+      "executables": [],
+      "status": "candidate",
+      "notes": "Requires Chrome and an MCP client; usage statistics are enabled by default with documented opt-out.",
+      "license": "Apache-2.0",
+      "snapshot": {
+        "stars": 53804,
+        "pushed_at": "2026-10-18T06:48:01Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "ast-grep",
+      "repository": "ast-grep/ast-grep",
+      "url": "https://github.com/ast-grep/ast-grep",
+      "description": "⚡A CLI tool for code structural search, lint and rewriting. Written in Rust",
+      "setup_docs": "https://github.com/ast-grep/ast-grep#readme",
+      "executables": [
+        "ast-grep"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "MIT",
+      "snapshot": {
+        "stars": 16267,
+        "pushed_at": "2026-10-15T18:53:39Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "spec-kit",
+      "repository": "github/spec-kit",
+      "url": "https://github.com/github/spec-kit",
+      "description": "💫 Toolkit to help you get started with SDD or any other process!",
+      "setup_docs": "https://github.com/github/spec-kit#readme",
+      "executables": [
+        "specify"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "MIT",
+      "snapshot": {
+        "stars": 141798,
+        "pushed_at": "2026-10-16T22:43:30Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "superpowers",
+      "repository": "obra/superpowers",
+      "url": "https://github.com/obra/superpowers",
+      "description": "An agentic skills framework & software development methodology that works.",
+      "setup_docs": "https://github.com/obra/superpowers#readme",
+      "executables": [],
+      "status": "candidate",
+      "notes": "",
+      "license": "MIT",
+      "snapshot": {
+        "stars": 301648,
+        "pushed_at": "2026-10-10T03:03:30Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "vibe-kanban",
+      "repository": "BloopAI/vibe-kanban",
+      "url": "https://github.com/BloopAI/vibe-kanban",
+      "description": "Get 10X more out of Claude Code, Codex or any coding agent",
+      "setup_docs": "https://github.com/BloopAI/vibe-kanban#readme",
+      "executables": [],
+      "status": "candidate",
+      "notes": "",
+      "license": "Apache-2.0",
+      "snapshot": {
+        "stars": 28389,
+        "pushed_at": "2026-09-19T06:52:48Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "playwright",
+      "repository": "microsoft/playwright",
+      "url": "https://github.com/microsoft/playwright",
+      "description": "Playwright is a framework for Web Testing and Automation. It allows testing Chromium, Firefox and WebKit with a single API. ",
+      "setup_docs": "https://github.com/microsoft/playwright#readme",
+      "executables": [
+        "playwright"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "Apache-2.0",
+      "snapshot": {
+        "stars": 98018,
+        "pushed_at": "2026-10-18T22:43:43Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "semgrep",
+      "repository": "semgrep/semgrep",
+      "url": "https://github.com/semgrep/semgrep",
+      "description": "Lightweight static analysis for many languages. Find bug variants with patterns that look like source code.",
+      "setup_docs": "https://github.com/semgrep/semgrep#readme",
+      "executables": [
+        "semgrep"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "LGPL-2.1",
+      "snapshot": {
+        "stars": 17122,
+        "pushed_at": "2026-10-19T00:03:35Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "uv",
+      "repository": "astral-sh/uv",
+      "url": "https://github.com/astral-sh/uv",
+      "description": "An extremely fast Python package and project manager, written in Rust.",
+      "setup_docs": "https://github.com/astral-sh/uv#readme",
+      "executables": [
+        "uv"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "Apache-2.0",
+      "snapshot": {
+        "stars": 90890,
+        "pushed_at": "2026-10-18T18:31:36Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "ruff",
+      "repository": "astral-sh/ruff",
+      "url": "https://github.com/astral-sh/ruff",
+      "description": "An extremely fast Python linter and code formatter, written in Rust.",
+      "setup_docs": "https://github.com/astral-sh/ruff#readme",
+      "executables": [
+        "ruff"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "MIT",
+      "snapshot": {
+        "stars": 50154,
+        "pushed_at": "2026-10-19T00:09:02Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "lazygit",
+      "repository": "jesseduffield/lazygit",
+      "url": "https://github.com/jesseduffield/lazygit",
+      "description": "simple terminal UI for git commands",
+      "setup_docs": "https://github.com/jesseduffield/lazygit#readme",
+      "executables": [
+        "lazygit"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "MIT",
+      "snapshot": {
+        "stars": 83281,
+        "pushed_at": "2026-10-17T11:06:26Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "repomix",
+      "repository": "yamadashy/repomix",
+      "url": "https://github.com/yamadashy/repomix",
+      "description": "📦 Repomix is a powerful tool that packs your entire repository into a single, AI-friendly file. Perfect for when you need to feed your codebase to Large Language Models (LLMs) or other AI tools like Claude, ChatGPT, DeepSeek, Perplexity, Gemini, Gemma, Llama, Grok, and more.",
+      "setup_docs": "https://github.com/yamadashy/repomix#readme",
+      "executables": [
+        "repomix"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "MIT",
+      "snapshot": {
+        "stars": 28897,
+        "pushed_at": "2026-10-18T12:29:58Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "gitnexus",
+      "repository": "abhigyanpatwari/GitNexus",
+      "url": "https://github.com/abhigyanpatwari/GitNexus",
+      "description": "GitNexus: The Zero-Server Code Intelligence Engine ",
+      "setup_docs": "https://github.com/abhigyanpatwari/GitNexus#readme",
+      "executables": [],
+      "status": "license_restricted",
+      "notes": "PolyForm Noncommercial 1.0.0; not an unrestricted default for commercial tasks.",
+      "license": "PolyForm-Noncommercial-1.0.0",
+      "snapshot": {
+        "stars": 47937,
+        "pushed_at": "2026-10-18T22:40:54Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "beads",
+      "repository": "gastownhall/beads",
+      "url": "https://github.com/gastownhall/beads",
+      "description": "Beads - A memory upgrade for your coding agent",
+      "setup_docs": "https://github.com/gastownhall/beads#readme",
+      "executables": [
+        "bd"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "MIT",
+      "snapshot": {
+        "stars": 27993,
+        "pushed_at": "2026-10-18T23:06:27Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "ida-mcp",
+      "repository": "HexRaysSA/ida-mcp",
+      "url": "https://github.com/HexRaysSA/ida-mcp",
+      "description": "Official Hex-Rays IDA MCP Server.",
+      "setup_docs": "https://github.com/HexRaysSA/ida-mcp#readme",
+      "executables": [],
+      "status": "candidate",
+      "notes": "Requires IDA 9.4+, idalib and Python 3.11+; the MCP server license does not include IDA.",
+      "license": "MIT",
+      "snapshot": {
+        "stars": 1274,
+        "pushed_at": "2026-10-08T20:24:11Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "playwright-cli",
+      "repository": "microsoft/playwright-cli",
+      "url": "https://github.com/microsoft/playwright-cli",
+      "description": "CLI for common Playwright actions. Record and generate Playwright code, inspect selectors and take screenshots.",
+      "setup_docs": "https://github.com/microsoft/playwright-cli#readme",
+      "executables": [
+        "playwright-cli"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "Apache-2.0",
+      "snapshot": {
+        "stars": 14344,
+        "pushed_at": "2026-10-14T07:02:38Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "py-spy",
+      "repository": "benfred/py-spy",
+      "url": "https://github.com/benfred/py-spy",
+      "description": "Sampling profiler for Python programs",
+      "setup_docs": "https://github.com/benfred/py-spy#readme",
+      "executables": [
+        "py-spy"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "MIT",
+      "snapshot": {
+        "stars": 15583,
+        "pushed_at": "2026-10-15T15:59:20Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "tracy",
+      "repository": "wolfpld/tracy",
+      "url": "https://github.com/wolfpld/tracy",
+      "description": "Frame profiler",
+      "setup_docs": "https://github.com/wolfpld/tracy#readme",
+      "executables": [
+        "tracy-profiler",
+        "Tracy",
+        "Tracy.exe"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "NOASSERTION",
+      "snapshot": {
+        "stars": 16978,
+        "pushed_at": "2026-10-18T20:04:26Z",
+        "archived": false
+      }
+    },
+    {
+      "id": "mitmproxy",
+      "repository": "mitmproxy/mitmproxy",
+      "url": "https://github.com/mitmproxy/mitmproxy",
+      "description": "An interactive TLS-capable intercepting HTTP proxy for penetration testers and software developers.",
+      "setup_docs": "https://github.com/mitmproxy/mitmproxy#readme",
+      "executables": [
+        "mitmproxy",
+        "mitmdump",
+        "mitmweb"
+      ],
+      "status": "candidate",
+      "notes": "",
+      "license": "MIT",
+      "snapshot": {
+        "stars": 45723,
+        "pushed_at": "2026-10-13T18:07:57Z",
+        "archived": false
+      }
+    }
+  ]
+}
