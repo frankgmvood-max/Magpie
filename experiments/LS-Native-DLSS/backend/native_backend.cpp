@@ -958,6 +958,7 @@ bool NativeBackend::TryPollDiagnostics(BackendDiagnostics& diagnostics) {
     if (!state_) { diagnostics = {}; return true; }
     auto& s = *state_; std::unique_lock<std::mutex> lock(s.mutex, std::try_to_lock);
     if (!lock.owns_lock()) return false;
+    diagnostics = {};
     // The logger must not Map/read back on a backend mutex while a native
     // callback uses try_lock. Source retires metadata before slot reuse.
     diagnostics.counters = s.counters;
@@ -966,7 +967,6 @@ bool NativeBackend::TryPollDiagnostics(BackendDiagnostics& diagnostics) {
     diagnostics.analysis_width = s.analysis_width; diagnostics.analysis_height = s.analysis_height;
     diagnostics.grid = s.options.optical_flow ? s.grid : 0;
     diagnostics.analysis_format = static_cast<uint32_t>(s.analysis_format);
-    diagnostics.adapter_luid = Luid(s.device ? s.device->GetAdapterLuid() : LUID{});
     diagnostics.adapter_name = s.adapter_name; diagnostics.mode = s.policy.mode;
     diagnostics.timing_samples = s.timing_samples; diagnostics.conversion_ms = s.conversion_ms;
     diagnostics.flow_dependency_ms = s.flow_dependency_ms; diagnostics.generation_ms = s.generation_ms;
@@ -978,19 +978,28 @@ bool NativeBackend::TryPollDiagnostics(BackendDiagnostics& diagnostics) {
     diagnostics.source_lock_miss = s.source_lock_miss.load(); diagnostics.composite_lock_miss = s.composite_lock_miss.load();
     diagnostics.policy_lock_miss = s.policy_lock_miss.load();
     diagnostics.pending_jobs = diagnostics.unpolled_jobs = 0;
-    if (s.initialized) {
-        diagnostics.ready_target = s.ready_value; diagnostics.ready_completed = s.ready12->GetCompletedValue();
-        diagnostics.copied_target = s.copy_value; diagnostics.copied_completed = s.copied12->GetCompletedValue();
-        diagnostics.producer_target = s.producer_value; diagnostics.producer_completed = s.producer12->GetCompletedValue();
-        diagnostics.converted_target = s.converted_value; diagnostics.converted_completed = s.converted->GetCompletedValue();
-        diagnostics.flow_target = s.flow_value; diagnostics.flow_completed = s.flow_done->GetCompletedValue();
-        diagnostics.registered_target = s.register_value; diagnostics.registered_completed = s.registered_done->GetCompletedValue();
-        for (UINT i = 0; i != s.slots; ++i) {
-            const auto& j = s.jobs[i];
-            if (j.ready > diagnostics.ready_completed) ++diagnostics.pending_jobs;
-            if (j.ready > j.polled) ++diagnostics.unpolled_jobs;
-        }
-        diagnostics.device_removed = static_cast<uint32_t>(s.device->GetDeviceRemovedReason());
+    diagnostics.ready_target = s.ready_value; diagnostics.copied_target = s.copy_value;
+    diagnostics.producer_target = s.producer_value; diagnostics.converted_target = s.converted_value;
+    diagnostics.flow_target = s.flow_value; diagnostics.registered_target = s.register_value;
+    std::array<uint64_t,4> jobs{};
+    const UINT slots = s.slots; const bool initialized = s.initialized;
+    for (UINT i = 0; i != slots; ++i) {
+        jobs[i] = s.jobs[i].ready;
+        if (jobs[i] > s.jobs[i].polled) ++diagnostics.unpolled_jobs;
+    }
+    // These D3D12 objects are process-lifetime pinned and never rebound.
+    // No driver calls, formatting or I/O while holding the callback mutex.
+    auto* device = s.device.Get(); auto* ready = s.ready12.Get(); auto* copied = s.copied12.Get();
+    auto* producer = s.producer12.Get(); auto* converted = s.converted.Get();
+    auto* flow = s.flow_done.Get(); auto* registered = s.registered_done.Get();
+    lock.unlock();
+    diagnostics.adapter_luid = Luid(device ? device->GetAdapterLuid() : LUID{});
+    if (initialized) {
+        diagnostics.ready_completed = ready->GetCompletedValue(); diagnostics.copied_completed = copied->GetCompletedValue();
+        diagnostics.producer_completed = producer->GetCompletedValue(); diagnostics.converted_completed = converted->GetCompletedValue();
+        diagnostics.flow_completed = flow->GetCompletedValue(); diagnostics.registered_completed = registered->GetCompletedValue();
+        for (UINT i = 0; i != slots; ++i) if (jobs[i] > diagnostics.ready_completed) ++diagnostics.pending_jobs;
+        diagnostics.device_removed = static_cast<uint32_t>(device->GetDeviceRemovedReason());
     }
     return true;
 }
