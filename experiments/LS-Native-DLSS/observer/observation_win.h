@@ -19,3 +19,8 @@ void StartNativeObservation(HMODULE native, HMODULE proxy,
 void SetNativeProfile(int type, int mode, float multiplier, bool hdr) noexcept;
 bool ConfigureNativeUi(const ls_native::UiSettings& settings) noexcept;
 bool NativeUiOwnsSelection() noexcept;
+template<class... T> std::array<double, sizeof...(T)> NativeSettingValues(T... v) {
+    return {static_cast<double>(v)...};
+}
+void RecordNativeSettings(const std::array<double, 32>& requested,
+                          const std::array<double, 32>& forwarded) noexcept;

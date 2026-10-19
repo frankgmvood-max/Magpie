@@ -10,6 +10,10 @@
 #include <intrin.h>
 #endif
 #include <tlhelp32.h>
+#include <psapi.h>
+#include <dxgi1_4.h>
+#include <map>
+#include <sstream>
 #endif
 #include <MinHook.h>
 #include <bcrypt.h>
@@ -189,6 +193,12 @@ struct State {
     };
     BackendOptions options;
     BackendOptions ui_options;
+    DiagnosticsConfig diagnostics;
+    std::filesystem::path backend_log_path;
+    std::string backend_header;
+    uint64_t log_segments = 0, settings_revision = 0, settings_written = UINT64_MAX;
+    std::array<double, 32> settings_requested{}, settings_forwarded{};
+    std::atomic<uint64_t> buffer_create_count{0}, buffer_create_ticks{0}, buffer_create_max{0};
     std::atomic<bool> ui_owned{false};
     std::atomic<uint32_t> ui_type{0};
     RenderPolicy policy;
@@ -449,13 +459,18 @@ void WriteRuntimeModules(std::ostream& out) {
         out << "runtime_modules_error=" << GetLastError() << '\n'; return;
     }
     MODULEENTRY32W module{}; module.dwSize = sizeof(module);
+    std::ostringstream manifest;
     if (Module32FirstW(snapshot, &module)) do {
         bool relevant = false;
-        for (const wchar_t* name : {L"version.dll", L"dxgi.dll", L"d3d12.dll", L"_nvngx.dll", L"nvngx.dll", L"nvngx_dlssg.dll", L"sm86_backend.dll"})
+        for (const wchar_t* name : {L"Lossless.dll", L"Lossless_original.dll", L"NativeDLSS.UI.dll", L"version.dll", L"dxgi.dll",
+            L"d3d11.dll", L"d3d12.dll", L"_nvngx.dll", L"nvngx.dll", L"nvngx_dlssg.dll", L"sm86_backend.dll", L"nvofapi64.dll", L"nvapi64.dll"})
             relevant |= _wcsicmp(module.szModule, name) == 0;
-        if (relevant) out << "runtime_module=" << std::quoted(std::filesystem::path(module.szExePath).u8string()) << '\n';
+        if (relevant) manifest << "runtime_module=" << std::quoted(std::filesystem::path(module.szExePath).u8string())
+            << " image_bytes=" << module.modBaseSize << " sha256=" << HashFile(module.szExePath) << '\n';
     } while (Module32NextW(snapshot, &module));
     CloseHandle(snapshot);
+    const auto text = manifest.str(); out << text;
+    g->backend_header += text; // Preserve module identity in rotated segments.
 }
 void PrepareSm86(std::ostream& out, const std::filesystem::path& folder) {
     // The supplied LS archive's utility proxy may have lost automatic loading
@@ -490,7 +505,118 @@ void PrepareSm86(std::ostream& out, const std::filesystem::path& folder) {
     if (!recognized) out << "sm86_bootstrap=no_recognized_utility_proxy\n";
     WriteRuntimeModules(out); out.flush();
 }
+void WriteFrameDiagnostics(std::ostream& out) {
+    constexpr const char* names[]{"source_interval", "source_cpu", "submit_cpu", "nvof_api_cpu", "ngx_api_cpu",
+        "composite_cpu", "source_to_slot_cpu", "wait_api_cpu", "readback_cpu", "conversion_gpu",
+        "flow_dependency_gpu", "generation_gpu", "post_gpu", "backend_span_gpu"};
+    std::map<uint64_t, std::array<MetricWindow<512>, std::size(names)>> windows;
+    std::map<uint64_t, std::array<std::array<uint64_t, 14>, 3>> outcomes;
+    FrameEvent e; size_t drained = 0, written = 0;
+    for (; drained != 4096 && NativeBackend::TryPopFrameEvent(e); ++drained) {
+        auto& m = windows[e.context];
+        ++outcomes[e.context][static_cast<size_t>(e.kind)][static_cast<size_t>(e.reason)];
+        if (e.kind == FrameEventKind::Source) {
+            m[0].Add(e.interval_ms); m[1].Add(e.cpu_ms); m[2].Add(e.submit_cpu_ms);
+            m[3].Add(e.of_cpu_ms); m[4].Add(e.ngx_cpu_ms);
+        } else if (e.kind == FrameEventKind::Composite) {
+            m[5].Add(e.cpu_ms); m[6].Add(e.source_age_ms); m[7].Add(e.wait_api_cpu_ms);
+        } else {
+            m[8].Add(e.cpu_ms); m[9].Add(e.conversion_ms); m[10].Add(e.flow_ms);
+            m[11].Add(e.generation_ms); m[12].Add(e.post_ms); m[13].Add(e.total_ms);
+        }
+        if (g->diagnostics.level < 2 || e.generation % g->diagnostics.frame_every != 0) continue;
+        ++written;
+        out << "frame kind=" << (e.kind == FrameEventKind::Source ? "source" : e.kind == FrameEventKind::Composite ? "composite" : "completed")
+            << " qpc=" << e.qpc << " context=" << e.context << " epoch=" << e.epoch << " generation=" << e.generation
+            << " source_qpc=" << e.source_qpc << " source_sequence=" << e.source_sequence << " texture=" << e.texture << " device=" << e.device
+            << " previous=" << e.previous << " thread=" << e.thread << " slot=" << e.slot
+            << " reason=" << FrameReasonName(e.reason) << " consumed=" << e.consumed << " reset=" << e.reset
+            << " flags=" << e.flags << " ready=" << e.ready << " ready_completed=" << e.completed
+            << " copied=" << e.copied << " copied_completed=" << e.copied_completed << " producer=" << e.producer
+            << " producer_completed=" << e.producer_completed << " cpu_ms=" << e.cpu_ms << " interval_ms=" << e.interval_ms
+            << " source_age_ms=" << e.source_age_ms << " submit_cpu_ms=" << e.submit_cpu_ms << " nvof_api_cpu_ms=" << e.of_cpu_ms
+            << " ngx_api_cpu_ms=" << e.ngx_cpu_ms << " wait_api_cpu_ms=" << e.wait_api_cpu_ms
+            << " conversion_gpu_ms=" << e.conversion_ms << " flow_dependency_gpu_ms=" << e.flow_ms
+            << " generation_gpu_ms=" << e.generation_ms << " post_gpu_ms=" << e.post_ms << " backend_span_gpu_ms=" << e.total_ms << '\n';
+    }
+    for (const auto& [context, metrics] : windows) for (size_t i = 0; i != metrics.size(); ++i) {
+        const auto s = metrics[i].Snapshot(); if (!s.count) continue;
+        out << "timing_window context=" << context << " metric=" << names[i] << " samples=" << s.count
+            << " mean_ms=" << s.mean << " p50_ms=" << s.p50 << " p95_ms=" << s.p95 << " p99_ms=" << s.p99
+            << " max_ms=" << s.maximum << " window_capacity=512\n";
+    }
+    for (const auto& [context, counts] : outcomes) for (size_t kind = 0; kind != counts.size(); ++kind)
+        for (size_t reason = 0; reason != counts[kind].size(); ++reason) if (counts[kind][reason])
+            out << "frame_outcome context=" << context << " kind=" << kind << " reason=" << FrameReasonName(static_cast<FrameReason>(reason))
+                << " samples=" << counts[kind][reason] << '\n';
+    out << "frame_trace drained=" << drained << " written=" << written << " dropped_total=" << NativeBackend::DroppedFrameEvents()
+        << " frame_every=" << g->diagnostics.frame_every << " display_measured=0 gpu_wait_duration_measured=0\n";
+}
+void WriteProcessDiagnostics(std::ostream& out) {
+    PROCESS_MEMORY_COUNTERS_EX memory{}; memory.cb = sizeof(memory);
+    FILETIME created{}, exited{}, kernel{}, user{}; IO_COUNTERS io{};
+    const HANDLE process = GetCurrentProcess();
+    if (K32GetProcessMemoryInfo(process, reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory), sizeof(memory)))
+        out << "process working_set=" << memory.WorkingSetSize << " private_bytes=" << memory.PrivateUsage
+            << " page_faults=" << memory.PageFaultCount << " priority=" << GetPriorityClass(process) << '\n';
+    const auto ticks = [](FILETIME v) { return uint64_t(v.dwHighDateTime) << 32 | v.dwLowDateTime; };
+    if (GetProcessTimes(process, &created, &exited, &kernel, &user))
+        out << "process_cpu kernel_100ns=" << ticks(kernel) << " user_100ns=" << ticks(user) << '\n';
+    if (GetProcessIoCounters(process, &io)) out << "process_io read_bytes=" << io.ReadTransferCount << " write_bytes=" << io.WriteTransferCount << '\n';
+}
+void WriteAdapterDiagnostics(std::ostream& out, bool startup) {
+    // Worker only; DXGI adapters are independent of SINGLETHREADED D3D11 devices.
+    Com<IDXGIFactory1> factory;
+    const auto hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(factory.Put()));
+    if (FAILED(hr)) { out << "adapter_diagnostics_error=0x" << std::hex << hr << std::dec << '\n'; return; }
+    for (UINT i = 0; i != 16; ++i) {
+        Com<IDXGIAdapter1> adapter;
+        if (factory->EnumAdapters1(i, adapter.Put()) != S_OK) break;
+        DXGI_ADAPTER_DESC1 d{}; if (FAILED(adapter->GetDesc1(&d))) continue;
+        const auto luid = uint64_t(static_cast<uint32_t>(d.AdapterLuid.HighPart)) << 32 | d.AdapterLuid.LowPart;
+        if (startup) out << "adapter index=" << i << " luid=0x" << std::hex << luid << std::dec
+            << " name=" << std::quoted(std::filesystem::path(d.Description).u8string()) << " vendor=" << d.VendorId
+            << " device=" << d.DeviceId << " dedicated_bytes=" << d.DedicatedVideoMemory << " flags=" << d.Flags << '\n';
+        Com<IDXGIAdapter3> budget;
+        if (SUCCEEDED(adapter->QueryInterface(__uuidof(IDXGIAdapter3), reinterpret_cast<void**>(budget.Put())))) {
+            DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+            if (SUCCEEDED(budget->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)))
+                out << "vram luid=0x" << std::hex << luid << std::dec << " process_usage=" << info.CurrentUsage
+                    << " process_budget=" << info.Budget << " reservation=" << info.CurrentReservation << '\n';
+        }
+        if (!startup) continue;
+        for (UINT o = 0; o != 16; ++o) {
+            Com<IDXGIOutput> output; if (adapter->EnumOutputs(o, output.Put()) != S_OK) break;
+            DXGI_OUTPUT_DESC desc{}; if (FAILED(output->GetDesc(&desc))) continue;
+            DEVMODEW mode{}; mode.dmSize = sizeof(mode);
+            const bool known = EnumDisplaySettingsW(desc.DeviceName, ENUM_CURRENT_SETTINGS, &mode) != 0;
+            out << "display luid=0x" << std::hex << luid << std::dec << " name=" << std::quoted(std::filesystem::path(desc.DeviceName).u8string())
+                << " attached=" << desc.AttachedToDesktop << " nominal_hz=" << (known ? mode.dmDisplayFrequency : 0) << " vrr_measured=0\n";
+        }
+    }
+}
+void RotateBackendLog() {
+    if (g->backend_log_path.empty() || g->backend_log.tellp() < std::streamoff(uint64_t(g->diagnostics.max_log_mib) * 1024 * 1024)) return;
+    g->backend_log.close();
+    std::error_code error;
+    const auto part = [&](uint32_t n) { auto p = g->backend_log_path; p.replace_extension(L"." + std::to_wstring(n) + L".log"); return p; };
+    if (g->diagnostics.keep_log_files > 1) {
+        std::filesystem::remove(part(g->diagnostics.keep_log_files - 1), error); error.clear();
+        for (uint32_t n = g->diagnostics.keep_log_files - 1; n > 1; --n) {
+            if (std::filesystem::exists(part(n - 1), error)) std::filesystem::rename(part(n - 1), part(n), error);
+            if (error) break;
+        }
+        if (!error) std::filesystem::rename(g->backend_log_path, part(1), error);
+    }
+    if (error) {
+        g->backend_log.open(g->backend_log_path, std::ios::app);
+        g->backend_log << "log_rotation_error=" << error.value() << '\n'; return;
+    }
+    g->backend_log.open(g->backend_log_path, std::ios::trunc);
+    g->backend_log << g->backend_header << "log_segment=" << ++g->log_segments << '\n';
+}
 void WriteBackendDiagnostics(std::ostream& out) {
+    LARGE_INTEGER writer_begin{}; QueryPerformanceCounter(&writer_begin);
     struct SessionSnapshot {
         uint64_t context = 0, last_source_ms = 0, reattachments = 0;
         TextureObservation extent;
@@ -517,6 +643,44 @@ void WriteBackendDiagnostics(std::ostream& out) {
     // GPU-counter polling, formatting or file I/O. Busy backends skip a sample.
     for (auto& snapshot : snapshots)
         if (snapshot.backend) snapshot.sampled = snapshot.backend->TryPollDiagnostics(snapshot.diagnostics);
+    BackendOptions requested;
+    RenderPolicy requested_policy;
+    std::array<double, 32> requested_settings{}, forwarded_settings{};
+    uint64_t settings_revision = 0;
+    bool requested_valid = false;
+    {
+        std::unique_lock<std::mutex> settings(g->policy_mutex, std::try_to_lock);
+        if (settings.owns_lock()) {
+            requested = g->ui_owned.load() ? g->ui_options : g->options;
+            requested_policy = g->policy; requested_valid = true;
+            requested_settings = g->settings_requested; forwarded_settings = g->settings_forwarded;
+            settings_revision = g->settings_revision;
+        }
+    }
+    if (requested_valid) {
+            out << "requested_config OpticalFlow=" << requested.optical_flow << " Quality=" << requested.quality
+                << " AnalysisPercent=" << requested.analysis_percent << " GPUOrdered=" << requested.gpu_ordered
+                << " Slots=" << requested.slots << " FlowPreset=" << requested.flow_preset << " FlowGrid=" << requested.flow_grid << '\n';
+            if (g->settings_written != settings_revision) {
+                constexpr const char* names[]{"scalingMode","scalingFitMode","scalingType","scalingSubtype","scaleFactor",
+                    "resizeBeforeScale","sharpness","vrs","frameGenType","frameGenSize","frameGenMode","frameGenMultiplier",
+                    "frameGenTarget","frameGenFlowScale","clipCursor","adjustCursorSpeed","hideCursor","scaleCursor","syncMode",
+                    "maxFrameLatency","gsyncSupport","hdrSupport","captureApi","queueTarget","drawFps","gpuId","displayId",
+                    "cropLeft","cropTop","cropRight","cropBottom","multiDisplayMode"};
+                for (bool forwarded : {false, true}) {
+                    out << "native_settings revision=" << settings_revision << " kind=" << (forwarded ? "forwarded" : "requested");
+                    const auto& v = forwarded ? forwarded_settings : requested_settings;
+                    for (size_t i = 0; i != v.size(); ++i) out << ' ' << names[i] << '=' << v[i];
+                    out << '\n';
+                }
+                g->settings_written = settings_revision;
+            }
+            const auto& p = requested_policy;
+            out << "filter_config duplicate=" << p.duplicate_filter << " duplicate_delta=" << p.duplicate_delta
+                << " scene_cut=" << p.scene_cut << " cut_delta=" << p.cut_delta << " cut_percent=" << p.cut_percent;
+            for (size_t i = 0; i != p.hud.size(); ++i) out << " HUD" << i + 1 << '=' << p.hud[i].left << ',' << p.hud[i].top << ',' << p.hud[i].right << ',' << p.hud[i].bottom;
+            out << '\n';
+    } else out << "requested_config diagnostics_busy=1\n";
     out << "profile=" << g->profile_revision.load() << " type=" << g->profile_type.load()
         << " mode=" << g->profile_mode.load() << " multiplier=" << g->profile_multiplier.load()
         << " hdr=" << g->profile_hdr.load() << " eligible=" << g->eligible.load()
@@ -542,6 +706,8 @@ void WriteBackendDiagnostics(std::ostream& out) {
         << " attached_devices=" << g->attached_devices.load() << " dispatch_callbacks=" << g->dispatch_calls.load()
         << " tagged_shaders=" << g->tagged_shaders.load() << " tagged_buffers=" << g->tagged_buffers.load()
         << " observed_dispatches=" << g->seen.load() << " untagged=" << g->untagged.load()
+        << " capture_busy=" << g->busy.load() << " observation_dropped=" << g->records.Dropped()
+        << " source_epoch=" << g->source_invalidation_epoch.load() << " command_epoch=" << g->command_epoch.load()
         << " hook_failures=" << g->hook_failures.load() << " hook=" << HookName(static_cast<HookKind>(failure >> 48))
         << " hook_stage=" << (hook_stage == 1 ? "create" : hook_stage == 2 ? "enable" : hook_stage == 3 ? "capacity" : "none")
         << " hook_code=" << static_cast<int32_t>(failure)
@@ -568,6 +734,27 @@ void WriteBackendDiagnostics(std::ostream& out) {
             << " scene_resets=" << c.scene_resets << " timing_samples=" << d.timing_samples
             << " conversion_gpu_ms=" << d.conversion_ms << " flow_dependency_gpu_ms=" << d.flow_dependency_ms << " generation_gpu_ms=" << d.generation_ms
             << " ineligible=" << c.ineligible << " destination_rejected=" << c.destination_rejected << " warmup=" << c.warmup << "\n";
+        const auto& actual = d.options;
+        const bool pending = requested.analysis_percent != actual.analysis_percent || requested.flow_preset != actual.flow_preset ||
+            requested.flow_grid != actual.flow_grid || requested.slots != actual.slots || requested.quality != actual.quality;
+        out << "graph_config session=" << snapshot.context << " OpticalFlow=" << actual.optical_flow << " Quality=" << actual.quality
+            << " AnalysisPercent=" << actual.analysis_percent << " GPUOrdered=" << actual.gpu_ordered << " Slots=" << actual.slots
+            << " FlowPreset=" << actual.flow_preset << " FlowGrid=" << actual.flow_grid << " effective_preset=" << d.effective_preset
+            << " actual_analysis=" << d.analysis_width << 'x' << d.analysis_height << " restart_pending=" << (requested_valid ? int(pending) : -1)
+            << " diagnostics_level=" << actual.diagnostics_level << '\n';
+        out << "native_device session=" << snapshot.context << " flags=" << d.native_device_flags << " feature_level=" << d.native_feature_level
+            << " owner_thread=" << d.owner_thread << " timestamp_frequency=" << d.timestamp_frequency << '\n';
+        out << "queue session=" << snapshot.context << " ready_target=" << d.ready_target << " ready_completed=" << d.ready_completed
+            << " copied_target=" << d.copied_target << " copied_completed=" << d.copied_completed << " producer_target=" << d.producer_target
+            << " producer_completed=" << d.producer_completed << " pending_jobs=" << d.pending_jobs << " unpolled_jobs=" << d.unpolled_jobs
+            << " converted_target=" << d.converted_target << " converted_completed=" << d.converted_completed
+            << " flow_target=" << d.flow_target << " flow_completed=" << d.flow_completed
+            << " registered_target=" << d.registered_target << " registered_completed=" << d.registered_completed
+            << " metadata_dropped=" << d.metadata_dropped << " device_removed=0x" << std::hex << d.device_removed << std::dec
+            << " source_lock_miss=" << d.source_lock_miss << " composite_lock_miss=" << d.composite_lock_miss << " policy_lock_miss=" << d.policy_lock_miss
+            << " ordered_pending=" << c.ordered_pending << " already_ready=" << c.already_ready << " not_ready=" << c.not_ready
+            << " interpolation_allowed_samples=" << c.interpolation_allowed_samples << " scene_hold_samples=" << c.scene_hold_samples
+            << " readback_failures=" << c.readback_failed << " invalid_timestamps=" << c.invalid_timestamps << '\n';
         if (d.ngx.init) {
             const auto& n = d.ngx;
             out << "ngx session=" << snapshot.context << " init=0x" << std::hex << n.init << " parameters=0x" << n.parameters;
@@ -585,6 +772,16 @@ void WriteBackendDiagnostics(std::ostream& out) {
         out << "ngx_log level=" << message.level << " feature=" << message.feature << " truncated=" << message.truncated
             << " message=" << std::quoted(message.text.data()) << '\n';
     if (const auto dropped = NativeBackend::DroppedNgxLogs()) out << "ngx_log_dropped=" << dropped << '\n';
+    WriteFrameDiagnostics(out);
+    WriteProcessDiagnostics(out);
+    static uint64_t adapter_next = 0;
+    const auto now = GetTickCount64();
+    if (now >= adapter_next) { WriteAdapterDiagnostics(out, adapter_next == 0); adapter_next = now + 5000; }
+    out << "native_buffer_create calls=" << g->buffer_create_count.load() << " cpu_ticks=" << g->buffer_create_ticks.load()
+        << " max_cpu_ticks=" << g->buffer_create_max.load() << " qpc_frequency=" << g->frequency << '\n';
+    LARGE_INTEGER writer_end{}; QueryPerformanceCounter(&writer_end);
+    out << "writer qpc=" << writer_end.QuadPart << " cpu_wall_ms=" << (g->frequency ? double(writer_end.QuadPart - writer_begin.QuadPart) * 1000.0 / double(g->frequency) : -1)
+        << " stream_good=" << out.good() << '\n';
     out.flush();
 }
 [[maybe_unused]] void RunBackendWriter(std::ostream& out) {
@@ -620,7 +817,7 @@ void BackendWriter() {
             }
         }
         const auto now = GetTickCount64();
-        if (now >= next) { WriteBackendDiagnostics(g->backend_log); next = now + 1000; }
+        if (now >= next) { RotateBackendLog(); WriteBackendDiagnostics(g->backend_log); next = now + g->diagnostics.interval_ms; }
         MsgWaitForMultipleObjects(0, nullptr, FALSE, 50, QS_ALLINPUT);
     }
     for (int i = 0; i != 3; ++i) if (registered & (1u << i)) UnregisterHotKey(nullptr, 0x4c50+i);
@@ -785,7 +982,20 @@ template<int I> HRESULT STDMETHODCALLTYPE Buffer(ID3D11Device* dev, const D3D11_
         snapshot.command_epoch = g->command_epoch.load(); snapshot.usage = desc->Usage;
         std::memcpy(snapshot.bytes.bytes.data(), data->pSysMem, desc->ByteWidth);
     }
+#ifdef LS_WITH_NGX
+    LARGE_INTEGER begin{}, end{};
+    if (capture && g->diagnostics.level) QueryPerformanceCounter(&begin);
+#endif
     const HRESULT hr = original(dev, desc, data, result);
+#ifdef LS_WITH_NGX
+    if (begin.QuadPart) {
+        QueryPerformanceCounter(&end);
+        const auto elapsed = static_cast<uint64_t>(end.QuadPart - begin.QuadPart);
+        ++g->buffer_create_count; g->buffer_create_ticks.fetch_add(elapsed);
+        auto maximum = g->buffer_create_max.load();
+        while (maximum < elapsed && !g->buffer_create_max.compare_exchange_weak(maximum, elapsed)) {}
+    }
+#endif
     if (capture && SUCCEEDED(hr) && result && *result &&
         SUCCEEDED((*result)->SetPrivateData(kConstantTag, sizeof(snapshot), &snapshot))) ++g->tagged_buffers;
     t_buffer = false;
@@ -1167,14 +1377,13 @@ void StartNativeObservation(HMODULE native, HMODULE proxy, const std::filesystem
 #ifdef LS_WITH_NGX
         g->folder = folder;
         const auto config = ReadPolicyConfig(ini); g->options = config.backend; g->options.enabled = backend;
+        g->diagnostics = config.diagnostics;
         g->policy = config.policy; g->requested_mode.store(static_cast<uint32_t>(config.policy.mode));
         g->ui_options = g->options;
         if (ui_owned) {
             g->ui_owned.store(true); g->ui_type.store(ui_settings.type);
             g->policy = UiPolicy(ui_settings); g->requested_mode.store(static_cast<uint32_t>(g->policy.mode));
-            g->ui_options.enabled = true; g->ui_options.optical_flow = true; g->ui_options.gpu_ordered = true;
-            g->ui_options.flow_preset = ui_settings.preset; g->ui_options.flow_grid = ui_settings.grid;
-            g->ui_options.analysis_percent = ui_settings.analysis; g->ui_options.slots = ui_settings.slots;
+            g->ui_options = UiBackendOptions(g->options, ui_settings);
         }
         g->native_base = reinterpret_cast<uintptr_t>(native);
         for (uint32_t id = 255; id <= 302; ++id) {
@@ -1205,13 +1414,19 @@ void StartNativeObservation(HMODULE native, HMODULE proxy, const std::filesystem
         }
 #ifdef LS_WITH_NGX
         if (backend) {
-            g->backend_log.open(folder / L"logs" / (L"native-dlss-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(start.QuadPart) + L".log"));
+            g->backend_log_path = folder / L"logs" / (L"native-dlss-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(start.QuadPart) + L".log");
+            g->backend_log.open(g->backend_log_path);
             if (!g->backend_log) return;
-            g->backend_log << "NativeDLSS 0.2.0 experimental. Present owner: LS. Full source coverage / real RTX3080 acceptance: unverified.\n"
-                << "OpticalFlow=" << g->options.optical_flow << " Quality=" << g->options.quality
-                << " AnalysisPercent=" << g->options.analysis_percent << " GPUOrdered=" << g->options.gpu_ordered
-                << " Slots=" << g->options.slots << " FlowPreset=" << g->options.flow_preset << " FlowGrid=" << g->options.flow_grid
-                << " requested_mode=" << RenderModeName(config.policy.mode) << " profile=" << std::quoted(std::filesystem::path(config.profile).u8string()) << "\n";
+            std::ostringstream header;
+            header << "NativeDLSS 0.3.2 experimental. Present owner: LS. Hardware pacing acceptance: unverified.\n"
+                << "schema=3 qpc_frequency=" << g->frequency << " process=" << GetCurrentProcessId()
+                << " diagnostics_level=" << g->diagnostics.level << " interval_ms=" << g->diagnostics.interval_ms
+                << " frame_every=" << g->diagnostics.frame_every << " max_log_mib=" << g->diagnostics.max_log_mib
+                << " keep_log_files=" << g->diagnostics.keep_log_files << " profile=" << std::quoted(std::filesystem::path(config.profile).u8string()) << '\n'
+                << "measurement_scope=LS_callbacks_and_backend display_measured=0 gpu_wait_duration_measured=0 game_frame_ids_known=0\n"
+                << "timing_scope=conversion_start_to_postprocessing_end excludes=D3D11_copy_initial_producer_wait_composite_present_scanout\n"
+                << "flag_bits=1:ngx_disabled,2:duplicate,4:scene_hold,8:cut_event unavailable_duration=-1 unknown_flags=4294967295\n";
+            g->backend_header = header.str(); g->backend_log << g->backend_header;
             PrepareSm86(g->backend_log, folder);
         }
 #endif
@@ -1303,6 +1518,18 @@ void SetNativeProfile(int type, int mode, float multiplier, bool hdr) noexcept {
 #endif
 }
 
+void RecordNativeSettings(const std::array<double, 32>& requested, const std::array<double, 32>& forwarded) noexcept {
+#ifdef LS_WITH_NGX
+    if (!g) return;
+    try {
+        std::lock_guard<std::mutex> lock(g->policy_mutex);
+        g->settings_requested = requested; g->settings_forwarded = forwarded; ++g->settings_revision;
+    } catch (...) {}
+#else
+    (void)requested; (void)forwarded;
+#endif
+}
+
 bool NativeUiOwnsSelection() noexcept {
     std::lock_guard<std::mutex> lock(ui_mutex);
     return ui_owned;
@@ -1316,10 +1543,7 @@ bool ConfigureNativeUi(const ls_native::UiSettings& settings) noexcept {
         if (g) {
             const auto policy = UiPolicy(settings);
             std::lock_guard<std::mutex> values(g->policy_mutex);
-            g->ui_options = g->options;
-            g->ui_options.enabled = true; g->ui_options.optical_flow = true; g->ui_options.gpu_ordered = true;
-            g->ui_options.flow_preset = settings.preset; g->ui_options.flow_grid = settings.grid;
-            g->ui_options.analysis_percent = settings.analysis; g->ui_options.slots = settings.slots;
+            g->ui_options = UiBackendOptions(g->options, settings);
             g->policy = policy; g->ui_type.store(settings.type); g->ui_owned.store(true);
             ++g->source_invalidation_epoch;
             g->requested_mode.store(static_cast<uint32_t>(policy.mode));
@@ -1721,6 +1945,21 @@ int NativeObservationSelfTest() {
     { std::ofstream unknown(probe / L"version.dll", std::ios::binary); unknown << "unrecognized fixture, never execute"; }
     std::ostringstream runtime;
     PrepareSm86(runtime, probe);
+    g->backend_log_path = probe / L"native-dlss-rotation.log";
+    g->backend_header = "schema=3 test_header=1\n";
+    g->diagnostics.max_log_mib = 1; g->diagnostics.keep_log_files = 3;
+    g->backend_log.open(g->backend_log_path);
+    for (unsigned segment = 0; segment != 5; ++segment) {
+        g->backend_log << std::string(1024 * 1024 + 1, 'x'); g->backend_log.flush(); RotateBackendLog();
+    }
+    g->backend_log.close();
+    size_t log_files = 0;
+    for (const auto& file : std::filesystem::directory_iterator(probe)) if (file.path().extension() == L".log") ++log_files;
+    std::ifstream rotated(g->backend_log_path); std::string rotation_header; std::getline(rotated, rotation_header); rotated.close();
+    if (log_files != 3 || rotation_header != "schema=3 test_header=1" || g->log_segments != 5) {
+        std::cerr << "bounded log rotation lost header or retained too many segments\n"; return 1;
+    }
+    g->backend_log_path.clear(); g->diagnostics = {};
     std::filesystem::remove_all(probe);
     if (runtime.str().find("sm86_bootstrap=no_recognized_utility_proxy") == std::string::npos ||
         runtime.str().find("sm86_bootstrap=loaded") != std::string::npos ||

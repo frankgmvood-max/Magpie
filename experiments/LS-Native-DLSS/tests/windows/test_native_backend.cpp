@@ -116,6 +116,7 @@ struct Fixture {
     }
 };
 void Test(bool disabled) {
+    FrameEvent discarded; while (NativeBackend::TryPopFrameEvent(discarded)) {}
     Fixture f; NativeBackend backend; BackendOptions o; o.enabled = o.synthetic_test = true; o.test_disable = disabled;
     const HRESULT initialized = backend.Initialize(f.context.Get(), f.extent, o, L".");
     if (FAILED(initialized)) std::cerr << backend.FailureStep() << " 0x" << std::hex << backend.ErrorCode() << std::dec << '\n';
@@ -133,6 +134,25 @@ void Test(bool disabled) {
     Require(!backend.Composite(slot, f.outputs[3].Get()), "same slot never consumed twice"); f.Pixels(disabled ? 255 : 60);
     auto counts = backend.PollCounters(); Require(counts.submitted == 2 && counts.composite_queued == 1 && !counts.failed, "counts");
     Require(disabled ? counts.gpu_disabled > 0 : counts.gpu_enabled > 0, "actual GPU disable flag observed");
+    BackendDiagnostics diagnostic; Require(backend.TryPollDiagnostics(diagnostic), "backend telemetry snapshot");
+    Require(diagnostic.options.gpu_ordered && diagnostic.ready_target >= 2 && diagnostic.options.slots == 3 &&
+        diagnostic.timing_samples > 0 && counts.invalid_timestamps == 0, "effective graph, fences and five GPU timestamps");
+    bool source = false, composite = false, completion = false;
+    FrameEvent event;
+    while (NativeBackend::TryPopFrameEvent(event)) {
+        if (event.kind == FrameEventKind::Source && event.reason == FrameReason::Submitted) {
+            source = true; Require(event.ready != 0 && event.cpu_ms >= 0 && event.interval_ms > 0, "source correlation and CPU timing");
+        }
+        if (event.kind == FrameEventKind::Composite && event.consumed) {
+            composite = true; Require(event.generation == c.generation && event.previous == b.generation &&
+                event.wait_api_cpu_ms >= 0, "composite exact pair and wait API CPU time");
+        }
+        if (event.kind == FrameEventKind::Completed) {
+            completion = true; Require(event.flags != UINT32_MAX && event.total_ms >= event.generation_ms &&
+                event.post_ms >= 0 && event.ready <= event.completed, "completed flag and full backend timestamp span");
+        }
+    }
+    Require(source && composite && completion, "all telemetry stages received");
     ++f.epoch; f.generation = 0;
     auto d = f.Source(1, 100); Require(!backend.Source(f.images[1].Get(), d), "epoch reset source");
     auto e = f.Source(0, 120); Require(backend.Source(f.images[0].Get(), e), "reset evaluation");
@@ -201,6 +221,28 @@ void TestRetirement(bool ordered) {
     auto next = f.Source(1, 140); Require(backend.Source(f.images[1].Get(), next), "retired ring reusable");
     f.Native(); Require(!backend.Composite(f.Slot(e, next), f.outputs[3].Get()), "dropped evaluation resets history"); f.Pixels(255);
     std::cout << "Held native retirement, bounded ring reuse and " << (ordered ? "GPU ordering" : "ready-only fallback") << " passed\n";
+}
+void TestDiagnosticSnapshot() {
+    Fixture f; NativeBackend backend; BackendOptions options;
+    options.enabled = options.synthetic_test = true;
+    Hr(backend.Initialize(f.context.Get(), f.extent, options, L"."), "diagnostic fixture initialize");
+    auto a = f.Source(0, 20); backend.Source(f.images[0].Get(), a);
+    auto b = f.Source(1, 40); Require(backend.Source(f.images[1].Get(), b), "diagnostic fixture submission");
+    // Make native submission progress; CPU waits exist only in this fixture.
+    f.Native(); backend.Composite(f.Slot(a,b), f.outputs[3].Get()); f.Pixels(255);
+    BackendDiagnostics d;
+    const auto deadline = GetTickCount64() + 15000;
+    do {
+        Require(backend.TryPollDiagnostics(d), "snapshot available");
+        if (d.ready_completed >= d.ready_target) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (GetTickCount64() < deadline);
+    Require(d.ready_completed >= d.ready_target, "test-only GPU retirement deadline");
+    Require(d.unpolled_jobs == 1 && d.timing_samples == 0 && d.counters.gpu_enabled == 0,
+        "worker snapshot never maps or retires GPU readback metadata");
+    backend.PollCounters(); Require(backend.TryPollDiagnostics(d), "retired snapshot available");
+    Require(d.unpolled_jobs == 0 && d.timing_samples == 1 && d.counters.gpu_enabled == 1,
+        "explicit completed metadata retirement remains observable");
 }
 void TestReattachment() {
     auto current = std::make_unique<Fixture>(); NativeBackend backend; BackendOptions options;
@@ -342,5 +384,5 @@ void TestDriverLog() {
     std::cout << "NGX callback ownership, truncation, concurrent producers and bounded output passed\n";
 }
 }
-int main() { std::cout << std::unitbuf; try { TestDriverLog(); Test(false); Test(true); TestRetirement(true); TestRetirement(false); TestReattachment(); TestEconomy(false); TestEconomy(true); TestHudAndFilters(); TestQueuedSceneGuard(); return 0; }
+int main() { std::cout << std::unitbuf; try { TestDriverLog(); Test(false); Test(true); TestDiagnosticSnapshot(); TestRetirement(true); TestRetirement(false); TestReattachment(); TestEconomy(false); TestEconomy(true); TestHudAndFilters(); TestQueuedSceneGuard(); return 0; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; } }

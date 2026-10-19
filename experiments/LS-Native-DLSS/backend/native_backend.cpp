@@ -19,6 +19,11 @@ using Microsoft::WRL::ComPtr;
 namespace {
 std::atomic<bool> driver_exception{false};
 ObservationQueue<NgxLogMessage, 256> ngx_logs;
+ObservationQueue<FrameEvent, 4096> frame_events;
+uint64_t Clock() { LARGE_INTEGER v{}; QueryPerformanceCounter(&v); return static_cast<uint64_t>(v.QuadPart); }
+double Milliseconds(uint64_t end, uint64_t begin, uint64_t frequency) {
+    return frequency && end >= begin ? double(end - begin) * 1000.0 / double(frequency) : -1;
+}
 std::atomic<uint64_t> ngx_log_calls{0}, ngx_log_limited{0};
 void NVSDK_CONV NgxLog(const char* message, NVSDK_NGX_Logging_Level level, NVSDK_NGX_Feature feature) {
     // Driver callbacks can run on any thread, including Evaluate. Never do
@@ -99,6 +104,7 @@ struct NativeBackend::State {
         NvOFGPUBufferHandle registered[3]{};
         SourceWriteObservation previous, current;
         uint64_t ready = 0, copied = 0, polled = 0;
+        double of_cpu_ms = -1, ngx_cpu_ms = -1;
         bool consumed = false, warmup = true;
     };
     std::mutex mutex;
@@ -124,6 +130,10 @@ struct NativeBackend::State {
     std::array<bool,2> constants_uploaded{};
     RenderPolicy policy;
     uint64_t timestamp_frequency = 0, timing_samples = 0;
+    uint64_t qpc_frequency = 0, metadata_dropped = 0;
+    std::atomic<uint64_t> source_lock_miss{0}, composite_lock_miss{0}, policy_lock_miss{0};
+    uint32_t effective_preset = 0;
+    uint32_t native_device_flags = 0, native_feature_level = 0, owner_thread = 0;
     double conversion_ms = 0, flow_dependency_ms = 0, generation_ms = 0;
     std::array<wchar_t, 128> adapter_name{};
     bool scene_pending = false;
@@ -147,6 +157,24 @@ struct NativeBackend::State {
     const char* step = "not initialized";
     uint32_t code = 0;
     bool failed = false, initialized = false;
+
+    struct EventScope {
+        State& state;
+        FrameEvent event;
+        bool enabled;
+        EventScope(State& s, FrameEventKind kind, const SourceWriteObservation& write) : state(s), enabled(s.options.diagnostics_level != 0) {
+            if (!enabled) return;
+            event.kind = kind; event.qpc = Clock(); event.context = write.context;
+            event.epoch = write.epoch; event.generation = write.generation; event.thread = GetCurrentThreadId();
+            event.source_qpc = write.qpc; event.source_sequence = write.sequence; event.texture = write.texture.object; event.device = write.device;
+            event.source_age_ms = Milliseconds(event.qpc, write.qpc, s.qpc_frequency);
+        }
+        ~EventScope() {
+            if (!enabled) return;
+            event.cpu_ms = Milliseconds(Clock(), event.qpc, state.qpc_frequency);
+            frame_events.TryPush(event);
+        }
+    };
 
     bool Fail(const char* where, uint32_t value = 0) {
         step = where; code = value; failed = true; ++counters.failed; return false;
@@ -300,6 +328,7 @@ struct NativeBackend::State {
         p.outGridSize = static_cast<NV_OF_OUTPUT_VECTOR_GRID_SIZE>(grid); p.mode = NV_OF_MODE_OPTICALFLOW;
         const uint32_t preset = options.flow_preset ? options.flow_preset :
             options.quality == 1 ? 1u : (options.quality == 3 || options.quality == 5) ? 3u : 2u;
+        effective_preset = preset;
         p.perfLevel = preset == 1 ? NV_OF_PERF_LEVEL_FAST : preset == 3 ? NV_OF_PERF_LEVEL_SLOW : NV_OF_PERF_LEVEL_MEDIUM;
         p.inputBufferFormat = NV_OF_BUFFER_FORMAT_ABGR8; p.predDirection = NV_OF_PRED_DIRECTION_FORWARD;
         const auto result = Of([&]{return of.nvOFInit(of_session, &p);});
@@ -357,7 +386,7 @@ struct NativeBackend::State {
         device->CopyDescriptorsSimple(1, Cpu(j, 10, true), Cpu(j, 10), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         Uav(j, 12, scene_state.Get(), DXGI_FORMAT_R32_UINT);
         if (timestamp_frequency) {
-            D3D12_QUERY_HEAP_DESC query{}; query.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP; query.Count = 4;
+            D3D12_QUERY_HEAP_DESC query{}; query.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP; query.Count = 5;
             if (FAILED(device->CreateQueryHeap(&query, IID_PPV_ARGS(&j.timestamps)))) timestamp_frequency = 0;
         }
         for (UINT i = 0; i != 2; ++i) device->CreateRenderTargetView(j.analysis[i].Get(), nullptr, Rtv(j, i));
@@ -491,7 +520,9 @@ struct NativeBackend::State {
             NV_OF_EXECUTE_INPUT_PARAMS_D3D12 in{}; in.inputFrame = j.registered[1]; in.referenceFrame = j.registered[0];
             in.disableTemporalHints = reset ? NV_OF_TRUE : NV_OF_FALSE; in.numFencePoints = 1; in.fencePoint = &input;
             NV_OF_EXECUTE_OUTPUT_PARAMS_D3D12 out{}; out.outputBuffer = j.registered[2]; out.fencePoint = &output;
+            const auto begin = options.diagnostics_level ? Clock() : 0;
             const auto result = Of([&]{return of.nvOFExecuteD3D12(of_session, &in, &out);});
+            if (begin) j.of_cpu_ms = Milliseconds(Clock(), begin, qpc_frequency);
             if (result != NV_OF_SUCCESS) return Fail("NVOF execute", static_cast<uint32_t>(result));
             if (FAILED(queue->Wait(flow_done.Get(), flow_value))) return Fail("optical-flow GPU dependency");
         }
@@ -551,7 +582,9 @@ struct NativeBackend::State {
             op.cameraUp[1] = op.cameraRight[0] = op.cameraFwd[2] = 1; op.cameraNear = 0.1f; op.cameraFar = 1000;
             op.cameraFOV = 1.04719755f; op.cameraAspectRatio = float(extent.width) / float(extent.height);
             op.mvecsSubrectSize = op.depthSubrectSize = op.backbufferSubrectSize = op.outputInterpSubrectSize = {extent.width, extent.height};
+            const auto begin = options.diagnostics_level ? Clock() : 0;
             result = Ngx([&]{return NGX_D3D12_EVALUATE_DLSSG(cmd, feature, params, &ep, &op);});
+            if (begin) j.ngx_cpu_ms = Milliseconds(Clock(), begin, qpc_frequency);
             if (!NVSDK_NGX_SUCCEED(result)) return Fail("NGX evaluate", static_cast<uint32_t>(result));
         }
         if (timestamp_frequency) cmd->EndQuery(j.timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 3);
@@ -579,12 +612,15 @@ struct NativeBackend::State {
             D3D12_TEXTURE_COPY_LOCATION source{}; source.pResource = j.flag12.Get(); source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
             cmd->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
             auto flag_restore = Barrier(j.flag12.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON); cmd->ResourceBarrier(1, &flag_restore);
-            if (timestamp_frequency) cmd->ResolveQueryData(j.timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 4, j.readback.Get(), 256);
             flags[0] = Barrier(j.disabled.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS); cmd->ResourceBarrier(1, flags);
         }
         // Motion/depth were already restored; only colour resources remain.
         for (UINT i = 0; i != 3; ++i) std::swap(resources[i].Transition.StateBefore, resources[i].Transition.StateAfter);
         cmd->ResourceBarrier(3, resources);
+        if (timestamp_frequency) {
+            cmd->EndQuery(j.timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 4);
+            cmd->ResolveQueryData(j.timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 5, j.readback.Get(), 256);
+        }
         if (FAILED(cmd->Close())) return Fail("generation command close");
         ID3D12CommandList* lists[]{cmd}; queue->ExecuteCommandLists(1, lists);
         j.ready = ++ready_value; j.warmup = reset;
@@ -597,24 +633,41 @@ struct NativeBackend::State {
         const auto completed = s.ready12->GetCompletedValue(); if (completed == UINT64_MAX) { s.Fail("removed while polling"); return s.counters; }
         for (UINT i = 0; i != s.slots; ++i) {
             auto& j = s.jobs[i]; if (!j.ready || j.ready <= j.polled || completed < j.ready) continue;
-            void* pointer = nullptr; const D3D12_RANGE range{0, 288};
+            const auto poll_begin = s.options.diagnostics_level ? Clock() : 0;
+            FrameEvent event; event.kind = FrameEventKind::Completed; event.qpc = poll_begin;
+            event.context = j.current.context; event.epoch = j.current.epoch; event.generation = j.current.generation;
+            event.previous = j.previous.generation; event.ready = j.ready; event.completed = completed;
+            event.source_qpc = j.current.qpc; event.source_sequence = j.current.sequence;
+            event.texture = j.current.texture.object; event.device = j.current.device;
+            event.slot = i; event.consumed = j.consumed; event.reset = j.warmup;
+            event.reason = FrameReason::Ready; event.thread = GetCurrentThreadId();
+            void* pointer = nullptr; const D3D12_RANGE range{0, 296};
             if (SUCCEEDED(j.readback->Map(0, &range, &pointer)) && pointer) {
                 uint32_t flags = 1; std::memcpy(&flags, pointer, 4);
+                event.flags = flags;
                 if (flags & 1) ++s.counters.gpu_disabled; else ++s.counters.gpu_enabled;
                 if (flags & 2) ++s.counters.duplicate_samples;
+                if (flags & 4) ++s.counters.scene_hold_samples;
+                if (flags == 0) ++s.counters.interpolation_allowed_samples;
                 if (flags & 8) { ++s.counters.scene_cut_samples; s.scene_pending = true; }
                 if (s.timestamp_frequency) {
-                    uint64_t values[4]{}; std::memcpy(values, static_cast<const char*>(pointer) + 256, sizeof(values));
-                    if (values[0] <= values[1] && values[1] <= values[2] && values[2] <= values[3]) {
+                    uint64_t values[5]{}; std::memcpy(values, static_cast<const char*>(pointer) + 256, sizeof(values));
+                    if (values[0] <= values[1] && values[1] <= values[2] && values[2] <= values[3] && values[3] <= values[4]) {
                         const double scale = 1000.0 / double(s.timestamp_frequency);
+                        event.conversion_ms = double(values[1] - values[0]) * scale;
+                        event.flow_ms = double(values[2] - values[1]) * scale;
+                        event.generation_ms = double(values[3] - values[2]) * scale;
+                        event.post_ms = double(values[4] - values[3]) * scale;
+                        event.total_ms = double(values[4] - values[0]) * scale;
                         const double n = double(++s.timing_samples);
                         s.conversion_ms += (double(values[1] - values[0]) * scale - s.conversion_ms) / n;
                         s.flow_dependency_ms += (double(values[2] - values[1]) * scale - s.flow_dependency_ms) / n;
                         s.generation_ms += (double(values[3] - values[2]) * scale - s.generation_ms) / n;
-                    }
+                    } else ++s.counters.invalid_timestamps;
                 }
                 const D3D12_RANGE written{0, 0}; j.readback->Unmap(0, &written); j.polled = j.ready;
-            }
+                if (poll_begin) { event.cpu_ms = Milliseconds(Clock(), poll_begin, s.qpc_frequency); frame_events.TryPush(event); }
+            } else ++s.counters.readback_failed;
         }
         return s.counters;
     }
@@ -635,6 +688,8 @@ HRESULT NativeBackend::Initialize(ID3D11DeviceContext* context, const TextureObs
         source.width > 16384 || source.height > 16384 || !FormatSupported(static_cast<DXGI_FORMAT>(source.format)) ||
         source.mip || source.samples != 1 || source.array_size != 1 || source.view_format != source.format) return E_INVALIDARG;
     state_ = std::make_unique<State>(); auto& s = *state_; s.options = options; s.extent = source;
+    LARGE_INTEGER frequency{}; QueryPerformanceFrequency(&frequency); s.qpc_frequency = static_cast<uint64_t>(frequency.QuadPart);
+    s.options.diagnostics_level = std::min(options.diagnostics_level, 2u);
     s.options.quality = std::clamp(options.quality, 1u, 5u); s.options.analysis_percent = std::clamp(options.analysis_percent, 10u, 100u);
     s.slots = std::clamp(options.slots, 2u, 4u);
     s.options.flow_preset = std::min(options.flow_preset, 3u);
@@ -644,6 +699,7 @@ HRESULT NativeBackend::Initialize(ID3D11DeviceContext* context, const TextureObs
     if (options.synthetic_test) s.options.optical_flow = false;
 #endif
     ComPtr<ID3D11Device> native; context->GetDevice(&native);
+    s.native_device_flags = native->GetCreationFlags(); s.native_feature_level = native->GetFeatureLevel(); s.owner_thread = GetCurrentThreadId();
     HRESULT hr = native.As(&s.native_device); if (FAILED(s.Check(hr, "D3D11 device5"))) return hr;
     hr = context->QueryInterface(IID_PPV_ARGS(&s.native_context)); if (FAILED(s.Check(hr, "D3D11 context4"))) return hr;
     ComPtr<IDXGIDevice> dxgi; ComPtr<IDXGIAdapter> adapter; DXGI_ADAPTER_DESC ad{};
@@ -733,6 +789,7 @@ HRESULT NativeBackend::Reattach(ID3D11DeviceContext* context, const TextureObser
         for (UINT input = 0; input != 2; ++input) j.inputs11[input] = std::move(n.inputs[input]);
         j.output11 = std::move(n.output); j.flag11 = std::move(n.flag);
         j.output_view = std::move(n.output_view); j.flag_view = std::move(n.flag_view);
+        if (j.ready > j.polled) ++s.metadata_dropped;
         j.previous = {}; j.current = {}; j.ready = j.copied = j.polled = 0;
         j.consumed = false; j.warmup = true;
     }
@@ -741,13 +798,15 @@ HRESULT NativeBackend::Reattach(ID3D11DeviceContext* context, const TextureObser
     s.native_context = std::move(target_context); s.native_device = std::move(target);
     s.producer11 = std::move(producer); s.ready11 = std::move(ready); s.copied11 = std::move(copied);
     s.composite_shader = std::move(shader); s.extent = source;
+    s.native_device_flags = s.native_device->GetCreationFlags(); s.native_feature_level = s.native_device->GetFeatureLevel(); s.owner_thread = GetCurrentThreadId();
     // Fence values and NGX frame IDs stay monotonic across native restarts.
     ++s.reattachments; return result(S_OK);
 }
 bool NativeBackend::Source(ID3D11Texture2D* current, const SourceWriteObservation& write) {
     if (!state_) return false;
     auto& s = *state_; std::unique_lock<std::mutex> lock(s.mutex, std::try_to_lock);
-    if (!lock.owns_lock()) return false;
+    if (!lock.owns_lock()) { ++s.source_lock_miss; return false; }
+    State::EventScope trace(s, FrameEventKind::Source, write); auto& event = trace.event;
     if (s.failed || !s.initialized || !current || !SourceWriteValid(write)) return false;
     D3D11_TEXTURE2D_DESC desc{}; current->GetDesc(&desc); ComPtr<ID3D11Device> device; current->GetDevice(&device);
     if (write.adapter_luid != Luid(s.device->GetAdapterLuid()) ||
@@ -759,7 +818,9 @@ bool NativeBackend::Source(ID3D11Texture2D* current, const SourceWriteObservatio
         s.last_write.epoch == write.epoch && s.last_write.generation + 1 == write.generation;
     auto previous = s.last_write; ComPtr<ID3D11Texture2D> previous_source = s.last_source;
     s.last_write = write; s.last_source = current;
-    if (!pair) return false;
+    event.previous = previous.generation;
+    event.interval_ms = pair ? Milliseconds(write.qpc, previous.qpc, s.qpc_frequency) : -1;
+    if (!pair) { event.reason = FrameReason::History; return false; }
     // Completed metadata only (no pixels, waits or flush), before a ring slot can overwrite it.
     s.PollCountersLocked();
     const bool scene_reset = s.scene_pending;
@@ -770,15 +831,23 @@ bool NativeBackend::Source(ID3D11Texture2D* current, const SourceWriteObservatio
         auto& candidate = s.jobs[i];
         if (ready >= candidate.ready && (!candidate.consumed || copied >= candidate.copied)) { job = &candidate; break; }
     }
-    if (!job) { ++s.counters.busy; return false; }
-    auto& j = *job; j.previous = previous; j.current = write; j.consumed = false;
+    event.completed = ready; event.copied_completed = copied;
+    if (!job) { ++s.counters.busy; event.reason = FrameReason::RingBusy; return false; }
+    auto& j = *job;
+    if (j.ready > j.polled) ++s.metadata_dropped;
+    j.previous = previous; j.current = write; j.consumed = false;
+    event.slot = static_cast<uint32_t>(job - s.jobs.data());
     s.native_context->CopyResource(j.inputs11[0].Get(), previous_source.Get());
     s.native_context->CopyResource(j.inputs11[1].Get(), current);
     if (FAILED(s.native_context->Signal(s.producer11.Get(), ++s.producer_value))) return s.Fail("native producer signal");
-    LARGE_INTEGER frequency{}; QueryPerformanceFrequency(&frequency);
     const bool reset = scene_reset || s.last_evaluated_epoch != write.epoch || s.last_evaluated_generation + 1 != write.generation ||
-        write.qpc - previous.qpc > static_cast<uint64_t>(frequency.QuadPart) / 4;
-    if (!s.Generate(j, reset)) return false;
+        write.qpc - previous.qpc > s.qpc_frequency / 4;
+    event.reset = reset;
+    const auto begin = trace.enabled ? Clock() : 0;
+    if (!s.Generate(j, reset)) { event.reason = FrameReason::Failed; return false; }
+    if (begin) event.submit_cpu_ms = Milliseconds(Clock(), begin, s.qpc_frequency);
+    event.of_cpu_ms = j.of_cpu_ms; event.ngx_cpu_ms = j.ngx_cpu_ms;
+    event.ready = j.ready; event.producer = s.producer_value; event.reason = FrameReason::Submitted;
     if (scene_reset) { ++s.counters.scene_resets; s.scene_pending = false; }
     s.last_evaluated_epoch = write.epoch; s.last_evaluated_generation = write.generation;
     return true;
@@ -786,7 +855,7 @@ bool NativeBackend::Source(ID3D11Texture2D* current, const SourceWriteObservatio
 bool NativeBackend::SetPolicy(const RenderPolicy& policy) {
     if (!state_) return false;
     auto& s = *state_; std::unique_lock<std::mutex> lock(s.mutex, std::try_to_lock);
-    if (!lock.owns_lock()) return false;
+    if (!lock.owns_lock()) { ++s.policy_lock_miss; return false; }
     s.policy = policy; return s.initialized;
 }
 bool NativeBackend::Composite(const DispatchObservation& slot, ID3D11UnorderedAccessView* destination) {
@@ -794,7 +863,10 @@ bool NativeBackend::Composite(const DispatchObservation& slot, ID3D11UnorderedAc
 }
 bool NativeBackend::Composite(const DispatchObservation& slot, ID3D11UnorderedAccessView* destination, bool repeat) {
     if (!state_ || !destination) return false;
-    auto& s = *state_; std::unique_lock<std::mutex> lock(s.mutex, std::try_to_lock); if (!lock.owns_lock()) return false;
+    auto& s = *state_; std::unique_lock<std::mutex> lock(s.mutex, std::try_to_lock);
+    if (!lock.owns_lock()) { ++s.composite_lock_miss; return false; }
+    State::EventScope trace(s, FrameEventKind::Composite, slot.current_write); auto& event = trace.event;
+    event.previous = slot.previous_write.generation; event.reason = FrameReason::Ineligible;
     const bool fill = repeat || s.policy.mode == RenderMode::Economy;
     if (!s.initialized || (s.failed && !fill)) return false;
     if ((!fill && !slot.pair_matches_observed_updates) || !slot.constants_known || slot.phase_bits != 0x3f000000u ||
@@ -804,7 +876,7 @@ bool NativeBackend::Composite(const DispatchObservation& slot, ID3D11UnorderedAc
     }
     D3D11_UNORDERED_ACCESS_VIEW_DESC view_desc{}; destination->GetDesc(&view_desc);
     ComPtr<ID3D11UnorderedAccessView> bound; s.native_context->CSGetUnorderedAccessViews(0, 1, &bound);
-    if (!Same(bound.Get(), destination)) { ++s.counters.destination_rejected; return false; }
+    if (!Same(bound.Get(), destination)) { ++s.counters.destination_rejected; event.reason = FrameReason::Destination; return false; }
     ComPtr<ID3D11Resource> resource; destination->GetResource(&resource); ComPtr<ID3D11Device> device; resource->GetDevice(&device);
     if (!Same(device.Get(), s.native_device.Get()) || view_desc.ViewDimension != D3D11_UAV_DIMENSION_TEXTURE2D || view_desc.Texture2D.MipSlice != 0) return false;
     ComPtr<ID3D11Texture2D> texture; D3D11_TEXTURE2D_DESC desc{};
@@ -828,20 +900,30 @@ bool NativeBackend::Composite(const DispatchObservation& slot, ID3D11UnorderedAc
         current_desc.MipLevels != 1 || current_desc.ArraySize != 1 || current_desc.SampleDesc.Count != 1 ||
         static_cast<uint32_t>(current_view.Format) != s.extent.format || Same(current_resource.Get(), resource.Get())) return false;
     State::Job* job = nullptr;
+    event.reason = repeat ? FrameReason::Repeat : FrameReason::Unmatched;
     if (!repeat && !s.failed && slot.pair_matches_observed_updates) for (UINT i = 0; i != s.slots; ++i) {
         auto& j = s.jobs[i];
         if (j.ready && !j.consumed && SameSourceWrite(j.previous, slot.previous_write) && SameSourceWrite(j.current, slot.current_write)) {
-            if (j.warmup) { ++s.counters.warmup; if (!fill) return false; } else job = &j; break;
+            if (j.warmup) { ++s.counters.warmup; event.reason = FrameReason::Warmup; if (!fill) return false; } else job = &j; break;
         }
     }
-    if (!job && !repeat) ++s.counters.mismatched;
+    if (!job && !repeat && event.reason != FrameReason::Warmup) ++s.counters.mismatched;
     if (job) {
         const auto completed = s.ready12->GetCompletedValue();
+        event.slot = static_cast<uint32_t>(job - s.jobs.data()); event.ready = job->ready; event.completed = completed;
         if (completed == UINT64_MAX) { s.Fail("removed before composite"); job = nullptr; }
-        else if (!s.options.gpu_ordered && completed < job->ready) { ++s.counters.busy; job = nullptr; }
+        else if (!s.options.gpu_ordered && completed < job->ready) {
+            ++s.counters.busy; ++s.counters.not_ready; event.reason = FrameReason::NotReady; job = nullptr;
+        } else if (completed < job->ready) { ++s.counters.ordered_pending; event.reason = FrameReason::Ordered; }
+        else { ++s.counters.already_ready; event.reason = FrameReason::Ready; }
     }
     if (!job && !fill) return false;
-    if (job && FAILED(s.native_context->Wait(s.ready11.Get(), job->ready))) return s.Fail("native ready GPU dependency");
+    if (job) {
+        const auto begin = trace.enabled ? Clock() : 0;
+        const auto hr = s.native_context->Wait(s.ready11.Get(), job->ready);
+        if (begin) event.wait_api_cpu_ms = Milliseconds(Clock(), begin, s.qpc_frequency);
+        if (FAILED(hr)) { event.reason = FrameReason::Failed; return s.Fail("native ready GPU dependency"); }
+    }
     ComPtr<ID3D11Buffer> saved_constants; s.native_context->CSGetConstantBuffers(0, 1, &saved_constants);
     std::array<uint32_t, 36> constants{}; constants[0] = fill ? 1u : 0u; constants[1] = job ? 0u : 1u;
     for (size_t i = 0; i != s.policy.hud.size(); ++i) {
@@ -861,6 +943,7 @@ bool NativeBackend::Composite(const DispatchObservation& slot, ID3D11UnorderedAc
     auto* old_cb = saved_constants.Get(); s.native_context->CSSetConstantBuffers(0, 1, &old_cb);
     if (job) {
         job->copied = ++s.copy_value; job->consumed = true;
+        event.consumed = true; event.copied = job->copied;
         if (FAILED(s.native_context->Signal(s.copied11.Get(), job->copied))) return s.Fail("native composite retirement");
         ++s.counters.composite_queued;
     } else ++s.counters.repeat_queued;
@@ -875,7 +958,9 @@ bool NativeBackend::TryPollDiagnostics(BackendDiagnostics& diagnostics) {
     if (!state_) { diagnostics = {}; return true; }
     auto& s = *state_; std::unique_lock<std::mutex> lock(s.mutex, std::try_to_lock);
     if (!lock.owns_lock()) return false;
-    diagnostics.counters = s.PollCountersLocked();
+    // The logger must not Map/read back on a backend mutex while a native
+    // callback uses try_lock. Source retires metadata before slot reuse.
+    diagnostics.counters = s.counters;
     diagnostics.ngx = s.ngx;
     diagnostics.step = s.step; diagnostics.code = s.code;
     diagnostics.analysis_width = s.analysis_width; diagnostics.analysis_height = s.analysis_height;
@@ -886,10 +971,33 @@ bool NativeBackend::TryPollDiagnostics(BackendDiagnostics& diagnostics) {
     diagnostics.timing_samples = s.timing_samples; diagnostics.conversion_ms = s.conversion_ms;
     diagnostics.flow_dependency_ms = s.flow_dependency_ms; diagnostics.generation_ms = s.generation_ms;
     diagnostics.reattachments = s.reattachments; diagnostics.reattach_code = s.reattach_code;
+    diagnostics.options = s.options; diagnostics.options.slots = s.slots;
+    diagnostics.effective_preset = s.effective_preset; diagnostics.metadata_dropped = s.metadata_dropped;
+    diagnostics.native_device_flags = s.native_device_flags; diagnostics.native_feature_level = s.native_feature_level;
+    diagnostics.owner_thread = s.owner_thread; diagnostics.timestamp_frequency = s.timestamp_frequency;
+    diagnostics.source_lock_miss = s.source_lock_miss.load(); diagnostics.composite_lock_miss = s.composite_lock_miss.load();
+    diagnostics.policy_lock_miss = s.policy_lock_miss.load();
+    diagnostics.pending_jobs = diagnostics.unpolled_jobs = 0;
+    if (s.initialized) {
+        diagnostics.ready_target = s.ready_value; diagnostics.ready_completed = s.ready12->GetCompletedValue();
+        diagnostics.copied_target = s.copy_value; diagnostics.copied_completed = s.copied12->GetCompletedValue();
+        diagnostics.producer_target = s.producer_value; diagnostics.producer_completed = s.producer12->GetCompletedValue();
+        diagnostics.converted_target = s.converted_value; diagnostics.converted_completed = s.converted->GetCompletedValue();
+        diagnostics.flow_target = s.flow_value; diagnostics.flow_completed = s.flow_done->GetCompletedValue();
+        diagnostics.registered_target = s.register_value; diagnostics.registered_completed = s.registered_done->GetCompletedValue();
+        for (UINT i = 0; i != s.slots; ++i) {
+            const auto& j = s.jobs[i];
+            if (j.ready > diagnostics.ready_completed) ++diagnostics.pending_jobs;
+            if (j.ready > j.polled) ++diagnostics.unpolled_jobs;
+        }
+        diagnostics.device_removed = static_cast<uint32_t>(s.device->GetDeviceRemovedReason());
+    }
     return true;
 }
 bool NativeBackend::TryPopNgxLog(NgxLogMessage& message) { return ngx_logs.TryPop(message); }
 uint64_t NativeBackend::DroppedNgxLogs() { return ngx_logs.Dropped() + ngx_log_limited.load(std::memory_order_relaxed); }
+bool NativeBackend::TryPopFrameEvent(FrameEvent& event) { return frame_events.TryPop(event); }
+uint64_t NativeBackend::DroppedFrameEvents() { return frame_events.Dropped(); }
 #ifdef LS_NATIVE_TEST
 void NativeBackend::TestNgxLog(const char* message) { NgxLog(message, NVSDK_NGX_LOGGING_LEVEL_VERBOSE, NVSDK_NGX_Feature_FrameGeneration); }
 #endif

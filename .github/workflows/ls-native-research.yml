@@ -29,6 +29,10 @@ jobs:
         run: |
           g++ -std=c++17 -Wall -Wextra -Werror -pedantic experiments/LS-Native-DLSS/tests/test_source_pair.cpp -o /tmp/source-pair-tests
           /tmp/source-pair-tests
+      - name: Bounded timing distributions and unavailable measurements
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic experiments/LS-Native-DLSS/tests/test_frame_diagnostics.cpp -o /tmp/frame-diagnostics-tests
+          /tmp/frame-diagnostics-tests
   windows-tool:
     runs-on: windows-2025-vs2026
     steps:
@@ -64,9 +68,10 @@ jobs:
       - name: Package standalone native build
         shell: pwsh
         run: |
-          $out = 'build/LS-Native-DLSS-0.3.1'
+          $out = 'build/LS-Native-DLSS-0.3.2'
           New-Item -ItemType Directory -Path "$out/licenses" -Force | Out-Null
           Copy-Item experiments/LS-Native-DLSS/package/* $out
+          Copy-Item experiments/LS-Native-DLSS/analysis/DIAGNOSTICS-0.3.2-REFLEX.md $out
           Copy-Item build/native-observer/Release/Lossless.dll $out
           Copy-Item build/managed-ui/NativeDLSS.UI.dll $out
           Copy-Item build/managed-ui/Mono.Cecil.dll $out
@@ -77,6 +82,13 @@ jobs:
           Copy-Item src/Magpie.Core/third_party/minhook/LICENSE.txt "$out/licenses/MINHOOK-LICENSE.txt"
           Copy-Item build/ngx-sdk/LICENSE.txt "$out/licenses/NVIDIA-RTX-SDK-LICENSE.txt"
           Copy-Item experiments/LS-Native-DLSS/third_party/nvof/*.h "$out/licenses"
+          Invoke-WebRequest 'https://github.com/GameTechDev/PresentMon/releases/download/v2.6.0/PresentMon-2.6.0-x64.exe' -OutFile "$out/PresentMon-2.6.0-x64.exe"
+          if ((Get-FileHash "$out/PresentMon-2.6.0-x64.exe" -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'b2a706bc6ad475749e3b7e3409263aa1e6906d45bdcf993f6dbc0f660188f1af') { throw 'PresentMon digest mismatch' }
+          $help = (& "$out/PresentMon-2.6.0-x64.exe" --help 2>&1 | Out-String)
+          foreach ($flag in @('--process_name','--qpc_time','--v2_metrics','--write_display_metadata','--track_hybrid_present')) {
+            if (!$help.Contains($flag)) { throw "PresentMon is missing $flag" }
+          }
+          Copy-Item experiments/LS-Native-DLSS/third_party/PRESENTMON-LICENSE.txt "$out/licenses"
           Get-ChildItem $out -Filter '*.ps1' | ForEach-Object {
             $text = [IO.File]::ReadAllText($_.FullName)
             [IO.File]::WriteAllText($_.FullName, $text, [Text.UTF8Encoding]::new($true))
@@ -88,7 +100,7 @@ jobs:
           } | Set-Content "$out/SHA256SUMS.txt" -Encoding utf8
       - uses: actions/upload-artifact@v7
         with:
-          name: LS-Native-DLSS-0.3.1
-          path: build/LS-Native-DLSS-0.3.1/
+          name: LS-Native-DLSS-0.3.2
+          path: build/LS-Native-DLSS-0.3.2/
           retention-days: 90
           if-no-files-found: error

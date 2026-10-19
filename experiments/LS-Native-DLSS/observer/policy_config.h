@@ -1,15 +1,26 @@
 #pragma once
 #include "../backend/native_backend.h"
+#include "../include/ui_settings.h"
 #include <algorithm>
 #include <cwchar>
 #include <string>
 
 namespace ls_native {
+struct DiagnosticsConfig {
+    uint32_t level = 2, interval_ms = 1000, frame_every = 1, max_log_mib = 16, keep_log_files = 4;
+};
 struct PolicyConfig {
     RenderPolicy policy;
     BackendOptions backend;
     std::wstring profile;
+    DiagnosticsConfig diagnostics;
 };
+inline BackendOptions UiBackendOptions(BackendOptions base, const UiSettings& ui) {
+    base.enabled = true; base.optical_flow = true;
+    base.flow_preset = ui.preset; base.flow_grid = ui.grid;
+    base.analysis_percent = ui.analysis; base.slots = ui.slots;
+    return base; // GPUOrdered and diagnostics belong to INI, not the UI ABI.
+}
 inline PolicyConfig ReadPolicyConfig(const std::filesystem::path& ini) {
     PolicyConfig c;
     wchar_t name[128]{};
@@ -49,6 +60,15 @@ inline PolicyConfig ReadPolicyConfig(const std::filesystem::path& ini) {
     c.backend.flow_grid = grid == 2 ? 2u : grid ? 4u : 0u;
     c.backend.analysis_percent = std::clamp(value(L"AnalysisPercent", 50), 10u, 100u);
     c.backend.slots = std::clamp(value(L"Slots", 3), 2u, 4u);
+    const auto diagnostic = [&](const wchar_t* key, int fallback) {
+        return GetPrivateProfileIntW(L"Diagnostics", key, fallback, ini.c_str());
+    };
+    c.diagnostics.level = std::min(diagnostic(L"Level", 2), 2u);
+    c.diagnostics.interval_ms = std::clamp(diagnostic(L"IntervalMs", 1000), 100u, 5000u);
+    c.diagnostics.frame_every = std::clamp(diagnostic(L"FrameEvery", 1), 1u, 1000u);
+    c.diagnostics.max_log_mib = std::clamp(diagnostic(L"MaxLogMiB", 16), 4u, 128u);
+    c.diagnostics.keep_log_files = std::clamp(diagnostic(L"KeepLogFiles", 4), 1u, 8u);
+    c.backend.diagnostics_level = c.diagnostics.level;
     return c;
 }
 }

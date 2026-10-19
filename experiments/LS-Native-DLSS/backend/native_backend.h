@@ -1,6 +1,7 @@
 #pragma once
 #include "../include/source_pair.h"
 #include "../include/render_policy.h"
+#include "../include/frame_diagnostics.h"
 #include <d3d11_4.h>
 #include <filesystem>
 #include <memory>
@@ -11,6 +12,7 @@ struct BackendOptions {
     uint32_t quality = 2, analysis_percent = 50, slots = 3;
     uint32_t flow_preset = 0, flow_grid = 0; // 0 migrates legacy Quality.
     float motion_scale = 1.0f;
+    uint32_t diagnostics_level = 2; // 0=counters, 1=distributions, 2=frame events.
 #ifdef LS_NATIVE_TEST
     bool synthetic_test = false, test_disable = false;
 #endif
@@ -20,6 +22,8 @@ struct BackendCounters {
     uint64_t gpu_disabled = 0, gpu_enabled = 0, failed = 0;
     uint64_t ineligible = 0, destination_rejected = 0, warmup = 0;
     uint64_t repeat_queued = 0, duplicate_samples = 0, scene_cut_samples = 0, scene_resets = 0;
+    uint64_t scene_hold_samples = 0, interpolation_allowed_samples = 0;
+    uint64_t ordered_pending = 0, already_ready = 0, not_ready = 0, readback_failed = 0, invalid_timestamps = 0;
 };
 struct NgxValue {
     uint32_t result = 0;
@@ -45,6 +49,15 @@ struct BackendDiagnostics {
     double conversion_ms = 0, flow_dependency_ms = 0, generation_ms = 0;
     std::array<wchar_t, 128> adapter_name{};
     RenderMode mode = RenderMode::Hybrid;
+    BackendOptions options;
+    uint64_t source_lock_miss = 0, composite_lock_miss = 0, policy_lock_miss = 0;
+    uint64_t ready_target = 0, ready_completed = 0, copied_target = 0, copied_completed = 0;
+    uint64_t producer_target = 0, producer_completed = 0, pending_jobs = 0;
+    uint64_t converted_target = 0, converted_completed = 0, flow_target = 0, flow_completed = 0;
+    uint64_t registered_target = 0, registered_completed = 0, timestamp_frequency = 0;
+    uint64_t unpolled_jobs = 0, metadata_dropped = 0;
+    uint32_t effective_preset = 0, device_removed = 0;
+    uint32_t native_device_flags = 0, native_feature_level = 0, owner_thread = 0;
 };
 // Fixed x2 SDR backend. Hybrid conditionally replaces a native midpoint;
 // economy fills the midpoint with DLSS or the current original source.
@@ -75,6 +88,8 @@ public:
     // Bounded, process-wide driver callback queue. Consumer only performs I/O.
     static bool TryPopNgxLog(NgxLogMessage& message);
     static uint64_t DroppedNgxLogs();
+    static bool TryPopFrameEvent(FrameEvent& event);
+    static uint64_t DroppedFrameEvents();
 #ifdef LS_NATIVE_TEST
     static void TestNgxLog(const char* message);
 #endif

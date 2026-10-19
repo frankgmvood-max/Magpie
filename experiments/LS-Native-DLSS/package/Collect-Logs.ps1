@@ -26,6 +26,12 @@ try {
         } else { $inventory += @{ file=$name; exists=$false } }
     }
     $inventory | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $stage 'runtime-inventory.json') -Encoding UTF8
+    try {
+        $os = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+        $gpu = @(Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion,DriverDate,VideoProcessor)
+        @{ Build=$os.CurrentBuild; Revision=$os.UBR; DisplayVersion=$os.DisplayVersion; GPUs=$gpu } |
+            ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stage 'system-graphics.json') -Encoding UTF8
+    } catch { $_.Exception.Message | Set-Content -LiteralPath (Join-Path $stage 'system-graphics-error.txt') -Encoding UTF8 }
     foreach ($name in @('NativeDLSS.ini','dlssg_sm86.ini')) {
         $path = Join-Path $LSFolder $name
         if (Test-Path -LiteralPath $path -PathType Leaf) { Copy-Item -LiteralPath $path -Destination $stage }
@@ -35,8 +41,8 @@ try {
         $base = Join-Path $LSFolder $dir
         if (!(Test-Path -LiteralPath $base -PathType Container)) { continue }
         $files = @(Get-ChildItem -LiteralPath $base -File -Recurse | Where-Object {
-            ($_.Extension -in @('.log','.jsonl','.txt') -or $_.Name -eq 'native-startup-result.json') -and
-            ($dir -ne 'logs' -or $_.Name -like 'native-dlss-*.log' -or $_.Name -eq 'native-ui.log' -or $_.Name -like 'native-startup-*.log' -or $_.Name -eq 'native-startup-result.json')
+            ($_.Extension -in @('.log','.jsonl','.txt') -or $_.Name -eq 'native-startup-result.json' -or $_.Name -like 'pacing-*.csv' -or $_.Name -like 'pacing-*.json') -and
+            ($dir -ne 'logs' -or $_.Name -like 'native-dlss-*.log' -or $_.Name -eq 'native-ui.log' -or $_.Name -like 'native-startup-*.log' -or $_.Name -eq 'native-startup-result.json' -or $_.Name -like 'pacing-*')
         } | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 40)
         foreach ($file in $files) {
             $relative = $file.FullName.Substring($LSFolder.TrimEnd('\').Length + 1)

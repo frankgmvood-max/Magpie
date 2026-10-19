@@ -33,6 +33,18 @@ int main() {
         write(L"Profile:WoW.exe",L"Slots",L"99");
         c = ReadPolicyConfig(file);
         Require(c.backend.flow_grid == 2 && c.backend.slots == 4, "independent flow grid and bounded ring");
+        write(L"NativeDLSS",L"GPUOrdered",L"0");
+        write(L"Diagnostics",L"Level",L"1"); write(L"Diagnostics",L"IntervalMs",L"1");
+        write(L"Diagnostics",L"FrameEvery",L"0"); write(L"Diagnostics",L"MaxLogMiB",L"999");
+        write(L"Diagnostics",L"KeepLogFiles",L"99");
+        c = ReadPolicyConfig(file);
+        UiSettings ui; ui.type = 6; ui.analysis = 75; ui.slots = 2; ui.preset = 3;
+        const auto native_ui = UiBackendOptions(c.backend, ui);
+        Require(!native_ui.gpu_ordered && native_ui.optical_flow && native_ui.analysis_percent == 75 &&
+            native_ui.slots == 2 && native_ui.flow_preset == 3 && native_ui.diagnostics_level == 1,
+            "native UI preserves INI ordering/diagnostics while applying selected quality");
+        Require(c.diagnostics.interval_ms == 100 && c.diagnostics.frame_every == 1 &&
+            c.diagnostics.max_log_mib == 128 && c.diagnostics.keep_log_files == 8, "bounded diagnostics config");
         DeleteFileW(file);
         std::cout << "Legacy migration, application profiles, HUD validation and independent quality controls passed\n";
         return 0;
