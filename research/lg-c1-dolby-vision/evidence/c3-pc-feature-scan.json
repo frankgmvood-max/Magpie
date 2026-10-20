@@ -1,0 +1,67 @@
+{
+  "needles": [
+    "enableDolbyVisionPC",
+    "dolbyVisionPC",
+    "dolby_vision_pc",
+    "dv_pc"
+  ],
+  "scope": "Case-insensitive literal bytes; absence does not prove absence of equivalent logic.",
+  "roots": {
+    "c3-selected": {
+      "regular_files": 6268,
+      "bytes": 89232891,
+      "matches": [
+        {
+          "path": "etc/palm/defaultSettings.json",
+          "needles": [
+            "enableDolbyVisionPC",
+            "dolbyVisionPC"
+          ]
+        },
+        {
+          "path": "etc/palm/description.bson",
+          "needles": [
+            "enableDolbyVisionPC",
+            "dolbyVisionPC"
+          ]
+        },
+        {
+          "path": "etc/palm/description.categorykeysmap.bson",
+          "needles": [
+            "enableDolbyVisionPC",
+            "dolbyVisionPC"
+          ]
+        },
+        {
+          "path": "etc/palm/description.categorykeysmap.json",
+          "needles": [
+            "enableDolbyVisionPC",
+            "dolbyVisionPC"
+          ]
+        },
+        {
+          "path": "etc/palm/description.json",
+          "needles": [
+            "enableDolbyVisionPC",
+            "dolbyVisionPC"
+          ]
+        },
+        {
+          "path": "usr/palm/applications/com.palm.app.settings/main.js",
+          "needles": [
+            "enableDolbyVisionPC",
+            "dolbyVisionPC"
+          ]
+        },
+        {
+          "path": "usr/palm/applications/com.palm.app.settings/snapshot_blob.bin",
+          "needles": [
+            "enableDolbyVisionPC",
+            "dolbyVisionPC"
+          ]
+        }
+      ],
+      "errors": []
+    }
+  }
+}

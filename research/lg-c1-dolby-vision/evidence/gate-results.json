@@ -1,0 +1,769 @@
+{
+  "c1": {
+    "library": "libelement-video-hdmi.so.1.0.0",
+    "sha256": "f6b8e5c055b41f18695f0b611c36023d0dfee75e7de445b15f6b2b1340ff039d",
+    "predicate_symbol": "_ZN27ruleDolbyVisionSignalDetect14is_dolby_validE28v4l2_ext_hdmi_dolby_hdr_typeR22v4l2_ext_hdmi_avi_info",
+    "predicate_elf_vma": "0x3e558",
+    "predicate_size": 88,
+    "timing_argument_present": false,
+    "emulator_only_mutation": null,
+    "scope": "Isolated predicate and label formatters under Unicorn; not an HDMI or TV test.",
+    "labels": {
+      "dolby_type": {
+        "0": {
+          "value": "none",
+          "string_address": "0x4a5a0"
+        },
+        "1": {
+          "value": "DolbyVision",
+          "string_address": "0x4b1f8"
+        },
+        "2": {
+          "value": "DolbyVision",
+          "string_address": "0x4b1f8"
+        },
+        "3": {
+          "value": "DolbyLL",
+          "string_address": "0x4b210"
+        }
+      },
+      "pixel_encoding": {
+        "0": {
+          "value": "RGB",
+          "string_address": "0x46dfc"
+        },
+        "1": {
+          "value": "YCbCr422",
+          "string_address": "0x4b1ac"
+        },
+        "2": {
+          "value": "YCbCr444",
+          "string_address": "0x4b1b8"
+        },
+        "3": {
+          "value": "YCbCr420",
+          "string_address": "0x4b1c4"
+        }
+      },
+      "rgb_range": {
+        "0": {
+          "value": "DEFAULT",
+          "string_address": "0x46d38"
+        },
+        "1": {
+          "value": "LIMITED",
+          "string_address": "0x46d28"
+        },
+        "2": {
+          "value": "FULL",
+          "string_address": "0x46d30"
+        },
+        "3": {
+          "value": "RESERVED",
+          "string_address": "0x46c38"
+        }
+      },
+      "ycc_range": {
+        "0": {
+          "value": "LIMITED",
+          "string_address": "0x46d28"
+        },
+        "1": {
+          "value": "FULL",
+          "string_address": "0x46d30"
+        },
+        "2": {
+          "value": "RESERVED",
+          "string_address": "0x46c38"
+        },
+        "3": {
+          "value": "RESERVED",
+          "string_address": "0x46c38"
+        }
+      }
+    },
+    "case_count": 192,
+    "accept_count": 25,
+    "accepted_groups": [
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 1,
+        "pixel_encoding": 0,
+        "range_field": "rgb_range",
+        "accepted_ranges": [
+          2
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 1,
+        "pixel_encoding": 1,
+        "range_field": "ycc_range",
+        "accepted_ranges": [
+          1
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 2,
+        "pixel_encoding": 0,
+        "range_field": "rgb_range",
+        "accepted_ranges": [
+          2
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 2,
+        "pixel_encoding": 1,
+        "range_field": "ycc_range",
+        "accepted_ranges": [
+          1
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 3,
+        "pixel_encoding": 0,
+        "range_field": "rgb_range",
+        "accepted_ranges": [
+          1
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 3,
+        "pixel_encoding": 1,
+        "range_field": "ycc_range",
+        "accepted_ranges": [
+          0
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 3,
+        "pixel_encoding": 2,
+        "range_field": "ycc_range",
+        "accepted_ranges": [
+          0
+        ]
+      }
+    ]
+  },
+  "c3": {
+    "library": "libelement-video-hdmi.so.1.0.0",
+    "sha256": "040fd267b220fc7f0c4ad2272218b6d1f1cb5cbdab4583013e82824a04c507db",
+    "predicate_symbol": "_ZN27ruleDolbyVisionSignalDetect14is_dolby_validE28v4l2_ext_hdmi_dolby_hdr_typeR22v4l2_ext_hdmi_avi_infoR25v4l2_ext_hdmi_timing_info",
+    "predicate_elf_vma": "0x3ce50",
+    "predicate_size": 94,
+    "timing_argument_present": true,
+    "emulator_only_mutation": null,
+    "scope": "Isolated predicate and label formatters under Unicorn; not an HDMI or TV test.",
+    "labels": {
+      "dolby_type": {
+        "0": {
+          "value": "none",
+          "string_address": "0x48788"
+        },
+        "1": {
+          "value": "DolbyVision",
+          "string_address": "0x4a460"
+        },
+        "2": {
+          "value": "\u007fELF\u0001\u0001\u0001\u0003",
+          "string_address": "0x0"
+        },
+        "3": {
+          "value": "DolbyLL",
+          "string_address": "0x4a478"
+        }
+      },
+      "pixel_encoding": {
+        "0": {
+          "value": "RGB",
+          "string_address": "0x4621c"
+        },
+        "1": {
+          "value": "\u007fELF\u0001\u0001\u0001\u0003",
+          "string_address": "0x0"
+        },
+        "2": {
+          "value": "\u007fELF\u0001\u0001\u0001\u0003",
+          "string_address": "0x0"
+        },
+        "3": {
+          "value": "YCbCr420",
+          "string_address": "0x4a42c"
+        }
+      },
+      "rgb_range": {
+        "0": {
+          "value": "\u007fELF\u0001\u0001\u0001\u0003",
+          "string_address": "0x0"
+        },
+        "1": {
+          "value": "LIMITED",
+          "string_address": "0x46148"
+        },
+        "2": {
+          "value": "\u007fELF\u0001\u0001\u0001\u0003",
+          "string_address": "0x0"
+        },
+        "3": {
+          "value": "RESERVED",
+          "string_address": "0x46058"
+        }
+      },
+      "ycc_range": {
+        "0": {
+          "value": "\u007fELF\u0001\u0001\u0001\u0003",
+          "string_address": "0x0"
+        },
+        "1": {
+          "value": "\u007fELF\u0001\u0001\u0001\u0003",
+          "string_address": "0x0"
+        },
+        "2": {
+          "value": "\u007fELF\u0001\u0001\u0001\u0003",
+          "string_address": "0x0"
+        },
+        "3": {
+          "value": "\u007fELF\u0001\u0001\u0001\u0003",
+          "string_address": "0x0"
+        }
+      }
+    },
+    "case_count": 384,
+    "accept_count": 29,
+    "accepted_groups": [
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 1,
+        "pixel_encoding": 0,
+        "range_field": "rgb_range",
+        "accepted_ranges": [
+          2
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 1,
+        "pixel_encoding": 1,
+        "range_field": "ycc_range",
+        "accepted_ranges": [
+          1
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 2,
+        "pixel_encoding": 0,
+        "range_field": "rgb_range",
+        "accepted_ranges": [
+          2
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 2,
+        "pixel_encoding": 1,
+        "range_field": "ycc_range",
+        "accepted_ranges": [
+          1
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 3,
+        "pixel_encoding": 0,
+        "range_field": "rgb_range",
+        "accepted_ranges": [
+          2
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 3,
+        "pixel_encoding": 1,
+        "range_field": "ycc_range",
+        "accepted_ranges": [
+          0
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 3,
+        "pixel_encoding": 2,
+        "range_field": "ycc_range",
+        "accepted_ranges": [
+          0
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 3,
+        "pixel_encoding": 3,
+        "range_field": "ycc_range",
+        "accepted_ranges": [
+          0
+        ]
+      }
+    ]
+  },
+  "c1-swap-experiment": {
+    "library": "libelement-video-hdmi.so.1.0.0",
+    "sha256": "f6b8e5c055b41f18695f0b611c36023d0dfee75e7de445b15f6b2b1340ff039d",
+    "predicate_symbol": "_ZN27ruleDolbyVisionSignalDetect14is_dolby_validE28v4l2_ext_hdmi_dolby_hdr_typeR22v4l2_ext_hdmi_avi_info",
+    "predicate_elf_vma": "0x3e558",
+    "predicate_size": 88,
+    "timing_argument_present": false,
+    "emulator_only_mutation": {
+      "elf_vma": "0x3e59e",
+      "before": "a0f10100",
+      "after": "a0f10200",
+      "meaning": "Compare LLDV RGB range to 2 instead of 1; also removes acceptance of range 1"
+    },
+    "scope": "Isolated predicate and label formatters under Unicorn; not an HDMI or TV test.",
+    "labels": {
+      "dolby_type": {
+        "0": {
+          "value": "none",
+          "string_address": "0x4a5a0"
+        },
+        "1": {
+          "value": "DolbyVision",
+          "string_address": "0x4b1f8"
+        },
+        "2": {
+          "value": "DolbyVision",
+          "string_address": "0x4b1f8"
+        },
+        "3": {
+          "value": "DolbyLL",
+          "string_address": "0x4b210"
+        }
+      },
+      "pixel_encoding": {
+        "0": {
+          "value": "RGB",
+          "string_address": "0x46dfc"
+        },
+        "1": {
+          "value": "YCbCr422",
+          "string_address": "0x4b1ac"
+        },
+        "2": {
+          "value": "YCbCr444",
+          "string_address": "0x4b1b8"
+        },
+        "3": {
+          "value": "YCbCr420",
+          "string_address": "0x4b1c4"
+        }
+      },
+      "rgb_range": {
+        "0": {
+          "value": "DEFAULT",
+          "string_address": "0x46d38"
+        },
+        "1": {
+          "value": "LIMITED",
+          "string_address": "0x46d28"
+        },
+        "2": {
+          "value": "FULL",
+          "string_address": "0x46d30"
+        },
+        "3": {
+          "value": "RESERVED",
+          "string_address": "0x46c38"
+        }
+      },
+      "ycc_range": {
+        "0": {
+          "value": "LIMITED",
+          "string_address": "0x46d28"
+        },
+        "1": {
+          "value": "FULL",
+          "string_address": "0x46d30"
+        },
+        "2": {
+          "value": "RESERVED",
+          "string_address": "0x46c38"
+        },
+        "3": {
+          "value": "RESERVED",
+          "string_address": "0x46c38"
+        }
+      }
+    },
+    "case_count": 192,
+    "accept_count": 25,
+    "accepted_groups": [
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 1,
+        "pixel_encoding": 0,
+        "range_field": "rgb_range",
+        "accepted_ranges": [
+          2
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 1,
+        "pixel_encoding": 1,
+        "range_field": "ycc_range",
+        "accepted_ranges": [
+          1
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 2,
+        "pixel_encoding": 0,
+        "range_field": "rgb_range",
+        "accepted_ranges": [
+          2
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 2,
+        "pixel_encoding": 1,
+        "range_field": "ycc_range",
+        "accepted_ranges": [
+          1
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 3,
+        "pixel_encoding": 0,
+        "range_field": "rgb_range",
+        "accepted_ranges": [
+          2
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 3,
+        "pixel_encoding": 1,
+        "range_field": "ycc_range",
+        "accepted_ranges": [
+          0
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 3,
+        "pixel_encoding": 2,
+        "range_field": "ycc_range",
+        "accepted_ranges": [
+          0
+        ]
+      }
+    ],
+    "changed_cases": [
+      {
+        "input": {
+          "dolby_type": 3,
+          "pixel_encoding": 0,
+          "rgb_range": 1,
+          "ycc_range": 0,
+          "timing_u16_0x14": 3840,
+          "timing_u16_0x16": 2160
+        },
+        "before": true,
+        "after": false
+      },
+      {
+        "input": {
+          "dolby_type": 3,
+          "pixel_encoding": 0,
+          "rgb_range": 1,
+          "ycc_range": 1,
+          "timing_u16_0x14": 3840,
+          "timing_u16_0x16": 2160
+        },
+        "before": true,
+        "after": false
+      },
+      {
+        "input": {
+          "dolby_type": 3,
+          "pixel_encoding": 0,
+          "rgb_range": 1,
+          "ycc_range": 2,
+          "timing_u16_0x14": 3840,
+          "timing_u16_0x16": 2160
+        },
+        "before": true,
+        "after": false
+      },
+      {
+        "input": {
+          "dolby_type": 3,
+          "pixel_encoding": 0,
+          "rgb_range": 2,
+          "ycc_range": 0,
+          "timing_u16_0x14": 3840,
+          "timing_u16_0x16": 2160
+        },
+        "before": false,
+        "after": true
+      },
+      {
+        "input": {
+          "dolby_type": 3,
+          "pixel_encoding": 0,
+          "rgb_range": 2,
+          "ycc_range": 1,
+          "timing_u16_0x14": 3840,
+          "timing_u16_0x16": 2160
+        },
+        "before": false,
+        "after": true
+      },
+      {
+        "input": {
+          "dolby_type": 3,
+          "pixel_encoding": 0,
+          "rgb_range": 2,
+          "ycc_range": 2,
+          "timing_u16_0x14": 3840,
+          "timing_u16_0x16": 2160
+        },
+        "before": false,
+        "after": true
+      }
+    ],
+    "removed_accepts": 3
+  },
+  "c1-extend-experiment": {
+    "library": "libelement-video-hdmi.so.1.0.0",
+    "sha256": "f6b8e5c055b41f18695f0b611c36023d0dfee75e7de445b15f6b2b1340ff039d",
+    "predicate_symbol": "_ZN27ruleDolbyVisionSignalDetect14is_dolby_validE28v4l2_ext_hdmi_dolby_hdr_typeR22v4l2_ext_hdmi_avi_info",
+    "predicate_elf_vma": "0x3e558",
+    "predicate_size": 88,
+    "timing_argument_present": false,
+    "emulator_only_mutation": {
+      "elf_vma": "0x3e59c",
+      "before": "506ba0f10100b0fa80f040097047",
+      "after": "506b0138012894bf012000207047",
+      "meaning": "Accept LLDV RGB range 1 or 2; retain the other branches unchanged"
+    },
+    "scope": "Isolated predicate and label formatters under Unicorn; not an HDMI or TV test.",
+    "labels": {
+      "dolby_type": {
+        "0": {
+          "value": "none",
+          "string_address": "0x4a5a0"
+        },
+        "1": {
+          "value": "DolbyVision",
+          "string_address": "0x4b1f8"
+        },
+        "2": {
+          "value": "DolbyVision",
+          "string_address": "0x4b1f8"
+        },
+        "3": {
+          "value": "DolbyLL",
+          "string_address": "0x4b210"
+        }
+      },
+      "pixel_encoding": {
+        "0": {
+          "value": "RGB",
+          "string_address": "0x46dfc"
+        },
+        "1": {
+          "value": "YCbCr422",
+          "string_address": "0x4b1ac"
+        },
+        "2": {
+          "value": "YCbCr444",
+          "string_address": "0x4b1b8"
+        },
+        "3": {
+          "value": "YCbCr420",
+          "string_address": "0x4b1c4"
+        }
+      },
+      "rgb_range": {
+        "0": {
+          "value": "DEFAULT",
+          "string_address": "0x46d38"
+        },
+        "1": {
+          "value": "LIMITED",
+          "string_address": "0x46d28"
+        },
+        "2": {
+          "value": "FULL",
+          "string_address": "0x46d30"
+        },
+        "3": {
+          "value": "RESERVED",
+          "string_address": "0x46c38"
+        }
+      },
+      "ycc_range": {
+        "0": {
+          "value": "LIMITED",
+          "string_address": "0x46d28"
+        },
+        "1": {
+          "value": "FULL",
+          "string_address": "0x46d30"
+        },
+        "2": {
+          "value": "RESERVED",
+          "string_address": "0x46c38"
+        },
+        "3": {
+          "value": "RESERVED",
+          "string_address": "0x46c38"
+        }
+      }
+    },
+    "case_count": 192,
+    "accept_count": 28,
+    "accepted_groups": [
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 1,
+        "pixel_encoding": 0,
+        "range_field": "rgb_range",
+        "accepted_ranges": [
+          2
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 1,
+        "pixel_encoding": 1,
+        "range_field": "ycc_range",
+        "accepted_ranges": [
+          1
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 2,
+        "pixel_encoding": 0,
+        "range_field": "rgb_range",
+        "accepted_ranges": [
+          2
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 2,
+        "pixel_encoding": 1,
+        "range_field": "ycc_range",
+        "accepted_ranges": [
+          1
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 3,
+        "pixel_encoding": 0,
+        "range_field": "rgb_range",
+        "accepted_ranges": [
+          1,
+          2
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 3,
+        "pixel_encoding": 1,
+        "range_field": "ycc_range",
+        "accepted_ranges": [
+          0
+        ]
+      },
+      {
+        "timing_u16_0x14": 3840,
+        "timing_u16_0x16": 2160,
+        "dolby_type": 3,
+        "pixel_encoding": 2,
+        "range_field": "ycc_range",
+        "accepted_ranges": [
+          0
+        ]
+      }
+    ],
+    "changed_cases": [
+      {
+        "input": {
+          "dolby_type": 3,
+          "pixel_encoding": 0,
+          "rgb_range": 2,
+          "ycc_range": 0,
+          "timing_u16_0x14": 3840,
+          "timing_u16_0x16": 2160
+        },
+        "before": false,
+        "after": true
+      },
+      {
+        "input": {
+          "dolby_type": 3,
+          "pixel_encoding": 0,
+          "rgb_range": 2,
+          "ycc_range": 1,
+          "timing_u16_0x14": 3840,
+          "timing_u16_0x16": 2160
+        },
+        "before": false,
+        "after": true
+      },
+      {
+        "input": {
+          "dolby_type": 3,
+          "pixel_encoding": 0,
+          "rgb_range": 2,
+          "ycc_range": 2,
+          "timing_u16_0x14": 3840,
+          "timing_u16_0x16": 2160
+        },
+        "before": false,
+        "after": true
+      }
+    ],
+    "removed_accepts": 0
+  }
+}

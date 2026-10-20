@@ -1,0 +1,6 @@
+work/
+*.zip
+*.epk
+*.pak
+*.so*
+__pycache__/

@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "research_date": "2026-10-20",
+  "firmware": {
+    "c1": {
+      "model_family": "LG C1 / O20N",
+      "official_page": "https://www.lg.com/ru/support/product/lg-OLED55C1RLA.ARU",
+      "download_url": "https://gscs-b2c.lge.com/downloadFile?fileId=wzCSw99KEIhNerX1s6EA",
+      "archive": "LG_C1_03.53.45.zip",
+      "archive_bytes": 1456634872,
+      "sha256": "48f40bcf67dbd4fcf2d15963c62ffe0d627b18618015e79a054a55c394259398",
+      "epk_member": "lib32-starfish-global-secured-o20n-koli-47-03.53.45_prodkey_usb_V3_SECURED.epk",
+      "epk_bytes": 1463701733,
+      "epk_version": "03.53.45.01",
+      "webos_version": "6.5.3",
+      "ota_id": "HE_DTV_W21O_AFABATAA",
+      "verified_signature_blocks": 248
+    },
+    "c3": {
+      "model_family": "LG C3 / O22N",
+      "official_page": "https://www.lg.com/uk/support/product-support/cs-OLED55C34LA.AEK/",
+      "download_url": "https://gscs-b2c.lge.com/downloadFile?fileId=pgE1C0jGh6fA0lHCc3RtA",
+      "archive": "LG_C3_23.25.55.zip",
+      "archive_bytes": 1675383395,
+      "sha256": "3360c309a4b132606ff376fe454fdc844a427fcf22d87f54a9aefc7ae6135187",
+      "epk_member": "lib32-starfish-global-secured-o22n-okapi.pine-61-23.25.55_prodkey_usb_V3_SECURED.epk",
+      "epk_bytes": 1683014101,
+      "epk_version": "23.25.55.01",
+      "webos_version": "9.2.2",
+      "ota_id": "HE_DTV_W23O_AFABATAA",
+      "verified_signature_blocks": 287
+    }
+  },
+  "tools": {
+    "epk2extract": {
+      "repository": "https://github.com/openlgtv/epk2extract",
+      "commit": "2b6af078b56dbedb89efc0f4943036150f1ecae9",
+      "options": "-s -n"
+    },
+    "ghidra": {
+      "version": "12.1.4",
+      "release": "https://github.com/NationalSecurityAgency/ghidra/releases/tag/Ghidra_12.1.4_build",
+      "archive_sha256": "ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db",
+      "java": "OpenJDK 21.0.12"
+    },
+    "unsquashfs": "4.6.1",
+    "capstone": "5.0.7",
+    "pyelftools": "0.32",
+    "unicorn": "2.1.2"
+  },
+  "reference_source": {
+    "repository": "https://github.com/Maassoft/ColorControl",
+    "commit": "d0d3bb4682c483b0b2c14a794958abf2d142100e",
+    "file": "ColorControl/Services/LG/LgDevice.cs",
+    "observation": "Registers enableDolbyVisionPC in category other from Series2024; controller policy is not a hardware capability test."
+  }
+}
