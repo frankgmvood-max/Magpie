@@ -1,0 +1,102 @@
+{
+  "c1": [
+    {
+      "filename": "libelement-video-hdmi.so.1.0.0",
+      "sha256": "f6b8e5c055b41f18695f0b611c36023d0dfee75e7de445b15f6b2b1340ff039d",
+      "bytes": 341436,
+      "elf_class": 32,
+      "machine": "EM_ARM",
+      "functions": [
+        {
+          "symbol": "_ZN27ruleDolbyVisionSignalDetect14rule_dolby_hdrEv",
+          "demangled": "ruleDolbyVisionSignalDetect::rule_dolby_hdr()",
+          "address": "0x3ef04",
+          "size": 226
+        },
+        {
+          "symbol": "_ZN27ruleDolbyVisionSignalDetect14is_dolby_validE28v4l2_ext_hdmi_dolby_hdr_typeR22v4l2_ext_hdmi_avi_info",
+          "demangled": "ruleDolbyVisionSignalDetect::is_dolby_valid(v4l2_ext_hdmi_dolby_hdr_type, v4l2_ext_hdmi_avi_info&)",
+          "address": "0x3e558",
+          "size": 88
+        },
+        {
+          "symbol": "_ZN27ruleDolbyVisionSignalDetect22is_dolby_hdr_supportedEv",
+          "demangled": "ruleDolbyVisionSignalDetect::is_dolby_hdr_supported()",
+          "address": "0x3ee44",
+          "size": 192
+        }
+      ]
+    },
+    {
+      "filename": "libhdmi-conn-protocol.so.1.0.0",
+      "sha256": "21ff192de0bb6a48b754fee1c6527127642003d2176af282afcbec81dececcc3",
+      "bytes": 206920,
+      "elf_class": 32,
+      "machine": "EM_ARM",
+      "functions": [
+        {
+          "symbol": "_Z30_EDID_CTRL_GetDolbyVsvdbByType27EDID_DOLBY_CRITERION_TYPE_T17DOLBY_VSVDB_VER_T",
+          "demangled": "_EDID_CTRL_GetDolbyVsvdbByType(EDID_DOLBY_CRITERION_TYPE_T, DOLBY_VSVDB_VER_T)",
+          "address": "0x16ae4",
+          "size": 68
+        },
+        {
+          "symbol": "_Z32_EDID_CTRL_GetDolbyCriterionTypeb20TVCO_CFG_TOOL_TYPE_Ti",
+          "demangled": "_EDID_CTRL_GetDolbyCriterionType(bool, TVCO_CFG_TOOL_TYPE_T, int)",
+          "address": "0x1689c",
+          "size": 72
+        }
+      ]
+    }
+  ],
+  "c3": [
+    {
+      "filename": "libelement-video-hdmi.so.1.0.0",
+      "sha256": "040fd267b220fc7f0c4ad2272218b6d1f1cb5cbdab4583013e82824a04c507db",
+      "bytes": 344716,
+      "elf_class": 32,
+      "machine": "EM_ARM",
+      "functions": [
+        {
+          "symbol": "_ZN27ruleDolbyVisionSignalDetect22is_dolby_hdr_supportedEv",
+          "demangled": "ruleDolbyVisionSignalDetect::is_dolby_hdr_supported()",
+          "address": "0x3e3c4",
+          "size": 212
+        },
+        {
+          "symbol": "_ZN27ruleDolbyVisionSignalDetect14rule_dolby_hdrEv",
+          "demangled": "ruleDolbyVisionSignalDetect::rule_dolby_hdr()",
+          "address": "0x3e6cc",
+          "size": 274
+        },
+        {
+          "symbol": "_ZN27ruleDolbyVisionSignalDetect14is_dolby_validE28v4l2_ext_hdmi_dolby_hdr_typeR22v4l2_ext_hdmi_avi_infoR25v4l2_ext_hdmi_timing_info",
+          "demangled": "ruleDolbyVisionSignalDetect::is_dolby_valid(v4l2_ext_hdmi_dolby_hdr_type, v4l2_ext_hdmi_avi_info&, v4l2_ext_hdmi_timing_info&)",
+          "address": "0x3ce50",
+          "size": 94
+        }
+      ]
+    },
+    {
+      "filename": "libhdmi-conn-protocol.so.1.0.0",
+      "sha256": "c2a84efe2352583a5be1654c5ff70f376542f56243a450430317447b191bff18",
+      "bytes": 242176,
+      "elf_class": 32,
+      "machine": "EM_ARM",
+      "functions": [
+        {
+          "symbol": "_Z32_EDID_CTRL_GetDolbyCriterionTypeb20TVCO_CFG_TOOL_TYPE_TiNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE",
+          "demangled": "_EDID_CTRL_GetDolbyCriterionType(bool, TVCO_CFG_TOOL_TYPE_T, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)",
+          "address": "0x18a68",
+          "size": 208
+        },
+        {
+          "symbol": "_Z30_EDID_CTRL_GetDolbyVsvdbByType27EDID_DOLBY_CRITERION_TYPE_T17DOLBY_VSVDB_VER_T",
+          "demangled": "_EDID_CTRL_GetDolbyVsvdbByType(EDID_DOLBY_CRITERION_TYPE_T, DOLBY_VSVDB_VER_T)",
+          "address": "0x18f8c",
+          "size": 68
+        }
+      ]
+    }
+  ]
+}

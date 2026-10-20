@@ -1,0 +1,23 @@
+{
+  "needles": [
+    "enableDolbyVisionPC",
+    "dolbyVisionPC",
+    "dolby_vision_pc",
+    "dv_pc"
+  ],
+  "scope": "Case-insensitive literal bytes; absence does not prove absence of equivalent logic.",
+  "roots": {
+    "c1-rootfs": {
+      "regular_files": 75040,
+      "bytes": 2624575635,
+      "matches": [],
+      "errors": []
+    },
+    "c1-bsp": {
+      "regular_files": 407,
+      "bytes": 39561037,
+      "matches": [],
+      "errors": []
+    }
+  }
+}
