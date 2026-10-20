@@ -1,11 +1,59 @@
 # LG C1: исследование системного Dolby Vision с ПК
 
 Цель: исследовать постоянный вывод Windows в Dolby Vision на LG C1 с RTX 3080.
-Пользователь уже менял EDID и скрытые флаги Windows; телевизор оставался в HDR.
+Пользователь уже менял EDID, скрытые флаги Windows, режимы цвета и частоту;
+телевизор оставался в HDR. Это ослабляет объяснение отказа одним цветовым фильтром.
 Исследование ведётся на скачанной официальной прошивке, независимо от версии,
 установленной на телевизоре. Код и сборки Magpie этим каталогом не изменяются.
 
-## Результат первого этапа
+## Распознавание Dolby Vision с ПК до цветового фильтра
+
+**У C3 найдена дополнительная ветка `is_dolby_pc_supported`, которой нет в
+исследованной цепочке C1.** Она распознаёт особую сигнатуру в структуре HDR DRM
+InfoFrame. При совпадении C3 присваивает Dolby-тип `3` (LLDV) и пропускает запрос
+Dolby-типа у драйвера; затем всё равно выполняет `is_dolby_valid`.
+
+C1 в `rule_dolby_hdr` непосредственно запрашивает тип у драйвера. Если результат
+равен `0`, до цветового фильтра он не доходит. Поэтому изменение RGB Full в одном
+`is_dolby_valid` не исправит такой сценарий. Какой тип возвращает реальный C1
+в пользовательском режиме, пока не измерено.
+
+Есть и связанное изменение: C3 вызывает тот же PC-детектор из `rule_hdr`. При
+совпадении он выбирает HDR-тип `1` (DolbyVision) вместо обычной для
+`eotf_type == 2` ветки `2` (HDR10). Названия проверены исполнением исходной
+функции форматирования перечисления, результаты также сохранены в JSON.
+В `rule_hdr` C1 этого различения нет. Возможный перенос потребует согласовать
+обе классификации, а также последующую обработку Dolby; одной смены надписи
+или безусловного принуждения HDR10 в DV недостаточно.
+
+Условия PC-детектора C3 подтверждены **59 опытами на оригинальном ARM-коде**
+(31 принятие, 28 отказов). Реальный `HdmiSystemConfig::getBoolValue` также
+исполняется; перехват PLT только перенаправляет вызов к его исходному телу.
+Драйвер и телевизор не эмулировались.
+
+- Требуются включённый Dolby-флаг конфигурации enum `2`, DRM version `1`,
+  `eotf_type == 2`, ненулевое 16-битное поле mastering luminance по DRM `+0x20`.
+- Для RGB требуется Full; для ненулевого pixel encoding это сравнение диапазона
+  не ограничивает детектор. Последующий `is_dolby_valid` остаётся отдельным фильтром.
+- Детектор сравнивает поля примарных цветов, белой точки, MaxCLL и MaxFALL
+  с фиксированной сигнатурой. Младший бит каждого поля игнорируется; у белой точки
+  и световых максимумов не сравнивается и старший байт. Точные маски и значения
+  сохранены в [pc-detection-results.json](evidence/pc-detection-results.json).
+- Два timing-поля проверяются составным ARM-сравнением. Пары 3840/2160,
+  4096/2159 и 3840/2161 проходят, а 4096/2160 и 3841/2161 отклоняются. Это нельзя
+  обобщать как корректную проверку «не выше 4K» или как поддержку этих режимов ТВ.
+
+`set_drm_infoframe` в обеих версиях копирует 40 байт драйверной структуры в
+`HdmiInfoframe + 0x204`; имена полей проверены по собственным строкам логирования
+`print_drm_packet` C3. Связь этой сигнатуры с конкретным выходом RTX 3080/Windows
+ещё не подтверждена захватом сигнала. Наличие настройки `enableDolbyVisionPC`
+в схеме C3 само по себе не устанавливает её связь с этой функцией.
+
+Вывод: отсутствие результата при смене цвета и частоты согласуется с отказом
+на этапе распознавания. Теперь это более содержательная гипотеза, чем объяснение
+всего отказа одним сравнением диапазона, но не установленная причина на реальном ТВ.
+
+## Результат проверки цветового фильтра
 
 **Найдена конкретная разница программного приёма сигнала между C1 и C3.**
 В HDMI-библиотеке C1 проверка `is_dolby_valid` отклоняет LLDV с RGB Full.
@@ -74,7 +122,10 @@ PC-переключателя. В выбранных компонентах C3 �
 |---|---|---|
 | HDMI element / `is_dolby_valid` | `0x3e558` | `0x3ce50` |
 | HDMI element / `is_dolby_hdr_supported` | `0x3ee44` | `0x3e3c4` |
+| HDMI element / `is_dolby_pc_supported` | Нет символа / ветки в исследованных правилах | `0x3e498` |
 | HDMI element / `rule_dolby_hdr` | `0x3ef04` | `0x3e6cc` |
+| HDMI element / `ruleHdrSignalDetect::rule_hdr` | `0x403b8` | `0x3e5d0` |
+| HDMI element / `set_drm_infoframe` | `0x3cd88` | `0x3b21c` |
 | HDMI connection / `_EDID_CTRL_GetDolbyCriterionType` | `0x1689c` | `0x18a68` |
 
 Имена взяты из символов ELF. Псевдокод Ghidra, типы параметров и автоматически
@@ -110,6 +161,7 @@ unsquashfs -d work/c3-root work/c3/23.25.55.01-HE_DTV_W23O_AFABATAA/rootfs.pak
 work/venv/bin/python scripts/probe_dolby_gate.py work/c1-root/usr/lib/element/libelement-video-hdmi.so.1.0.0 --output work/c1-gate.json
 work/venv/bin/python scripts/probe_dolby_gate.py work/c3-root/usr/lib/element/libelement-video-hdmi.so.1.0.0 --output work/c3-gate.json
 work/venv/bin/python scripts/probe_dolby_gate.py work/c1-root/usr/lib/element/libelement-video-hdmi.so.1.0.0 --experiment-c1-rgb-both --output work/c1-experiment.json
+work/venv/bin/python scripts/probe_pc_detection.py work/c3-root/usr/lib/element/libelement-video-hdmi.so.1.0.0 --output evidence/pc-detection-results.json
 ```
 
 Для пересоздания сводок в `evidence/` используются имена выходных файлов,
@@ -133,21 +185,24 @@ work/venv/bin/python scripts/summarize_results.py
 
 ```sh
 analyzeHeadless work/ghidra-projects C1_HDMI -import work/c1-root/usr/lib/element/libelement-video-hdmi.so.1.0.0 -scriptPath scripts -postScript ExportDolbyFunctions.java work/decompiled -analysisTimeoutPerFile 240 -max-cpu 2
+analyzeHeadless work/ghidra-projects C3_HDMI -import work/c3-root/usr/lib/element/libelement-video-hdmi.so.1.0.0 -scriptPath scripts -postScript ExportDolbyFunctions.java work/c3-decompiled 'dolby|dovi|vsvdb|ruleHdrSignalDetect|drm' -analysisTimeoutPerFile 240 -max-cpu 2
 ```
 
 ## Что остаётся установить
 
-1. Передаёт ли Windows/NVIDIA в проблемном режиме Dolby VSIF и какой именно
-   Dolby-тип, pixel encoding и диапазон видит приёмник C1. Из факта «остался HDR»
+1. Передаёт ли Windows/NVIDIA в проблемном режиме Dolby VSIF или найденную
+   сигнатуру в HDR DRM InfoFrame; какой Dolby-тип, pixel encoding и диапазон
+   видит приёмник C1. Из факта «остался HDR»
    это определить нельзя. `collect_hdmi_state.sh` подготовлен для чтения данных
    через уже имеющуюся авторизованную оболочку; на телевизоре он не запускался.
-2. Согласуется ли расширение ветки RGB Full с последующей обработкой цвета и
-   Dolby-метаданных, особенно при 4K/120 и VRR. Эмуляция одной функции этого не проверяет.
+2. Можно ли согласованно перенести PC-распознавание в обе цепочки HDR/Dolby C1
+   и последующую обработку цвета и Dolby-метаданных, особенно при 4K/120 и VRR.
+   Выполненные изолированные опыты этого не проверяют.
 3. Как на выбранной версии C1 загрузить изменённый компонент с сохранением
    целостности системы и возможности отката. Штатное подписанное USB-обновление
    само по себе не является способом установки изменённого образа.
 
-Следующий предмет исследования — путь `AVI/VSIF → is_dolby_valid →
-on_dolby_hdr_signal_changed → video output/PQ`, а также построение VSVDB в новой
-ветке EDID. Подтверждённое различие даёт место для проверки патча, но пока не
-доказывает, что именно оно вызвало отказ пользовательской связки.
+Следующий предмет исследования — путь `AVI/VSIF/DRM → классификация HDR/Dolby →
+is_dolby_valid → on_dolby_hdr_signal_changed → video output/PQ`, а также построение
+VSVDB в новой ветке EDID. Подтверждённые различия дают места для проверки переноса,
+но пока не доказывают, какое именно из них вызвало отказ пользовательской связки.

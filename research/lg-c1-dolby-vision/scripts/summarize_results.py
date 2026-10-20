@@ -19,7 +19,7 @@ def main():
         records[model] = []
         for entry in files:
             record = {k: entry[k] for k in ("filename", "sha256", "bytes", "elf_class", "machine")}
-            selected = ("is_dolby_valid", "is_dolby_hdr_supported", "rule_dolby_hdr",
+            selected = ("is_dolby_valid", "is_dolby_hdr_supported", "is_dolby_pc_supported", "rule_dolby_hdr",
                         "GetDolbyCriterionType", "GetDolbyVsvdbByType")
             record["functions"] = [
                 {k: symbol[k] for k in ("symbol", "demangled", "address", "size")}

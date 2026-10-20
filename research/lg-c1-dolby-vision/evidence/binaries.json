@@ -64,6 +64,12 @@
           "size": 212
         },
         {
+          "symbol": "_ZN27ruleDolbyVisionSignalDetect21is_dolby_pc_supportedEv",
+          "demangled": "ruleDolbyVisionSignalDetect::is_dolby_pc_supported()",
+          "address": "0x3e498",
+          "size": 310
+        },
+        {
           "symbol": "_ZN27ruleDolbyVisionSignalDetect14rule_dolby_hdrEv",
           "demangled": "ruleDolbyVisionSignalDetect::rule_dolby_hdr()",
           "address": "0x3e6cc",
